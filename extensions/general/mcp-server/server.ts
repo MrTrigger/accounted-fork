@@ -2650,17 +2650,69 @@ async function countMissingUnderlagInPeriod(
 }
 
 /**
+ * The company's fiscal period that contains an ISO date, or null. A date in a
+ * report call names the year the caller wants: "resultatrapporten för 2023"
+ * arrives as from_date/to_date, not as a period_id the model would first
+ * have to look up (#2185).
+ */
+async function findFiscalPeriodContaining(
+  supabase: SupabaseClient,
+  companyId: string,
+  date: string,
+): Promise<{ id: string; name: string; period_start: string; period_end: string } | null> {
+  const { data } = await supabase
+    .from('fiscal_periods')
+    .select('id, name, period_start, period_end')
+    .eq('company_id', companyId)
+    .lte('period_start', date)
+    .gte('period_end', date)
+    .order('period_start', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return data ?? null
+}
+
+/** "the company's fiscal periods span A to B", for an error that names a date no period covers. */
+async function describeFiscalPeriodSpan(supabase: SupabaseClient, companyId: string): Promise<string> {
+  const { data } = await supabase
+    .from('fiscal_periods')
+    .select('period_start, period_end')
+    .eq('company_id', companyId)
+    .order('period_start', { ascending: true })
+  const rows = (data ?? []) as { period_start: string; period_end: string }[]
+  if (rows.length === 0) return 'the company has no fiscal periods'
+  return `the company's fiscal periods span ${rows[0].period_start} to ${rows[rows.length - 1].period_end}`
+}
+
+/**
  * Resolve the fiscal period a report tool runs against: the caller's
- * `period_id` when given, else the company's most recent period. The period
- * is then re-read scoped to the company, so a foreign id never resolves.
+ * `period_id` when given; else, when the call carries a date (from_date,
+ * as_of_date, ...), the period that contains that date; else the company's
+ * most recent period. An explicit id is re-read scoped to the company, so a
+ * foreign id never resolves.
+ *
+ * The date fallback exists because the previous default (most recent period,
+ * then a loud range check) made every question about an earlier year fail
+ * unless the model had first looked up that year's UUID (#2185).
  */
 async function resolveReportPeriod(
   supabase: SupabaseClient,
   companyId: string,
   periodIdArg: unknown,
   noPeriodsMessage: string,
+  dateHint?: unknown,
 ) {
   let periodId = periodIdArg as string | undefined
+
+  if (!periodId && typeof dateHint === 'string' && ISO_DATE_RE.test(dateHint)) {
+    const containing = await findFiscalPeriodContaining(supabase, companyId, dateHint)
+    if (containing) return containing
+    const span = await describeFiscalPeriodSpan(supabase, companyId)
+    throw new Error(
+      `No fiscal period contains ${dateHint}: ${span}. ` +
+      `Pass a date inside one of them, or that period's period_id (gnubok_list_fiscal_periods).`,
+    )
+  }
 
   if (!periodId) {
     const { data: periods } = await supabase
@@ -7233,7 +7285,7 @@ export const tools: McpTool[] = [
         actor,
         isQuote
           ? {
-              description: 'Once approved, the quote exists as an open offert with its OF-number. Record the customer decision with gnubok_set_quote_status; gnubok_convert_invoice creates the faktura from it.',
+              description: 'Once approved, the quote exists as an open offert with its OF-number. Record the customer decision with gnubok_set_quote_status; gnubok_convert_invoice creates the faktura (or, with target order, a kundorder) from it.',
               tool: 'gnubok_convert_invoice',
             }
           : {
@@ -7337,7 +7389,7 @@ export const tools: McpTool[] = [
       additionalProperties: false,
       properties: {
         ...SALES_ORDER_SUMMARY_PROPS,
-        source_invoice_id: { type: ['string', 'null'], description: 'Proforma the order was converted from, if any' },
+        source_invoice_id: { type: ['string', 'null'], description: 'Proforma or offert the order was converted from, if any' },
         your_reference: { type: ['string', 'null'] },
         our_reference: { type: ['string', 'null'] },
         notes: { type: ['string', 'null'] },
@@ -8197,7 +8249,13 @@ export const tools: McpTool[] = [
     },
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, userId, supabase) {
-      const period = await resolveReportPeriod(supabase, companyId, args.period_id, 'No fiscal periods found. Categorize some transactions first.')
+      const period = await resolveReportPeriod(
+        supabase,
+        companyId,
+        args.period_id,
+        'No fiscal periods found. Categorize some transactions first.',
+        args.from_date ?? args.to_date,
+      )
 
       rejectUnknownArgs(args, ['period_id', 'from_date', 'to_date', 'dimensions'])
       const range = parseReportRangeArgs(args, period, { from: 'from_date', to: 'to_date' })
@@ -10123,6 +10181,20 @@ export const tools: McpTool[] = [
       }
 
       let periodId = args.period_id as string | undefined
+      const toDate = args.to_date as string | undefined
+
+      // No period but a date: the period that contains the date (#2185).
+      if (!periodId && typeof toDate === 'string' && ISO_DATE_RE.test(toDate)) {
+        periodId = (
+          await resolveReportPeriod(
+            supabase,
+            companyId,
+            undefined,
+            'No fiscal periods found. Categorize some transactions first to auto-create a period.',
+            toDate,
+          )
+        ).id
+      }
 
       // If no period specified, find the most recent one (same default as
       // gnubok_get_trial_balance).
@@ -10140,8 +10212,6 @@ export const tools: McpTool[] = [
         }
         periodId = periods.id
       }
-
-      const toDate = args.to_date as string | undefined
 
       return await generateDimensionPnl(supabase, companyId, periodId!, sieDimNo, { toDate })
     },
@@ -10165,7 +10235,13 @@ export const tools: McpTool[] = [
     outputSchema: { type: 'object' },
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, userId, supabase) {
-      const period = await resolveReportPeriod(supabase, companyId, args.period_id, 'No fiscal periods found. Create one first.')
+      const period = await resolveReportPeriod(
+        supabase,
+        companyId,
+        args.period_id,
+        'No fiscal periods found. Create one first.',
+        args.as_of_date,
+      )
 
       rejectUnknownArgs(args, ['period_id', 'as_of_date'])
       const range = parseReportRangeArgs(args, period, { to: 'as_of_date' })
@@ -18471,13 +18547,20 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_convert_invoice',
-    keywords: ['proforma', 'offert', 'quote', 'kundfaktura', 'omvandla'],
-    title: 'Convert Proforma or Quote to Invoice',
-    description: 'Stage conversion of a proforma or quote (offert) to a real invoice (F-number, items copied). Proforma is cancelled; the quote stays as accepted.',
+    keywords: ['proforma', 'offert', 'quote', 'kundfaktura', 'kundorder', 'omvandla'],
+    title: 'Convert Proforma or Quote to Invoice or Order',
+    description: 'Stage conversion of a proforma or quote (offert) to a real invoice (F-number, items copied) or, with target order, to a draft kundorder. Proforma is cancelled; the quote stays accepted.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { invoice_id: { type: 'string', description: 'Proforma or quote UUID' } },
+      properties: {
+        invoice_id: { type: 'string', description: 'Proforma or quote UUID' },
+        target: {
+          type: 'string',
+          enum: ['invoice', 'order'],
+          description: 'invoice (default) creates the faktura; order creates a draft kundorder to deliver and invoice from.',
+        },
+      },
       required: ['invoice_id'],
     },
     outputSchema: STAGED_OPERATION_SCHEMA,
@@ -18485,6 +18568,9 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase, actor) {
       const id = args.invoice_id as string
       if (!id) throw new Error('invoice_id is required')
+      const target = (args.target as string | undefined) ?? 'invoice'
+      if (target !== 'invoice' && target !== 'order') throw new Error('target must be invoice or order')
+      const toOrder = target === 'order'
 
       const { data: inv } = await supabase
         .from('invoices')
@@ -18492,10 +18578,25 @@ export const tools: McpTool[] = [
         .eq('id', id).eq('company_id', companyId).single()
       if (!inv) throw registryError('INVOICE_NOT_FOUND')
       const isQuote = inv.document_type === 'quote'
-      // Same pre-checks as convertToInvoice (the commit path), so the agent
-      // gets the registry code at staging time instead of a failed approval.
-      if (inv.document_type !== 'proforma' && !isQuote) throw registryError('INVOICE_CONVERT_NOT_CONVERTIBLE')
-      if (inv.status === 'cancelled') throw registryError('INVOICE_CONVERT_SOURCE_CANCELLED')
+      // Same pre-checks as convertToInvoice / convertToSalesOrder (the commit
+      // paths), so the agent gets the registry code at staging time instead
+      // of a failed approval.
+      if (inv.document_type !== 'proforma' && !isQuote) {
+        throw registryError(toOrder ? 'SALES_ORDER_SOURCE_NOT_PROFORMA' : 'INVOICE_CONVERT_NOT_CONVERTIBLE')
+      }
+      if (inv.status === 'cancelled') {
+        throw registryError(toOrder ? 'SALES_ORDER_SOURCE_ALREADY_CONVERTED' : 'INVOICE_CONVERT_SOURCE_CANCELLED')
+      }
+      if (toOrder) {
+        const { count: liveOrders, error: ordersError } = await supabase
+          .from('sales_orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('company_id', companyId)
+          .eq('source_invoice_id', id)
+          .neq('status', 'cancelled')
+        if (ordersError) throw dbError(ordersError)
+        if ((liveOrders ?? 0) > 0) throw registryError('SALES_ORDER_SOURCE_ALREADY_CONVERTED')
+      }
       if (isQuote) {
         if (inv.quote_status === 'declined') throw registryError('INVOICE_CONVERT_QUOTE_DECLINED')
         const { data: converted, error: convertedError } = await supabase
@@ -18508,30 +18609,47 @@ export const tools: McpTool[] = [
           .maybeSingle()
         if (convertedError) throw dbError(convertedError)
         if (converted) throw registryError('INVOICE_QUOTE_ALREADY_INVOICED')
+        if (!toOrder) {
+          const { count: liveOrders, error: ordersError } = await supabase
+            .from('sales_orders')
+            .select('id', { count: 'exact', head: true })
+            .eq('company_id', companyId)
+            .eq('source_invoice_id', id)
+            .neq('status', 'cancelled')
+          if (ordersError) throw dbError(ordersError)
+          if ((liveOrders ?? 0) > 0) throw registryError('INVOICE_QUOTE_ALREADY_ORDERED')
+        }
       }
 
       const customerName = (inv.customer as { name?: string } | null)?.name ?? 'okänd kund'
       const amount = `${roundOre(Number(inv.total))} ${inv.currency}`
+      const sourceLabel = isQuote ? 'offert' : 'proforma'
+      const targetLabel = toOrder ? 'kundorder' : 'faktura'
+      const sourceUpdate = isQuote ? 'mark the quote accepted (the quote stays)' : 'cancel proforma'
       return stagePendingOperation(supabase, companyId, userId, 'convert_invoice',
-        isQuote
-          ? `Konvertera offert → faktura: ${inv.invoice_number ?? ''} ${customerName} ${amount}`.replace(/\s+/g, ' ')
-          : `Konvertera proforma → faktura: ${customerName} ${amount}`,
-        { invoice_id: id },
+        `Konvertera ${sourceLabel} → ${targetLabel}: ${isQuote ? inv.invoice_number ?? '' : ''} ${customerName} ${amount}`.replace(/\s+/g, ' '),
+        toOrder ? { invoice_id: id, target: 'order' } : { invoice_id: id },
         {
           customer_name: (inv.customer as { name?: string } | null)?.name,
           source_document_type: inv.document_type,
           source_invoice_number: inv.invoice_number ?? null,
+          target,
           total: inv.total,
           currency: inv.currency,
-          will: isQuote
-            ? 'allocate F-series number, copy items, mark the quote accepted (the quote stays)'
-            : 'allocate F-series number, copy items, cancel proforma',
+          will: toOrder
+            ? `allocate OR-series number, copy items into a draft kundorder, ${sourceUpdate}`
+            : `allocate F-series number, copy items, ${sourceUpdate}`,
         },
         actor,
-        {
-          description: 'After conversion, send the new invoice with gnubok_send_invoice.',
-          tool: 'gnubok_send_invoice',
-        }
+        toOrder
+          ? {
+              description: 'After conversion, confirm the draft order with gnubok_transition_sales_order, then invoice deliveries with gnubok_create_invoice_from_sales_order.',
+              tool: 'gnubok_transition_sales_order',
+            }
+          : {
+              description: 'After conversion, send the new invoice with gnubok_send_invoice.',
+              tool: 'gnubok_send_invoice',
+            }
       )
     },
   },
@@ -18540,7 +18658,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_set_quote_status',
     keywords: ['offert', 'quote', 'accepterad', 'avböjd', 'godkänn offert'],
     title: 'Set Quote Status',
-    description: 'Record the customer decision on a quote (offert): open, accepted or declined. Locked once invoiced; expired is derived from valid_until.',
+    description: 'Record the customer decision on a quote (offert): open, accepted or declined. Locked once invoiced or ordered; expired is derived from valid_until.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -18621,6 +18739,9 @@ export const tools: McpTool[] = [
         // trg_invoices_quote_decision_guard: a conversion landed in between.
         if (updateError.message?.includes('INVOICE_QUOTE_ALREADY_INVOICED')) {
           throw registryError('INVOICE_QUOTE_ALREADY_INVOICED')
+        }
+        if (updateError.message?.includes('INVOICE_QUOTE_ALREADY_ORDERED')) {
+          throw registryError('INVOICE_QUOTE_ALREADY_ORDERED')
         }
         throw dbError(updateError)
       }
