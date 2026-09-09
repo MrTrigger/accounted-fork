@@ -43,7 +43,6 @@ export type JourneyStep =
   | 'moms'
   | 'method'
   | 'done'
-  | 'source'
 
 export type JourneyStation = 0 | 1 | 2 | 3 | 4
 
@@ -63,7 +62,6 @@ const STATION_OF: Record<JourneyStep, JourneyStation> = {
   moms: 2,
   method: 3,
   done: 4,
-  source: 4,
 }
 
 export function stationOfStep(step: JourneyStep): JourneyStation {
@@ -140,7 +138,6 @@ export type JourneyAction =
   | { type: 'METHOD_PICKED'; method: 'accrual' | 'cash' }
   | { type: 'SUBMIT_SUCCEEDED' }
   | { type: 'SUBMIT_FAILED'; code: 'org_number_invalid' | 'period_invalid' | 'generic' }
-  | { type: 'DONE_CONTINUE' }
   | { type: 'BACK' }
   | { type: 'STATION_JUMP'; station: 0 | 1 | 2 | 3 }
 
@@ -546,14 +543,6 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
     case 'SUBMIT_SUCCEEDED':
       return go(stay(state, { submitting: false }), 'done')
-
-    case 'DONE_CONTINUE': {
-      // Welcome screen → the branch question ("Var fanns bokföringen
-      // innan?") as its own step. First-company flow only: mode='add'
-      // ends on the done screen with "Öppna appen".
-      if (state.step !== 'done' || state.mode !== 'first') return state
-      return go(state, 'source')
-    }
 
     case 'SUBMIT_FAILED': {
       const cleared = stay(state, { submitting: false })

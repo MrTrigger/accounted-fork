@@ -19,6 +19,8 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider, type ByraTeamRef } from '@/contexts/CompanyContext'
 import { ReferenceDataSeed } from '@/components/providers/ReferenceDataSeed'
+import OnboardingBackdrop from '@/components/onboarding/OnboardingBackdrop'
+import { BOOKS_PATH } from '@/lib/onboarding/books-gate'
 import { getCompanyEntitlements } from '@/lib/entitlements/has-capability'
 import { getAiStatus } from '@/lib/ai'
 import { getDashboardNavFlags } from '@/lib/dashboard/nav-flags'
@@ -549,6 +551,28 @@ export default async function DashboardLayout({
   const showSignpost =
     !activeCompanyHomed &&
     !SIGNPOST_ALLOWED_PATHS.some((p) => pathname.startsWith(p))
+
+  // The books act (issue #2438) is the journey's second act: it needs the
+  // company context and reference data the wizards read, but none of the
+  // dashboard chrome. Bare shell: backdrop plus the page, no nav, no panel.
+  if (pathname.startsWith(BOOKS_PATH)) {
+    return (
+      <CompanyProvider value={companyContextValue}>
+        <ReferenceDataSeed
+          companyId={companyId}
+          fiscalPeriods={seedFiscalPeriods ?? []}
+          cashAccounts={seedCashAccounts ?? []}
+          settings={settingsError ? undefined : settings}
+        >
+          <SessionTimeoutController />
+          <div className="relative min-h-dvh bg-background">
+            <OnboardingBackdrop />
+            <div className="relative z-10">{children}</div>
+          </div>
+        </ReferenceDataSeed>
+      </CompanyProvider>
+    )
+  }
 
   return (
     <CompanyProvider value={companyContextValue}>
