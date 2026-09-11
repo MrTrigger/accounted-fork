@@ -45,6 +45,7 @@ import {
 import { isEagerAuthRequested } from './auth-mode'
 import { createLogger } from '@/lib/logger'
 import { roundOre, sumOre } from '@/lib/money'
+import { addDaysIso } from '@/lib/dates/iso'
 import { currentAppVersion } from '@/lib/reports/app-version'
 import type { DayValueEmployee } from '@/lib/salary/semesterberedning'
 import {
@@ -69,6 +70,7 @@ import { formatVoucherLabel, hasLiveJournalEntryLink } from '@/lib/transactions/
 import { hasBankLineJunctionRow } from '@/lib/transactions/is-booked'
 import { setTransactionIgnored } from '@/lib/transactions/ignore'
 import { canApproveSupplierInvoice } from '@/lib/supplier-invoices/lifecycle'
+import { backfillSupplierPaymentDetails, type SupplierPaymentDetails } from '@/lib/supplier-invoices/payment-details-backfill'
 import { eventBus } from '@/lib/events/bus'
 import { getVatRules, getPermittedVatRates, getArticleVatRateAdoptionSet } from '@/lib/invoices/vat-rules'
 import { validateDeductionLines } from '@/lib/invoices/rot-rut-rules'
@@ -91,6 +93,7 @@ import {
   rcInputTotalsFromDeclaration,
   calculateVatDeclaration,
   resolvePeriodDates,
+  type VatPeriodSource,
 } from '@/lib/reports/vat-declaration'
 import { fetchDynamicVatAccounts } from '@/lib/reports/vat-revenue-accounts'
 // The momsdeklaration completeness checks live in core (lib/reports) and are
@@ -286,6 +289,9 @@ import { generateFullArchive, estimateArchiveSize } from '@/lib/reports/full-arc
 import { CorrectionChainTooDeepError } from '@/lib/bookkeeping/errors'
 import { correctionChainDepth, CORRECTION_CHAIN_GUARD_DEPTH } from '@/lib/core/bookkeeping/correction-chain'
 import { getSuggestedCategories, buildMerchantHistory, merchantHistoryFor } from '@/lib/transactions/category-suggestions'
+import { proposeForTransactions } from '@/lib/transactions/propose'
+import { agentBookingFor, businessAccount, whyTextSv } from '@/lib/bookkeeping/proposal'
+import { booksWithoutReview } from '@/lib/transactions/direct-booking'
 import { detectBookingDuplicate } from '@/lib/transactions/booking-duplicate-detection'
 import { buildDuplicateBookingClaim } from '@/lib/transactions/categorize-core'
 import { findDuplicatePaymentCandidatesForInvoice } from '@/lib/invoices/duplicate-payment-candidates'
@@ -319,7 +325,7 @@ import { mirrorExtractionToDocument } from '@/extensions/general/invoice-inbox/l
 import { skvRequest, SkatteverketAuthError } from '@/extensions/general/skatteverket/lib/api-client'
 import { agiGetKvittenser } from '@/extensions/general/skatteverket/lib/agi-client'
 import { readAgiSubmissionStatus } from '@/extensions/general/skatteverket/lib/agi-submission-status'
-import { buildMomsuppgift, resolveRedovisare } from '@/extensions/general/skatteverket/lib/declaration-prep'
+import { buildMomsuppgift, resolveRedovisare, resolveRedovisningsperiod } from '@/extensions/general/skatteverket/lib/declaration-prep'
 import { writeSkatteverketAudit } from '@/extensions/general/skatteverket/lib/audit'
 import { skvAuthCodeToStructured } from '@/extensions/general/skatteverket/lib/error-map'
 import { findCompanyTokenUser, hasVerifiedGrant } from '@/extensions/general/skatteverket/lib/resolve-auth'
@@ -1388,7 +1394,13 @@ async function categorizeTransactionCore(
     .single()
 
   if (fetchError || !transaction) {
-    throw new Error('Transaction not found. Check the transaction_id is correct.')
+    // Only bank rows live in `transactions`. A skattekonto_transactions id
+    // (Skatteverket tax account) lands here as NOT_FOUND and agents concluded
+    // the row could not be booked (feedback seq 382367): name the right tool.
+    throw new Error(
+      'Transaction not found. Check the transaction_id is correct. ' +
+        'A skattekonto row (Skatteverket tax account: ränta, avgift, preliminärskatt, moms) is not a bank transaction: book it with gnubok_book_skattekonto_row or gnubok_book_skattekonto_rows (find them via gnubok_search_tools "skattekonto").',
+    )
   }
 
   // Underlag guard: if the transaction has an attached document with
@@ -2097,6 +2109,13 @@ interface VatReportWithRutor {
    * to the server: no tool puts this map on the wire.
    */
   accountTotals: VatCheckAccountTotals
+  /**
+   * Which branch of resolvePeriodDates produced `report.period`. Kept off the
+   * report itself: gnubok_get_vat_report declares its period object closed
+   * (additionalProperties: false), so the close check is the surface that
+   * discloses a yearly calendar fallback.
+   */
+  periodSource: VatPeriodSource
 }
 
 /**
@@ -2128,7 +2147,7 @@ async function computeVatReportWithRutor(
   if (periodType === 'monthly' && (period < 1 || period > 12)) throw new Error('period must be 1-12 for monthly')
   if (periodType === 'quarterly' && (period < 1 || period > 4)) throw new Error('period must be 1-4 for quarterly')
 
-  const { start: startDate, end: endDate } = await resolvePeriodDates(
+  const { start: startDate, end: endDate, source: periodSource } = await resolvePeriodDates(
     supabase,
     companyId,
     periodType as 'monthly' | 'quarterly' | 'yearly',
@@ -2293,6 +2312,7 @@ async function computeVatReportWithRutor(
     declarationRutor,
     dynamicVatAccounts,
     accountTotals,
+    periodSource,
   }
 }
 
@@ -2385,6 +2405,7 @@ interface VatCloseBlocker {
     | 'reverse_charge_input_missing'
     | 'declaration_incomplete'
     | 'deadline_unavailable'
+    | 'fiscal_year_not_found'
   severity: 'high' | 'medium' | 'low'
   count: number
   message: string
@@ -2440,6 +2461,7 @@ export const YEAR_END_BLOCKER_KIND: Record<YearEndBlockerCode, string> = {
   PERIOD_NOT_FOUND: 'period_not_found',
   PERIOD_NOT_ENDED: 'period_not_ended',
   PERIOD_ALREADY_CLOSED: 'period_already_closed',
+  PERIOD_LOCKED: 'period_locked',
   CLOSING_ENTRY_EXISTS: 'closing_entry_exists',
   DRAFT_ENTRIES: 'draft_entries',
   UNEXPLAINED_VOUCHER_GAP: 'unexplained_voucher_gap',
@@ -2483,7 +2505,13 @@ interface VatCloseSanityAnomaly {
 }
 
 interface VatCloseCheckResult {
-  period: VatReportResult['period']
+  /**
+   * `source` discloses whether the range is a resolved räkenskapsår or the
+   * calendar arithmetic (yearly: 'calendar_fallback' when no fiscal year ends
+   * in `year`). The outputSchema keeps `period` an open object, so this costs
+   * no tools/list budget.
+   */
+  period: VatReportResult['period'] & { source: VatPeriodSource }
   period_label: string
   rutor: VatReportResult['rutor']
   payment: {
@@ -2814,7 +2842,7 @@ export async function computeVatCloseCheck(
   //    step 4b: they need rutor 20-24 and 50, which the report view omits, plus
   //    the per-account totals so the RC input comparison reads 2645/2647
   //    instead of the ruta 48 aggregate.
-  const { report: vatReport, declarationRutor, dynamicVatAccounts, accountTotals } =
+  const { report: vatReport, declarationRutor, dynamicVatAccounts, accountTotals, periodSource } =
     await computeVatReportWithRutor(args, companyId, supabase)
   const { start, end, type: periodType, year, period } = vatReport.period
 
@@ -2834,6 +2862,11 @@ export async function computeVatCloseCheck(
   //    deadlines need the turnover threshold; annual deadlines additionally
   //    need the filing profile and a configured fiscal year matching the
   //    report range. Quarterly dates are independent of company settings.
+  const configuredStartMonth = typeof settings?.fiscal_year_start_month === 'number'
+    && settings.fiscal_year_start_month >= 1
+    && settings.fiscal_year_start_month <= 12
+    ? settings.fiscal_year_start_month
+    : null
   let deadline: { date: string; label: string } | null = null
   if (periodType === 'quarterly') {
     deadline = computeMomsDeadline('quarterly', Number(year), Number(period), {
@@ -2847,11 +2880,6 @@ export async function computeVatCloseCheck(
       vat_taxable_base_over_40m: settings.vat_taxable_base_over_40m,
     })
   } else if (periodType === 'yearly' && settings && entityType) {
-    const configuredStartMonth = typeof settings.fiscal_year_start_month === 'number'
-      && settings.fiscal_year_start_month >= 1
-      && settings.fiscal_year_start_month <= 12
-      ? settings.fiscal_year_start_month
-      : null
     const reportEndMonth = Number(end.slice(5, 7))
     const reportStartMonth = reportEndMonth === 12 ? 1 : reportEndMonth + 1
     const calendarYearOnly = fiscalYearLockedToCalendar(entityType)
@@ -2886,12 +2914,17 @@ export async function computeVatCloseCheck(
 
   // 4) Blocker scans: run in parallel
   const [uncategorizedRes, unapprovedRes, recon, missingUnderlag] = await Promise.all([
+    // is_ignored = false: a transaction the user ignored on purpose (private,
+    // duplicate feed row) is not waiting to be booked, and the same predicate
+    // drives the Att göra worklist (lib/worklist/categories.ts). The column is
+    // NOT NULL DEFAULT false, so eq is exact.
     supabase
       .from('transactions')
       .select('id', { count: 'exact', head: true })
       .eq('company_id', companyId)
       .gte('date', start).lte('date', end)
-      .is('journal_entry_id', null),
+      .is('journal_entry_id', null)
+      .eq('is_ignored', false),
     supabase
       .from('supplier_invoices')
       .select('id', { count: 'exact', head: true })
@@ -2917,6 +2950,26 @@ export async function computeVatCloseCheck(
       count: 1,
       message: 'Momsens inlämningsdatum kunde inte fastställas säkert',
       hint: 'Kontrollera momsinställningar, deklarationssätt och räkenskapsperiod innan deklarationen lämnas in.',
+    })
+  }
+  // Helårsmoms follows the räkenskapsår (SFL 26 kap 10-11 §§). When no fiscal
+  // year ends in `year` the report silently fell back to Jan-Dec, which for a
+  // company whose fiscal year does not start in January means every figure
+  // above describes the wrong period (feedback seq 330091: FY Apr-Mar, yearly
+  // 2026 came back as 2026-01-01..2026-12-31). Say so instead of leaving the
+  // agent to infer it from an unavailable deadline.
+  if (
+    periodType === 'yearly'
+    && periodSource === 'calendar_fallback'
+    && configuredStartMonth !== null
+    && configuredStartMonth !== 1
+  ) {
+    blockers.push({
+      kind: 'fiscal_year_not_found',
+      severity: 'high',
+      count: 1,
+      message: `Inget räkenskapsår som slutar ${year} hittades: perioden föll tillbaka på kalenderåret ${start}..${end}, men helårsmoms redovisas per räkenskapsår (SFL 26 kap 10-11 §§)`,
+      hint: `Företagets räkenskapsår börjar månad ${configuredStartMonth}. Kontrollera räkenskapsåren med gnubok_list_fiscal_periods och ange year = det år räkenskapsåret slutar.`,
     })
   }
   const uncategorizedCount = uncategorizedRes.count ?? 0
@@ -3125,7 +3178,7 @@ export async function computeVatCloseCheck(
   }
 
   return {
-    period: vatReport.period,
+    period: { ...vatReport.period, source: periodSource },
     period_label: vatReport.period_label,
     rutor: vatReport.rutor,
     payment: {
@@ -5600,12 +5653,16 @@ export const tools: McpTool[] = [
         throw new Error('cash_account_id must be a cash account UUID (cash_accounts.id), not a ledger account number')
       }
 
-      // Get total count
+      // Get total count. is_ignored = false on both queries: a transaction
+      // ignored via gnubok_ignore_transaction has no journal entry by CHECK
+      // constraint, so journal_entry_id IS NULL alone kept listing it as work
+      // to do (feedback seq 330091). Same predicate as the Att göra worklist.
       let countQuery = supabase
         .from('transactions')
         .select('id', { count: 'exact', head: true })
         .eq('company_id', companyId)
         .is('journal_entry_id', null)
+        .eq('is_ignored', false)
       if (cashAccountId) countQuery = countQuery.eq('cash_account_id', cashAccountId)
       const { count: totalCount, error: countError } = await countQuery
 
@@ -5618,6 +5675,7 @@ export const tools: McpTool[] = [
         )
         .eq('company_id', companyId)
         .is('journal_entry_id', null)
+        .eq('is_ignored', false)
       if (cashAccountId) listQuery = listQuery.eq('cash_account_id', cashAccountId)
       const { data, error } = await listQuery
         .order('date', { ascending: false })
@@ -5851,7 +5909,13 @@ export const tools: McpTool[] = [
       const accountOverride =
         args.account_override === undefined ? undefined : String(args.account_override).trim()
       if (accountOverride !== undefined && !ACCOUNT_NUMBER_RE.test(accountOverride)) {
-        throw new Error('account_override must be exactly 4 digits, e.g. "4020".')
+        // "2710,2731"-style values are the usual way an agent asks for a split
+        // here (feedback seq 371965): say where a split actually lives.
+        throw new Error(
+          'account_override must be exactly 4 digits, e.g. "4020": it books the whole business side on ONE account. ' +
+            'To split a bank transaction over several accounts (e.g. a Skatteverket payment clearing 2710 + 2731), use gnubok_bulk_book_transactions with new_entry.lines (the bank leg is added automatically), ' +
+            'or gnubok_create_voucher for the lines and then gnubok_bulk_book_transactions with existing_journal_entry_id.',
+        )
       }
 
       // Presence guard (hosts don't always enforce inputSchema `required`).
@@ -8110,14 +8174,14 @@ export const tools: McpTool[] = [
     name: 'gnubok_vat_close_check',
     keywords: ['moms', 'momsavstämning', 'momskontroll'],
     title: 'VAT Close Check (Momsdeklaration)',
-    description: "Answer 'can I close VAT?' in one call. Returns SKV 4700 rutor, bookkeeping blockers (including unavailable deadlines), and declaration_checks from the same momsdeklaration completeness gate used by the web filing UI. ready_to_close covers both.",
+    description: "Answer 'can I close VAT?' in one call: SKV 4700 rutor, bookkeeping blockers (incl. unavailable deadlines) and declaration_checks from the momsdeklaration completeness gate the web filing UI uses. ready_to_close covers both.",
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         period_type: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'], description: 'Period type' },
-        year: { type: 'number', description: 'Year (e.g. 2026)' },
-        period: { type: 'number', description: '1-12 for monthly, 1-4 for quarterly, 1 for yearly' },
+        year: { type: 'number', description: 'Year; for yearly, the year the räkenskapsår ends' },
+        period: { type: 'number', description: '1-12 monthly, 1-4 quarterly, 1 yearly' },
       },
       required: ['period_type', 'year', 'period'],
     },
@@ -9061,7 +9125,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_suggest_categories',
     keywords: ['konteringsförslag', 'kontering', 'kategorisera'],
     title: 'Suggest Transaction Categories',
-    description: 'Suggest categories for uncategorized transactions using mapping rules, patterns, counterparty history and templates. Up to 20 per call. no_signal_transaction_ids = nothing matched; investigate via gnubok_query_journal instead of guessing.',
+    description: 'Booking proposals for uncategorized transactions, best first per tx_id: why, confidence, books_without_review, categorize_args.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9080,13 +9144,17 @@ export const tools: McpTool[] = [
       properties: {
         suggestions: { type: 'object' },
         counterparty_matches: { type: 'object' },
+        proposals: {
+          type: 'object',
+          description: 'tx_id -> proposals; book with categorize_args.',
+        },
         no_signal_transaction_ids: {
           type: 'array',
           items: { type: 'string' },
           description: 'Transactions where no source (rule, pattern, counterparty history, template) matched. An honest empty: do not infer categories from the other rows; investigate the counterparty (e.g. gnubok_query_journal) instead.',
         },
       },
-      required: ['suggestions', 'counterparty_matches', 'no_signal_transaction_ids'],
+      required: ['suggestions', 'counterparty_matches', 'proposals', 'no_signal_transaction_ids'],
     },
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, userId, supabase) {
@@ -9168,9 +9236,33 @@ export const tools: McpTool[] = [
         .filter((tx) => (suggestions[tx.id]?.length ?? 0) === 0 && !counterpartyResult[tx.id])
         .map((tx) => tx.id)
 
+      // The same proposals the app shows a person, with the arguments this
+      // agent books them with: one recommendation, the same evidence, the
+      // same booking (lib/transactions/propose.ts, lib/bookkeeping/proposal.ts).
+      const { data: companyRow } = await supabase.from('companies').select('entity_type').eq('id', companyId).maybeSingle()
+      const entityType = (companyRow?.entity_type as EntityType | undefined) ?? undefined
+      const { proposals: proposed } = await proposeForTransactions(supabase, companyId, transactions as Transaction[])
+      const proposals: Record<string, unknown[]> = {}
+      for (const tx of transactions as Transaction[]) {
+        proposals[tx.id] = (proposed[tx.id] ?? [])
+          .filter((p) => p.source !== 'recent')
+          .map((p) => ({
+            id: p.template_id,
+            source: p.source,
+            label: p.name_sv,
+            why: whyTextSv(p),
+            confidence: p.confidence,
+            books_without_review: booksWithoutReview(p),
+            account: businessAccount(p),
+            vat_treatment: p.booking.kind === 'account' ? p.booking.vat_treatment : (p.vat_treatment ?? null),
+            categorize_args: agentBookingFor(p, entityType),
+          }))
+      }
+
       return {
         suggestions,
         counterparty_matches: counterpartyResult,
+        proposals,
         no_signal_transaction_ids: noSignal,
       }
     },
@@ -11596,7 +11688,18 @@ export const tools: McpTool[] = [
       const booked = txs.find((t) => t.journal_entry_id != null)
       if (booked) throw new Error(`Transaction ${booked.id} is already booked`)
       const dates = new Set(txs.map((t) => t.date))
-      if (dates.size > 1) throw new Error('All transactions must share the same date')
+      // Both refusals below are legal limits, not technical ones: a reader who
+      // takes them for the latter proposes a monthly samlingsverifikat next
+      // (feedback seq 378710 / 382660). Say the statute and the split.
+      if (dates.size > 1) {
+        throw Object.assign(
+          new Error(
+            'All transactions must share the same date: BFL 5 kap 6 § tredje stycket allows a gemensam verifikation only for likartade affärshändelser on the same day, ' +
+              'so a monthly samlingsverifikat is not a legal option. Group the tx_ids by date and call gnubok_bulk_book_transactions once per date.',
+          ),
+          { code: 'BULK_BOOK_DATE_MISMATCH' },
+        )
+      }
       // Reject zero-amount txs (round-8 / A.8.28). The direction computation
       // below treats amount === 0 as 'expense' (amount > 0 is false), which
       // would then mis-classify a real income tx in the same batch. Mirrors
@@ -11605,7 +11708,13 @@ export const tools: McpTool[] = [
       if (zeroAmountTx) throw new Error(`Transaction ${zeroAmountTx.id} has zero amount`)
       const direction = txs[0]!.amount > 0 ? 'income' : 'expense'
       if (txs.some((t) => (direction === 'income' ? t.amount < 0 : t.amount > 0))) {
-        throw new Error('All transactions must share the same direction (all income or all expense)')
+        throw Object.assign(
+          new Error(
+            'All transactions must share the same direction (all income or all expense): BFL 5 kap 6 § tredje stycket allows a gemensam verifikation only for likartade affärshändelser, ' +
+              'and an inflow and an outflow are not alike. Call gnubok_bulk_book_transactions once for the income rows and once for the expense rows.',
+          ),
+          { code: 'BULK_BOOK_DIRECTION_MISMATCH' },
+        )
       }
       // Currency homogeneity (swedish-compliance): a samlingsverifikat
       // combining e.g. SEK + EUR txs without explicit FX lines violates
@@ -12870,9 +12979,17 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_book_skattekonto_row',
+    // Search-only tool: without keywords, "skattekonto ränta" or "book
+    // skattekonto interest" matched nothing and agents reported a missing
+    // tool (feedback seq 382367). Event types and counter accounts below are
+    // the seeded skattekonto_rules (migration 20260519100000). No keyword may
+    // contain "skattekonto": the name already matches it, and a bare
+    // "skattekonto" query must keep ranking the reconciliation status bridge
+    // first (search-tools.test.ts), which a keyword hit would outscore.
+    keywords: ['ränta', 'intäktsränta', 'kostnadsränta', 'skattetillägg', 'förseningsavgift', 'avgift', 'preliminärskatt', 'interest', 'tax account', '8314', '8423', '6992'],
     title: 'Book Skattekonto Row',
     description:
-      'Book one settled skattekonto row as a posted verifikat: 1630 against the counter account matched from skattekonto rules. Refused for already-booked, ignored, upcoming or rule-less rows. Stages; booking happens at approval. dry_run previews.',
+      'Book one settled skattekonto row as a verifikat: 1630 against the rule-matched counter account (intäktsränta 8314, kostnadsränta 8423, skattetillägg/förseningsavgift 6992, prelskatt 2510, moms 2650). Refuses booked/ignored/upcoming/rule-less rows. Stages; dry_run previews.',
     catalogVisibility: 'search',
     inputSchema: {
       type: 'object',
@@ -12962,9 +13079,10 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_book_skattekonto_rows',
+    keywords: ['ränta', 'intäktsränta', 'kostnadsränta', 'skattetillägg', 'förseningsavgift', 'avgift', 'preliminärskatt', 'interest', 'tax account', '8314', '8423', '6992'],
     title: 'Book Skattekonto Rows (Batch)',
     description:
-      'Book up to 200 settled skattekonto rows as posted verifikat (1630 + rule-matched counter account per row). Unbookable rows (already booked, ignored, upcoming, no rule) are skipped and listed in the preview. Stages; booking happens at approval. dry_run previews.',
+      'Book up to 200 settled skattekonto rows as verifikat (1630 + rule-matched counter account per row: ränta 8314/8423, skattetillägg/förseningsavgift 6992, prelskatt 2510, moms 2650). Unbookable rows (booked/ignored/upcoming/no rule) are skipped and listed. Stages; dry_run previews.',
     catalogVisibility: 'search',
     inputSchema: {
       type: 'object',
@@ -13727,7 +13845,7 @@ export const tools: McpTool[] = [
       // staged operation would fail opaquely at commit time instead.
       const { data: resolvedSupplier } = await supabase
         .from('suppliers')
-        .select('id, default_expense_account')
+        .select('id, default_expense_account, default_payment_terms')
         .eq('id', supplierId)
         .eq('company_id', companyId)
         .single()
@@ -13739,6 +13857,21 @@ export const tools: McpTool[] = [
         )
       }
       const supplierDefaultExpenseAccount = resolvedSupplier.default_expense_account ?? null
+      // Drives the due-date default below when the document carries no
+      // förfallodatum. 30 is the column default on suppliers and the Swedish
+      // norm; anything that is not a non-negative integer falls back to it.
+      const rawPaymentTerms: unknown = resolvedSupplier.default_payment_terms
+      const supplierPaymentTermsDays =
+        typeof rawPaymentTerms === 'number' && Number.isInteger(rawPaymentTerms) && rawPaymentTerms >= 0
+          ? rawPaymentTerms
+          : 30
+
+      // The scan read the supplier's giro or IBAN with everything else: a
+      // supplier that lacks them takes them now, so the staged invoice can
+      // go into a betalfil once approved. A write, so never on a dry run.
+      if (!dryRun) {
+        await backfillSupplierPaymentDetails(supabase, companyId, supplierId, supplierExt as SupplierPaymentDetails | null)
+      }
 
       // Assemble core invoice fields
       const currency = (invoiceExt?.currency as string) || 'SEK'
@@ -13749,12 +13882,75 @@ export const tools: McpTool[] = [
         }
       }
       const invoiceDate = (args.invoice_date_override as string | undefined) ?? (invoiceExt?.invoiceDate as string) ?? null
-      const dueDate = (args.due_date_override as string | undefined) ?? (invoiceExt?.dueDate as string | undefined) ?? null
       const supplierInvoiceNumber = (invoiceExt?.invoiceNumber as string) || ''
       if (!invoiceDate) throw new Error('Extracted invoice has no invoice date')
       if (!supplierInvoiceNumber) throw new Error('Extracted invoice has no invoice number')
 
-      const total = Number(totalsExt?.total) || 0
+      // supplier_invoices.due_date is NOT NULL. A bank fee or a kvitto has no
+      // förfallodatum printed on it, and the old code staged null straight
+      // through: the executor's INSERT died with 23502 and the agent saw a
+      // bare "Failed to create supplier invoice", then retried the identical
+      // call (feedback 395405). Default it here, deterministically, from the
+      // supplier's payment terms, and label the source so the approver and
+      // the agent both see that the date was not read off the underlag.
+      const extractedDueDate = (invoiceExt?.dueDate as string | undefined) || null
+      let dueDate: string
+      let dueDateSource: 'override' | 'extracted' | 'defaulted'
+      if (typeof args.due_date_override === 'string') {
+        dueDate = args.due_date_override
+        dueDateSource = 'override'
+      } else if (extractedDueDate) {
+        dueDate = extractedDueDate
+        dueDateSource = 'extracted'
+      } else {
+        // The extractor promises ISO dates but the schema does not enforce
+        // it; refuse to do date arithmetic on anything else rather than
+        // stage a NaN-derived date.
+        if (!ISO_DATE_RE.test(invoiceDate)) {
+          throw Object.assign(
+            new Error(
+              `Extracted invoice has no due date and its invoice date "${invoiceDate}" is not an ISO date (YYYY-MM-DD), so no default can be derived. `
+              + 'Re-stage with invoice_date_override and/or due_date_override, or fix extracted_data via gnubok_set_inbox_extracted_data.',
+            ),
+            { code: 'SI_CREATE_INVALID_INPUT' },
+          )
+        }
+        dueDate = addDaysIso(invoiceDate, supplierPaymentTermsDays)
+        dueDateSource = 'defaulted'
+      }
+
+      // The first prod attempt on the same item staged total 0 from a null
+      // OCR total without complaint: a zero-value leverantörsskuld is never
+      // what the underlag says. Refuse before anything is staged and point
+      // at the tool that fixes the extraction. The line sum is a hint only:
+      // the agent confirms it against the underlag and sets it explicitly
+      // rather than this tool guessing the header amount.
+      const rawTotal = Number(totalsExt?.total)
+      if (!Number.isFinite(rawTotal) || rawTotal === 0) {
+        const lineNetSum = lineItemsExt.reduce(
+          (sum, li) => sum + (Number(li.line_total ?? li.lineTotal ?? li.amount) || 0),
+          0,
+        )
+        throw Object.assign(
+          new Error(
+            `Extracted invoice has no usable total (totals.total = ${JSON.stringify(totalsExt?.total ?? null)}). `
+            + (lineItemsExt.length > 0
+              ? `${lineItemsExt.length} extracted line item(s) sum to ${roundOre(lineNetSum)} excl. VAT; `
+              : 'No line items were extracted; ')
+            + 'verify the amount on the underlag, set totals via gnubok_set_inbox_extracted_data, then retry.',
+          ),
+          {
+            code: 'SI_CREATE_INVALID_INPUT',
+            remediation: {
+              description:
+                'Set totals.total (with subtotal and vat) from the underlag on the inbox item, then retry gnubok_create_supplier_invoice_from_inbox.',
+              tool: 'gnubok_set_inbox_extracted_data',
+              args: { inbox_item_id: inboxItemId },
+            },
+          },
+        )
+      }
+      const total = rawTotal
       const subtotal = Number(totalsExt?.subtotal) || 0
 
       // VAT treatment: explicit override wins, else heuristic from extracted data
@@ -13916,6 +14112,7 @@ export const tools: McpTool[] = [
         supplier_invoice_number: supplierInvoiceNumber,
         invoice_date: invoiceDate,
         due_date: dueDate,
+        due_date_source: dueDateSource,
         currency,
         exchange_rate: exchangeRate,
         exchange_rate_source: exchangeRateSource,
@@ -15403,14 +15600,14 @@ export const tools: McpTool[] = [
     name: 'gnubok_vat_declaration_status',
     keywords: ['momsdeklaration', 'moms'],
     title: 'VAT Declaration Status (Momsdeklaration)',
-    description: 'Fetch the filing status of a momsdeklaration from Skatteverket: inlämnat (submitted) and/or beslutat (decided). Sections are null when nothing is on file yet.',
+    description: 'Filing status of a momsdeklaration at Skatteverket: inlämnat (submitted) and/or beslutat (decided). Sections are null when nothing is on file yet.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         period_type: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'], description: 'Period type' },
-        year: { type: 'number', description: 'Year (e.g. 2026)' },
-        period: { type: 'number', description: '1-12 for monthly, 1-4 for quarterly, 1 for yearly' },
+        year: { type: 'number', description: 'Year; for yearly, the year the räkenskapsår ends' },
+        period: { type: 'number', description: '1-12 monthly, 1-4 quarterly, 1 yearly' },
         state: { type: 'string', enum: ['submitted', 'decided', 'both'], description: "Which view to fetch. Default 'both'." },
       },
       required: ['period_type', 'year', 'period'],
@@ -15426,7 +15623,11 @@ export const tools: McpTool[] = [
       const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       try {
         const redovisare = await resolveRedovisare(supabase, companyId)
-        const redovisningsperiod = formatRedovisningsperiod(periodType, year, period)
+        // Shared with validate/submit and the HTTP status service: helårsmoms
+        // files under the räkenskapsår's end month, not December.
+        const redovisningsperiod = await resolveRedovisningsperiod(
+          supabase, companyId, { periodType, year, period },
+        )
         let submitted: unknown = null
         let decided: unknown = null
         if (state === 'submitted' || state === 'both') {
@@ -15654,7 +15855,7 @@ export const tools: McpTool[] = [
       const { data: e, error } = await supabase
         .from('employees')
         .select(
-          'id, first_name, last_name, personnummer, employment_type, employment_start, employment_end, employment_degree, hours_per_week, workdays_per_week, salary_type, monthly_salary, hourly_rate, tax_table_number, tax_column, tax_municipality, is_sidoinkomst, f_skatt_status, f_skatt_verified_at, jamkning_percentage, jamkning_valid_from, jamkning_valid_to, clearing_number, bank_account_number, vacation_rule, vacation_days_per_year, vacation_days_saved, semestertillagg_rate, vaxa_stod_eligible, vaxa_stod_start, vaxa_stod_end, default_dimensions, is_active',
+          'id, first_name, last_name, personnummer, employment_type, employment_start, employment_end, employment_degree, hours_per_week, workdays_per_week, salary_type, monthly_salary, hourly_rate, tax_table_number, tax_column, tax_municipality, is_sidoinkomst, f_skatt_status, f_skatt_verified_at, jamkning_percentage, jamkning_valid_from, jamkning_valid_to, clearing_number, bank_account_number, vacation_rule, vacation_days_per_year, vacation_days_saved, semestertillagg_rate, vacation_pay_rate, vaxa_stod_eligible, vaxa_stod_start, vaxa_stod_end, default_dimensions, is_active',
         )
         .eq('id', employeeId)
         .eq('company_id', companyId)
@@ -15697,6 +15898,7 @@ export const tools: McpTool[] = [
           vacation_days_per_year: e.vacation_days_per_year,
           vacation_days_saved: e.vacation_days_saved,
           semestertillagg_rate: e.semestertillagg_rate,
+          vacation_pay_rate: e.vacation_pay_rate ?? null,
         },
         vaxa_stod: {
           eligible: e.vaxa_stod_eligible,
@@ -16287,7 +16489,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_create_employee',
     keywords: ['anställd', 'ny anställd', 'personal'],
     title: 'Create Employee',
-    description: 'Stage creation of a new employee: salary, tax table, bank details, vacation rule. Personnummer is encrypted at staging and never stored in plaintext. Commit via gnubok_approve_pending_operation; then attach to a salary run.',
+    description: 'Stage a new employee (salary, tax table, bank, vacation). Personnummer is encrypted at staging. Commit via gnubok_approve_pending_operation, then attach to a salary run.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -16313,6 +16515,7 @@ export const tools: McpTool[] = [
         bank_account_number: { type: 'string' },
         vacation_rule: { type: 'string', enum: ['procentregeln', 'sammaloneregeln', 'semesterersattning', 'none'] },
         vacation_days_per_year: { type: 'number' },
+        vacation_pay_rate: { type: ['number', 'null'], description: 'CBA semesterlön fraction 0.12-0.30 (0.135 = 13.5 %); null = statutory' },
         email: { type: 'string' },
         phone: { type: 'string' },
         vaxa_stod_eligible: { type: 'boolean' },
@@ -16324,7 +16527,7 @@ export const tools: McpTool[] = [
         default_dimensions: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Dims bag {sie_dim_no: kod eller namn} tagging this employee\'s salary cost lines on every run. Never auto-created.',
+          description: 'Dims bag {sie_dim_no: kod eller namn} on this employee\'s salary cost lines every run. Never auto-created.',
         },
       },
       required: ['first_name', 'last_name', 'personnummer', 'employment_start'],
@@ -16400,7 +16603,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_update_employee',
     keywords: ['anställd', 'ändra anställd', 'personal'],
     title: 'Update Employee',
-    description: 'Stage an update to an employee\'s payroll config: salary, tax, bank details, vacation rule, jamkning, vaxa-stod. Personnummer cannot be changed. Call gnubok_get_employee first to see current values; commit via gnubok_approve_pending_operation.',
+    description: 'Stage an employee payroll update (salary, tax, bank, vacation, jamkning, vaxa-stod); personnummer is immutable. gnubok_get_employee first; commit via gnubok_approve_pending_operation.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -16426,9 +16629,10 @@ export const tools: McpTool[] = [
         bank_account_number: { type: 'string' },
         vacation_rule: { type: 'string', enum: ['procentregeln', 'sammaloneregeln', 'semesterersattning', 'none'] },
         vacation_days_per_year: { type: 'number' },
+        vacation_pay_rate: { type: ['number', 'null'] },
         email: { type: 'string' },
         phone: { type: 'string' },
-        is_active: { type: 'boolean', description: 'false soft-deactivates (BFL retention keeps the row)' },
+        is_active: { type: 'boolean', description: 'false soft-deactivates; row kept (BFL)' },
         vaxa_stod_eligible: { type: 'boolean' },
         vaxa_stod_start: { type: 'string' },
         vaxa_stod_end: { type: 'string' },
@@ -16438,7 +16642,7 @@ export const tools: McpTool[] = [
         default_dimensions: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Dims bag {sie_dim_no: kod eller namn} tagging salary cost lines. Replaces the whole bag; {} clears all tags. Omit to keep.',
+          description: 'Dims bag {sie_dim_no: kod eller namn} on salary cost lines; replaces the bag, {} clears, omit to keep',
         },
       },
       required: ['employee_id'],
@@ -16747,7 +16951,7 @@ export const tools: McpTool[] = [
       const { dayValueSek } = await import('@/lib/salary/semesterberedning')
       const { data: employee, error: empErr } = await supabase
         .from('employees')
-        .select('vacation_rule, vacation_days_per_year, salary_type, monthly_salary, hourly_rate, hours_per_week, workdays_per_week')
+        .select('vacation_rule, vacation_days_per_year, vacation_pay_rate, semestertillagg_rate, salary_type, monthly_salary, hourly_rate, hours_per_week, workdays_per_week')
         .eq('id', employeeId)
         .eq('company_id', companyId)
         .maybeSingle()
@@ -16972,7 +17176,7 @@ export const tools: McpTool[] = [
         },
         actor,
         {
-          description: 'After locking, run year-end closing before the period can be closed via gnubok_close_period. Verify balances first with gnubok_get_trial_balance.',
+          description: 'A lock only freezes the period; it is not a step before bokslut. If the intent is year-end, reject this operation and call gnubok_run_year_end on the unlocked period: it posts the closing entry, then locks and closes the period and seeds the next period\'s opening balances itself, and it refuses a pre-locked period. Otherwise verify balances with gnubok_get_trial_balance.',
           tool: 'gnubok_get_trial_balance',
           args: { fiscal_period_id: fiscalPeriodId },
         }
@@ -18132,7 +18336,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_run_year_end',
     keywords: ['bokslut', 'årsbokslut', 'årsavslut', 'stäng året'],
     title: 'Run Year-End Closing (Bokslut)',
-    description: 'Stage year-end closing: zero result accounts (class 3-8) into 2099, lock period, create next period, seed opening balances. High-risk, always staged.',
+    description: 'Stage bokslut on an OPEN period (never lock first): zeroes class 3-8 into 2099, then locks, closes and seeds next period IB. High-risk, always staged.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -18154,6 +18358,20 @@ export const tools: McpTool[] = [
 
       if (!period) throw new Error('Fiscal period not found')
       if (period.is_closed) throw new Error('Period is already closed')
+      // The closing entry posts INTO the period and the service locks it
+      // itself (executeYearEndClosing step 7), so a lock taken beforehand
+      // would only fail at approval as the trigger's "Cannot write to
+      // locked/closed fiscal period". Refuse at stage time with the fix
+      // (feedback seq 392722: the skill used to prescribe lock first).
+      if (period.locked_at) {
+        throw Object.assign(
+          new Error(
+            'Period is already locked: gnubok_run_year_end posts the closing entry into the period and then locks and closes it itself, so it must run on an unlocked period. ' +
+              'Unlock with gnubok_unlock_period and call gnubok_run_year_end again; do not lock first.',
+          ),
+          { code: 'PERIOD_LOCK_ALREADY_LOCKED' },
+        )
+      }
 
       return stagePendingOperation(supabase, companyId, userId, 'run_year_end',
         `Bokslut: ${period.name}`,
@@ -18162,13 +18380,12 @@ export const tools: McpTool[] = [
           period_name: period.name,
           period_start: period.period_start,
           period_end: period.period_end,
-          will: 'zero result accounts into 2099, lock period, create next period, generate opening balances',
+          will: 'zero result accounts into 2099, lock period, close period, create next period, generate opening balances',
         },
         actor,
         {
-          description: 'After year-end, the period is locked and ready for closing via gnubok_close_period.',
-          tool: 'gnubok_close_period',
-          args: { fiscal_period_id: fiscalPeriodId },
+          description: 'After approval the period is locked AND closed and the next period carries its opening balances: gnubok_lock_period, gnubok_close_period and gnubok_set_opening_balances are not follow-up steps (they refuse with already locked / already closed). Next: confirm the state with gnubok_list_fiscal_periods, then review the next period\'s opening balances with gnubok_get_balance_sheet.',
+          tool: 'gnubok_list_fiscal_periods',
         }
       )
     },
@@ -19497,6 +19714,21 @@ export const tools: McpTool[] = [
           : allWarnings.length > 0 || orgMatch.match === false
             ? 'ok_with_warnings'
             : 'ok'
+      // Structured twins of the warning strings, with the tier the drop
+      // widget renders (lib/import/notices.ts): a wrong organisation number
+      // is a blocking action, mis-encoded text an action, the rest notices.
+      // Each carries its Swedish text so the widget needs no i18n.
+      const notices: Array<{ code: string; severity: 'info' | 'notice' | 'action'; text: string; blocking?: boolean }> = []
+      if (orgMatch.match === false) {
+        notices.push({
+          code: 'sie_org_mismatch',
+          severity: 'action',
+          blocking: true,
+          text: `Filen tillhör organisationsnummer ${orgMatch.file_org_number ?? '?'}, inte det här företaget (${orgMatch.company_org_number ?? '?'}).`,
+        })
+      }
+      for (const w of encodingWarnings) notices.push({ code: 'sie_encoding_artifacts', severity: 'action', text: w })
+      for (const w of validation.warnings) notices.push({ code: 'legacy', severity: 'notice', text: w })
 
       return {
         verdict,
@@ -19512,7 +19744,7 @@ export const tools: McpTool[] = [
           transaction_line_count: parsed.stats.totalTransactionLines,
           opening_balance_total: preview.openingBalanceTotal ?? null,
         },
-        validation: { valid: validation.valid, errors: validation.errors, warnings: allWarnings },
+        validation: { valid: validation.valid, errors: validation.errors, warnings: allWarnings, notices },
         org_number_match: orgMatch,
         duplicate,
         mappings,
@@ -22633,7 +22865,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
             '• VAT: gnubok_get_vat_report(period_type, year, period). Ruta49 = VAT to pay (positive) or refund (negative). Pass render_ui=true to open the momsdeklaration review widget (claude.ai / Desktop). gnubok_vat_close_check reports filing-readiness blockers.',
             '• Reporting: gnubok_get_trial_balance / _income_statement / _balance_sheet / _kpi_report / _ar_ledger / _supplier_ledger: all default to the most recent fiscal period. For account roll-ups use gnubok_get_general_ledger; for ad-hoc line queries (free-text, amount/date/source filters) use gnubok_query_journal.',
             '• Interactive review UIs (claude.ai / Claude Desktop only): gnubok_get_vat_report(render_ui=true) renders the VAT widget, gnubok_receipt_matcher opens the receipt↔transaction matcher, and gnubok_list_pending_operations(render_ui=true) opens the approval queue where the user approves/rejects with a click. All also return structured data; other clients ignore the UI and use the data.',
-            '• Year-end: run gnubok_year_end_readiness first. For kontantmetoden, resolve kontantmetod_cutoff_required with the searchable gnubok_post_kontantmetod_cutoff tool. Then gnubok_run_year_end → gnubok_set_opening_balances → gnubok_close_period. Each write stages for human approval; closing is irreversible per BFL.',
+            '• Year-end: run gnubok_year_end_readiness first. For kontantmetoden, resolve kontantmetod_cutoff_required with the searchable gnubok_post_kontantmetod_cutoff tool. Then gnubok_run_year_end on the OPEN period (never gnubok_lock_period first): it posts the closing entry, locks and closes the period and seeds the next period\'s opening balances in one step; gnubok_set_opening_balances, gnubok_close_period and gnubok_lock_period are manual-flow tools, not follow-ups. Verify with gnubok_list_fiscal_periods. Each write stages for human approval; closing is irreversible per BFL.',
             '• Payroll: gnubok_create_salary_run → gnubok_calculate_salary_run → gnubok_book_salary_run → gnubok_generate_agi.',
             '• Reviewing & approving staged operations: gnubok_list_pending_operations shows the queue. When the user explicitly authorises a specific operation_id in chat, call gnubok_approve_pending_operation to commit. Use gnubok_reject_pending_operation to discard.',
             '',

@@ -6,6 +6,7 @@
  */
 
 import type { ChartPlan } from './chart-plan'
+import type { ImportNotice } from './notices'
 
 // SIE file types
 export type SIEType = 1 | 2 | 3 | 4
@@ -299,6 +300,16 @@ export interface ImportResultDetails {
   }
 
   /**
+   * Why the file's #IB was not booked as its own IB voucher. `prior_activity`:
+   * the company already had posted entries, so this period's opening balance
+   * derives from the prior period's closing balance instead (a second IB
+   * voucher would double-count one year of activity). Informational, not a
+   * warning: it is the correct outcome for every year after the first in a
+   * multi-year migration.
+   */
+  openingBalanceSkipped?: 'prior_activity'
+
+  /**
    * Non-latest fiscal years whose P&L doesn't net to zero — their result
    * was never transferred to equity (omföring av årets resultat saknas).
    * Each corrupts every later derived opening balance by exactly pl_net,
@@ -339,9 +350,21 @@ export interface ImportResult {
   // existed lack it.
   accountsCreated?: number
 
+  // Chart-of-accounts names updated from the file's #KONTO. Informational
+  // (the source system's names replace BAS defaults), never a warning; the
+  // per-account list lives in the import documentation (BFNAR 2013:2
+  // behandlingshistorik). Optional for the same reason as accountsCreated.
+  accountsRenamed?: number
+
   // Issues
   errors: string[]
   warnings: string[]
+  /**
+   * Structured twins of `warnings` with a severity tier (info | notice |
+   * action) and an i18n code; the UI renders these and falls back to the
+   * strings only when absent. See lib/import/notices.ts.
+   */
+  notices?: ImportNotice[]
 
   // Structured details for UI (populated alongside warnings for backwards compat)
   details?: ImportResultDetails
