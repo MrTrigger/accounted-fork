@@ -13,7 +13,8 @@ export const dynamic = 'force-dynamic'
  * Skatteverket, inside the journey chrome. The layout renders its bare
  * shell for this path. The station and the OAuth landing parameters arrive
  * in the query string: the first-session gate rewrites /settings/banking
- * and /import onto this page with their query intact.
+ * and /import onto this page with their query intact, and the Skatteverket
+ * callback returns here through its return_to.
  */
 export default async function BooksPage({
   searchParams,
@@ -32,10 +33,12 @@ export default async function BooksPage({
 
   return (
     <BooksJourney
-      userId={user.id}
       initialStation={first('station') ?? null}
       initialProvider={first('provider') ?? null}
       landedFromProvider={Boolean(first('migration') || first('handoff') || first('consentId'))}
+      selectAccounts={first('select_accounts') ?? null}
+      skvConnected={first('skv_connected') === 'true'}
+      landedError={first('bank_error') ?? first('skv_error') ?? null}
       hasMigration={ENABLED_EXTENSION_IDS.has('arcim-migration')}
       hasBanking={ENABLED_EXTENSION_IDS.has('enable-banking')}
       hasSkatteverket={ENABLED_EXTENSION_IDS.has('skatteverket')}

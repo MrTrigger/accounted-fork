@@ -32,6 +32,8 @@ export interface BooksFindings {
     vatBalance: number | null
     /** Bank rows nobody has categorized yet. */
     uncategorizedTransactions: number
+    /** ISO date of the latest posted verifikat: where the bank history should take over. */
+    lastEntryDate: string | null
   }
   bank: {
     connected: boolean
@@ -101,6 +103,7 @@ export async function loadBooksFindings(
     { count: txCount },
     { data: skvRows },
     { data: deadlineRows },
+    { data: lastEntryRows },
   ] = await Promise.all([
     supabase
       .from('journal_entries')
@@ -148,6 +151,13 @@ export async function loadBooksFindings(
       .gte('due_date', today)
       .order('due_date', { ascending: true })
       .limit(3),
+    supabase
+      .from('journal_entries')
+      .select('entry_date')
+      .eq('company_id', companyId)
+      .in('status', ['posted', 'reversed'])
+      .order('entry_date', { ascending: false })
+      .limit(1),
   ])
 
   const periods = ((periodRows ?? []) as {
@@ -235,6 +245,7 @@ export async function loadBooksFindings(
       overdueInvoices: overdueCount ?? 0,
       vatBalance,
       uncategorizedTransactions: uncategorizedCount ?? 0,
+      lastEntryDate: ((lastEntryRows ?? []) as { entry_date: string }[])[0]?.entry_date ?? null,
     },
     bank: {
       connected: !!bank,

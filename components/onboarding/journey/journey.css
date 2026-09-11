@@ -85,6 +85,8 @@
   padding: 10px 0;
 }
 .jny-qstep { max-height: 100%; overflow-y: auto; overscroll-behavior: contain; animation: jnyQIn 380ms var(--ease-out); }
+/* A step slot that is laid out before it shows: same box, invisible, so its arrival shifts nothing. */
+.jny-reveal-wait { visibility: hidden; }
 @keyframes jnyQIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .jny-qtitle {
   font-family: var(--font-display);

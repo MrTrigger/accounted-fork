@@ -132,7 +132,6 @@ export default function OnboardingJourney({
   const [narration, setNarration] = useState<string | null>(null)
   const [monogram, setMonogram] = useState<string | null>(null)
   const [dupName, setDupName] = useState<string | null>(null)
-  const [dupElsewhere, setDupElsewhere] = useState(false)
   // The SCB picker: rows for the current text, whether SCB cut the list,
   // and the keyboard-highlighted row (-1: none, Enter runs the Enter path).
   const [suggestions, setSuggestions] = useState<CompanySuggestion[]>([])
@@ -177,13 +176,11 @@ export default function OnboardingJourney({
 
   const checkDuplicate = useCallback((orgNumber: string) => {
     setDupName(null)
-    setDupElsewhere(false)
     fetch(`/api/company/check-org-number?org_number=${encodeURIComponent(orgNumber)}`)
       .then(async (res) => {
         if (!res.ok) return
         const { data } = await res.json()
         setDupName(data?.companies?.[0]?.name ?? null)
-        setDupElsewhere(Boolean(data?.exists_elsewhere))
       })
       .catch(() => {})
   }, [])
@@ -214,7 +211,6 @@ export default function OnboardingJourney({
       // A previous orgnr's "you already have X" note must not sit above the
       // chip row; the pick re-checks for the number it resolves to.
       setDupName(null)
-      setDupElsewhere(false)
       lastConfirmed.current = trimmed
       dispatch({ type: 'SEARCH_SUBMITTED', query: trimmed })
       fetchCompanySearch(trimmed, { ticEnabled }).then((outcome) => {
@@ -292,7 +288,6 @@ export default function OnboardingJourney({
       lastConfirmed.current = suggestion.name.trim()
       setOrgInput(suggestion.name)
       setDupName(null)
-      setDupElsewhere(false)
       dispatch({ type: 'SUGGESTION_PICKED', suggestion })
       fetchCompanyLookup(suggestion.orgNumber, { ticEnabled }).then((outcome) => {
         dispatch({ type: 'LOOKUP_RESULT', outcome })
@@ -966,16 +961,6 @@ export default function OnboardingJourney({
                     {t('journey_dup_note', { name: dupName, appName })}
                   </span>
                 ) : null}
-                {!dupName && dupElsewhere && station === 0 ? (
-                  // Cross-account duplicate (#1231): the same org number
-                  // already exists under another Accounted account. Shown
-                  // only when there is no own-account match, which is the
-                  // more specific hint.
-                  <span className="jny-f is-on is-warn" style={{ transitionDelay: `${lookupFacts.length * 150}ms` }}>
-                    {lookupFacts.length > 0 ? ' · ' : ''}
-                    {t('journey_dup_elsewhere_note', { appName })}
-                  </span>
-                ) : null}
               </div>
             </>
           )}
@@ -1320,8 +1305,9 @@ function Reveal({ delay, children }: { delay: number; children: React.ReactNode 
     const id = window.setTimeout(() => setOn(true), reduced ? 0 : delay)
     return () => window.clearTimeout(id)
   }, [delay])
-  if (!on) return null
-  return <div className="jny-qstep">{children}</div>
+  // The slot is laid out from the start (hidden, not absent) so the button's
+  // arrival never shifts the card above it; only the fade plays.
+  return <div className={on ? 'jny-qstep' : 'jny-reveal-wait'}>{children}</div>
 }
 
 function CardRow({ label, value, delay }: { label: string; value: string; delay: number }) {
