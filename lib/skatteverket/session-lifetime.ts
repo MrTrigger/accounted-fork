@@ -35,6 +35,13 @@ export const SKV_REFRESH_WINDOW_AFTER_EXPIRY_MS =
 /** Maximum refreshes Skatteverket allows per BankID consent. */
 export const SKV_MAX_REFRESH_COUNT = 10
 
+/**
+ * How early the API client refreshes rather than hand out the stored access
+ * token. Inside this margin the token counts as "needs a refresh to be used",
+ * which is what makes the refresh budget relevant.
+ */
+export const SKV_ACCESS_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
+
 export interface SkvSessionLike {
   /** Access-token expiry as epoch ms, ISO string, or Date. */
   expiresAt: number | string | Date | null | undefined
@@ -84,10 +91,14 @@ export function isSkvSessionBeyondRecovery(
   session: Pick<SkvSessionLike, 'expiresAt' | 'refreshCount'>,
   now: number | Date = Date.now(),
 ): boolean {
-  if ((session.refreshCount ?? 0) >= SKV_MAX_REFRESH_COUNT) return true
   const expiresAt = toEpochMs(session.expiresAt)
   if (expiresAt === null) return false
   const nowMs = now instanceof Date ? now.getTime() : now
+  // An access token the client would still hand out needs no refresh at all,
+  // so the refresh budget cannot condemn it: a spent budget only bites once
+  // the token is old enough that the client reaches for the refresh.
+  if (nowMs + SKV_ACCESS_TOKEN_REFRESH_MARGIN_MS < expiresAt) return false
+  if ((session.refreshCount ?? 0) >= SKV_MAX_REFRESH_COUNT) return true
   return nowMs >= expiresAt + SKV_REFRESH_WINDOW_AFTER_EXPIRY_MS
 }
 

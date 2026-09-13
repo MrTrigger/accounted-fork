@@ -359,9 +359,11 @@ describe('detectSkvDisconnected', () => {
   })
 
   it('does not invent staleness when the last-sync lookup fails', async () => {
-    enqueueToken({ expires_at: '2026-08-19T10:00:00Z' })
+    // The session ended 30 days ago, so the fallback WOULD read as stale. A
+    // failed lookup is not evidence that nothing synced since, so the
+    // detector soft-fails to no notice instead of warning on a guess.
+    enqueueToken({ expires_at: daysAgo(30) })
     enqueue({ error: { message: 'boom' } })
-    // Falls back to the session end (two hours ago), which is not stale.
     await expect(detectSkvDisconnected(supabase, USER, COMPANY, NOW)).resolves.toBeNull()
   })
 })

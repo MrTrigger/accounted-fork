@@ -7,6 +7,7 @@ import {
 } from '@/lib/connect/instance/upstreams'
 import {
   isSkvSessionBeyondRecovery,
+  SKV_ACCESS_TOKEN_REFRESH_MARGIN_MS,
   SKV_MAX_REFRESH_COUNT,
 } from '@/lib/skatteverket/session-lifetime'
 import { baseUrlToService, parseConnectorCode, skatteverketConnectorMode } from './connector-mode'
@@ -63,7 +64,7 @@ const DEFAULT_API_BASE_URL = 'https://api.test.skatteverket.se/momsdeklaration/v
 // The cap Skatteverket enforces per BankID consent. Shared with every
 // surface that reasons about session health (lib/skatteverket/session-lifetime).
 const MAX_REFRESH_COUNT = SKV_MAX_REFRESH_COUNT
-const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000 // Refresh 5 min before expiry
+const TOKEN_REFRESH_MARGIN_MS = SKV_ACCESS_TOKEN_REFRESH_MARGIN_MS // Refresh 5 min before expiry
 
 // Simple in-memory token bucket for 4 req/sec rate limit
 let lastRequestTime = 0

@@ -264,9 +264,14 @@ export async function detectSkvDisconnected(
 
 /**
  * The last successful skattekonto sync for a company, or null when it never
- * synced (or the lookup failed: an unknown timestamp must not manufacture a
- * staleness complaint). Read straight from extension_data, like
- * detectSkvUnexplained: core must not import from @/extensions/.
+ * synced. Read straight from extension_data, like detectSkvUnexplained: core
+ * must not import from @/extensions/.
+ *
+ * A failed lookup THROWS rather than answering null: null means "no sync has
+ * ever happened" and sends the caller to the much older session expiry, which
+ * would turn a transient query failure into a false stale-data warning. The
+ * detector's own catch turns the throw into no notice at all, which is the
+ * honest answer while we cannot see the data.
  */
 async function readSkattekontoLastSyncedAt(
   supabase: SupabaseClient,
@@ -279,7 +284,8 @@ async function readSkattekontoLastSyncedAt(
     .eq('extension_id', SKATTEKONTO_EXTENSION_ID)
     .eq('key', SKATTEKONTO_LAST_SYNCED_AT_KEY)
     .maybeSingle()
-  if (error || !data) return null
+  if (error) throw new Error(error.message)
+  if (!data) return null
   const value = data.value
   return typeof value === 'string' ? value : null
 }

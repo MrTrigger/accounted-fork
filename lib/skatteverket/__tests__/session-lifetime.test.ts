@@ -97,9 +97,26 @@ describe('isSkvSessionBeyondRecovery', () => {
     ).toBe(true)
   })
 
-  it('is true at the refresh cap even while the access token lives', () => {
+  it('is false at the refresh cap while the access token still works on its own', () => {
+    // A spent refresh budget cannot condemn a token the client would hand out
+    // without refreshing: that session still syncs for its last minutes.
     expect(
       isSkvSessionBeyondRecovery({ expiresAt: EXPIRES, refreshCount: SKV_MAX_REFRESH_COUNT }, T0),
+    ).toBe(false)
+  })
+
+  it('is true at the refresh cap once the access token needs a refresh', () => {
+    expect(
+      isSkvSessionBeyondRecovery(
+        { expiresAt: EXPIRES, refreshCount: SKV_MAX_REFRESH_COUNT },
+        EXPIRES - 60 * 1000,
+      ),
+    ).toBe(true)
+    expect(
+      isSkvSessionBeyondRecovery(
+        { expiresAt: EXPIRES, refreshCount: SKV_MAX_REFRESH_COUNT },
+        EXPIRES + 60 * 1000,
+      ),
     ).toBe(true)
   })
 
