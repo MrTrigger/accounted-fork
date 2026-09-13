@@ -219,7 +219,7 @@ export function ReconciliationWorkspace({ initialPeriods, initialCompanyId }: Re
           actionLabel={t('empty_connect_bank')}
           actionHref="/settings/banking"
           secondaryActionLabel={t('empty_connect_skv')}
-          secondaryActionHref="/settings/skatteverket"
+          secondaryActionHref="/settings/tax"
         />
       </div>
     )

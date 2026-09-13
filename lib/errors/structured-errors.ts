@@ -2178,30 +2178,7 @@ const YEAR_END: Record<string, StructuredErrorEntry> = {
   },
 }
 
-const OPENING_BAL: Record<string, StructuredErrorEntry> = {
-  OPENING_BAL_PERIOD_NOT_FOUND: {
-    httpStatus: 404,
-    message_sv: 'Räkenskapsperioden kunde inte hittas.',
-    message_en: 'Fiscal period not found.',
-  },
-}
-
 const FX: Record<string, StructuredErrorEntry> = {
-  FX_PERIOD_NOT_FOUND: {
-    httpStatus: 404,
-    message_sv: 'Räkenskapsperioden kunde inte hittas.',
-    message_en: 'Fiscal period not found.',
-  },
-  FX_PERIOD_CLOSED: {
-    httpStatus: 400,
-    message_sv: 'Perioden är redan stängd. Valutaomvärdering kan inte köras.',
-    message_en: 'Period is already closed; currency revaluation cannot be run.',
-  },
-  FX_FAILED: {
-    httpStatus: 400,
-    message_sv: 'Valutaomvärderingen misslyckades.',
-    message_en: 'Currency revaluation failed.',
-  },
   FX_CLOSING_RATE_UNAVAILABLE: {
     httpStatus: 502,
     message_sv:
@@ -4890,7 +4867,6 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...SUPPLIER_INVOICE,
   ...PERIOD,
   ...YEAR_END,
-  ...OPENING_BAL,
   ...FX,
   ...REPORT,
   ...VAT_REPORT,
