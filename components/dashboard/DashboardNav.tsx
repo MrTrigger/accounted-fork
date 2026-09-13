@@ -216,8 +216,8 @@ interface NavItem {
   betaBadge?: boolean
 }
 
-// The phone menu's destinations in concept ordering (ui_migration_plan.md
-// PR 2); the desktop sidebar applies the same gates to nav-v2.ts.
+// The phone menu's destinations in concept ordering; the desktop sidebar
+// applies the same gates to nav-v2.ts.
 const navItems: NavItem[] = [
   // Top section: flat list, always visible, no header. (Flöden joins here
   // when the flow engine exists.)
