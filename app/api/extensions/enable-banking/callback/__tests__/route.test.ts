@@ -850,6 +850,37 @@ describe('GET /api/extensions/enable-banking/callback', () => {
     expect(mockAllocate).toHaveBeenCalledTimes(1)
   })
 
+  it('leaves a standalone no-IBAN credit card (SEB) enabled and mirrored: CARD typing alone is no signal', async () => {
+    const capturedUpdates = mockConnectionFlow({
+      id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'SEB', status: 'pending',
+    })
+    mockCreateSession.mockResolvedValue({
+      session_id: 'sess-1',
+      accounts: [
+        { uid: 'acc-main', account_id: { iban: 'SE1234' }, name: 'Testbrand AB', currency: 'SEK' },
+        { uid: 'acc-credit', name: 'SEB Credit', cash_account_type: 'CARD', currency: 'SEK' },
+      ],
+      access: { valid_until: '2027-12-31T00:00:00Z' },
+      aspsp: { name: 'SEB', country: 'SE' },
+    })
+
+    const response = await GET(makeRequest({ code: 'auth-code', state: 'valid-state' }))
+    await response.text()
+
+    const accountsData = capturedUpdates[0].accounts_data as Array<{
+      uid: string
+      enabled: boolean
+      card_resource?: boolean
+      cash_account_type?: string
+    }>
+    const credit = accountsData.find(a => a.uid === 'acc-credit')
+    expect(credit?.enabled).toBe(true)
+    expect(credit?.card_resource).toBeUndefined()
+    // The type is still recorded for the log and later rules.
+    expect(credit?.cash_account_type).toBe('CARD')
+    expect(mockUpsertFromPsd2).toHaveBeenCalledTimes(2)
+  })
+
   it('recognizes the card view from its product code when the bank types it CACC', async () => {
     const capturedUpdates = mockConnectionFlow({
       id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'Svea Bank', status: 'pending',

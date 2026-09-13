@@ -493,7 +493,6 @@ async function finalizeConnection(
   const accountsMetadata: StoredAccount[] = accounts.map((account: AccountInfo) => {
     const normalizedIban = normalizeIban(account.account_id?.iban)
     const cardResource = isCardResource({
-      cash_account_type: account.cash_account_type,
       product: account.product,
       name: account.name,
       iban: account.account_id?.iban,

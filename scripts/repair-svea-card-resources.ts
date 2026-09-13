@@ -15,9 +15,16 @@
  *   2. cash_accounts: the mirrored row (if any) gets enabled=false
  *   3. transactions: the card view's UNBOOKED, unlinked rows are deleted
  *
- * Rows with a journal entry, a document, a receipt or an invoice link are
- * never touched: they are listed for a human decision (a booked mirror row
- * is a duplicate posting and needs storno, BFL 5 kap 5 §).
+ * Booked or linked rows are never touched: they are listed for a human
+ * decision (a booked mirror row is a duplicate posting and needs storno,
+ * BFL 5 kap 5 §). "Booked" is the full is_transaction_booked predicate
+ * (lib/transactions/is-booked.ts): journal_entry_id, a transaction_voucher_links
+ * row (bulk-book samlingsverifikat), or an invoice_payments /
+ * supplier_invoice_payments row (batch allocation), all three of which can
+ * anchor a row to a posted verifikat while journal_entry_id stays NULL.
+ * Document, receipt and invoice links are kept as well. The anchors are
+ * re-read right before each delete so a row booked between the dry run and
+ * the write is skipped, not deleted.
  *
  * Dry run by default, for every company or one:
  *
@@ -46,6 +53,7 @@ import { createInterface } from 'node:readline/promises'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { isCardResource } from '@/extensions/general/enable-banking/lib/card-resource'
 import type { StoredAccount } from '@/extensions/general/enable-banking/types'
+import { isTransactionBooked } from '@/lib/transactions/is-booked'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
@@ -110,10 +118,42 @@ interface CardView {
   scope: string
   deletable: FeedRow[]
   kept: FeedRow[]
+  keepReasons: Map<string, string>
 }
 
-function keepReason(row: FeedRow): string | null {
+interface Anchors {
+  payments: Array<{ transaction_id: string | null }>
+  voucherLinks: Array<{ transaction_id: string }>
+}
+
+/**
+ * The two anchors is_transaction_booked() consults besides journal_entry_id,
+ * for a set of transaction ids. Read in chunks: PostgREST caps `in` lists.
+ */
+async function fetchAnchors(ids: string[]): Promise<Anchors> {
+  const payments: Anchors['payments'] = []
+  const voucherLinks: Anchors['voucherLinks'] = []
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200)
+    const [inv, sup, links] = await Promise.all([
+      supabase.from('invoice_payments').select('transaction_id').in('transaction_id', chunk),
+      supabase.from('supplier_invoice_payments').select('transaction_id').in('transaction_id', chunk),
+      supabase.from('transaction_voucher_links').select('transaction_id').in('transaction_id', chunk),
+    ])
+    for (const r of [inv, sup, links]) {
+      if (r.error) throw new Error(`anchor lookup failed: ${r.error.message}`)
+    }
+    payments.push(...((inv.data ?? []) as Anchors['payments']))
+    payments.push(...((sup.data ?? []) as Anchors['payments']))
+    voucherLinks.push(...((links.data ?? []) as Anchors['voucherLinks']))
+  }
+  return { payments, voucherLinks }
+}
+
+function keepReason(row: FeedRow, anchors: Anchors): string | null {
   if (row.journal_entry_id) return 'booked'
+  if (anchors.voucherLinks.some((l) => l.transaction_id === row.id)) return 'booked (voucher link)'
+  if (anchors.payments.some((p) => p.transaction_id === row.id)) return 'booked (payment)'
   if (row.document_id) return 'document'
   if (row.receipt_id) return 'receipt'
   if (row.invoice_id) return 'invoice'
@@ -161,7 +201,6 @@ async function collect(): Promise<CardView[]> {
   for (const conn of await fetchConnections()) {
     for (const account of conn.accounts_data ?? []) {
       const cardResource = isCardResource({
-        cash_account_type: account.cash_account_type,
         product: account.product,
         name: account.name,
         iban: account.iban,
@@ -171,9 +210,19 @@ async function collect(): Promise<CardView[]> {
       // card view never carries an IBAN).
       const scope = account.dedup_scope || account.uid
       const rows = await fetchFeedRows(conn.company_id, conn.id, scope)
+      const anchors = await fetchAnchors(rows.map((r) => r.id))
       const deletable: FeedRow[] = []
       const kept: FeedRow[] = []
-      for (const row of rows) (keepReason(row) ? kept : deletable).push(row)
+      const keepReasons = new Map<string, string>()
+      for (const row of rows) {
+        const reason = keepReason(row, anchors)
+        if (reason) {
+          kept.push(row)
+          keepReasons.set(row.id, reason)
+        } else {
+          deletable.push(row)
+        }
+      }
       views.push({
         connectionId: conn.id,
         connectionStatus: conn.status,
@@ -185,6 +234,7 @@ async function collect(): Promise<CardView[]> {
         scope,
         deletable,
         kept,
+        keepReasons,
       })
     }
   }
@@ -257,7 +307,18 @@ async function deleteRows(view: CardView): Promise<number> {
   let deleted = 0
   const ids = view.deletable.map((r) => r.id)
   for (let i = 0; i < ids.length; i += 200) {
-    const chunk = ids.slice(i, i + 200)
+    const candidates = ids.slice(i, i + 200)
+    // Re-read the anchors right before the write: a row bulk-booked or
+    // allocated between the dry run and now must be skipped, and the DELETE
+    // below can only express the journal_entry_id half of the predicate.
+    const anchors = await fetchAnchors(candidates)
+    const chunk = candidates.filter((id) =>
+      !isTransactionBooked({ id, journal_entry_id: null }, anchors.payments, anchors.voucherLinks),
+    )
+    if (chunk.length < candidates.length) {
+      console.log(`  ${view.companyId}  ${candidates.length - chunk.length} rows booked since the dry run: skipped`)
+    }
+    if (chunk.length === 0) continue
     const { data, error } = await supabase
       .from('transactions')
       .delete()
@@ -296,7 +357,7 @@ async function main() {
         `${v.name}  ${names.get(v.companyId) ?? ''}`,
     )
     if (VERBOSE) for (const r of v.deletable) console.log(`      del  ${fmtRow(r)}`)
-    for (const r of v.kept) console.log(`      KEEP ${keepReason(r)}  ${fmtRow(r)}`)
+    for (const r of v.kept) console.log(`      KEEP ${v.keepReasons.get(r.id)}  ${fmtRow(r)}`)
   }
   console.log(`\n${totalDeletable} rows to delete, ${totalKept} rows kept for a human decision.`)
 

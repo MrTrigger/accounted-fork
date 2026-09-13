@@ -5,22 +5,20 @@
  * at all, so syncing it doubles every purchase as an income-looking
  * "Okänd transaktion" row.
  *
- * Two signals, either one suffices, and both require that the resource has
- * no IBAN of its own. A card account WITH an IBAN (a credit card at another
- * bank) carries its own transactions and stays an ordinary account.
+ * One signal, deliberately narrow: no IBAN AND a product-code style name or
+ * product carrying a `Debit` token bound by underscores (`BOKIO_Debit_Business`,
+ * `SVEA_MQ_Debit_B2B`), the shapes observed in production. Underscore-bound on
+ * purpose: a holder named "Debit AB" must not match.
  *
- *   1. `cash_account_type === 'CARD'` (Enable Banking CashAccountType:
- *      "Account used for card payments only").
- *   2. A product-code style name or product carrying a `Debit` token bound by
- *      underscores: `BOKIO_Debit_Business`, `SVEA_MQ_Debit_B2B`. This is the
- *      shape observed in production before the type was captured, and covers
- *      an ASPSP that types the resource CACC. Underscore-bound on purpose: a
- *      holder named "Debit AB" must not match.
+ * `cash_account_type === 'CARD'` is captured and logged but is NOT a signal:
+ * SEB lists standalone credit cards ("SEB Credit", "Eurocard Gold") with no
+ * IBAN, and those are real feeds with their own purchases, not mirrors.
+ * Whether Svea even types its mirror CARD is unknown until the callback log
+ * says so; a type-based rule would ship blind against every other bank.
  */
 export const CARD_PRODUCT_CODE = /(^|_)debit(_|$)/i
 
 export interface CardResourceInput {
-  cash_account_type?: string | null
   product?: string | null
   name?: string | null
   iban?: string | null
@@ -28,7 +26,6 @@ export interface CardResourceInput {
 
 export function isCardResource(account: CardResourceInput): boolean {
   if (account.iban) return false
-  if ((account.cash_account_type ?? '').toUpperCase() === 'CARD') return true
   return CARD_PRODUCT_CODE.test(account.product ?? '') || CARD_PRODUCT_CODE.test(account.name ?? '')
 }
 
