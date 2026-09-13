@@ -222,16 +222,31 @@ export async function createPhoneLink(
   return { link: link as WhatsAppPhoneLink, conversationId: conversation?.id ?? null }
 }
 
-/** Active (non-revoked) link for a phone hash, or null. */
+/**
+ * Outcome of looking up a phone:
+ *  - WhatsAppPhoneLink: an active link exists, the sender is known.
+ *  - null: no active link. A verdict about the PHONE, so the caller may run
+ *    the unknown-sender path (M1 greeting, M2 bad code).
+ *  - 'transient_error': the read could not be executed (DB error, statement
+ *    timeout). No verdict at all: collapsing it into null greets an
+ *    already-linked user with the onboarding text and invites a second link
+ *    flow (#2365), so the caller must claim nothing and ask for a resend.
+ *    Same tri-state idiom as LinkCodeConsumption above.
+ */
+export type PhoneLinkLookup = WhatsAppPhoneLink | null | 'transient_error'
+
+/** Active (non-revoked) link for a phone hash, null when there is none, or
+ *  'transient_error' when the lookup itself failed. */
 export async function lookupActiveLink(
   serviceClient: SupabaseClient,
   phoneHash: string,
-): Promise<WhatsAppPhoneLink | null> {
-  const { data } = await serviceClient
+): Promise<PhoneLinkLookup> {
+  const { data, error } = await serviceClient
     .from('whatsapp_phone_links')
     .select('*')
     .eq('phone_hash', phoneHash)
     .is('revoked_at', null)
     .maybeSingle()
+  if (error) return 'transient_error'
   return (data as WhatsAppPhoneLink | null) ?? null
 }
