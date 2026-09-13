@@ -657,14 +657,47 @@ describe('generateFullArchive', () => {
       expect(zip.file('dokument/manifest.json')).not.toBeNull()
     })
 
-    it.each([false, true])('includes imported SIE sources and master data (original-byte manifest: %s)', async (durable) => {
+    it.each([
+      ['legacy', 'other-company/import-2.se'],
+      ['legacy', 'legacy-user/import-2.se'],
+      ['legacy', 'other-user/import-1.se'],
+      ['provided_text', 'other-company/sie-jobs/' + 'a'.repeat(64) + '.se'],
+      ['provided_text', 'company-1/../other-company/import-2.se'],
+      ['provided_text', 'company-1/%2e%2e/other-company/import-2.se'],
+      ['original_bytes', 'other-company/sie-originals/' + 'a'.repeat(64) + '.se'],
+    ])('refuses a caller-selected %s source path before a privileged download: %s', async (format, path) => {
+      enqueueMany([
+        { data: COMPANY_ROW },
+        { data: [PERIOD_2024] },
+        { data: [] },
+        { data: [{
+          id: 'import-1', user_id: 'legacy-user', filename: 'original.se', file_hash: 'a'.repeat(64),
+          file_storage_path: path, status: 'failed', fiscal_period_id: PERIOD_2024.id,
+          manifest: { originalSource: { format, path, sha256: 'a'.repeat(64) } },
+        }] },
+        { data: [] },
+        ...buildMasterDataQueue({}),
+      ])
+
+      const zip = await JSZip.loadAsync(await generateFullArchive(supabase as any, 'company-1', { scope: 'all' }))
+      expect(supabase.storage.from).not.toHaveBeenCalled()
+      expect(zip.file('sie/original/import-1_original.se')).toBeNull()
+      const manifest = JSON.parse(await zip.file('sie/original/manifest.json')!.async('text'))
+      expect(manifest).toEqual([expect.objectContaining({ import_id: 'import-1', status: 'missing' })])
+    })
+
+    it.each(['legacy', 'legacy_user', 'original_bytes', 'provided_text'])('includes imported SIE sources and master data (%s)', async (sourceFormat) => {
+      const durable = sourceFormat === 'original_bytes'
       const rawHash = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
       const importRow = {
         id: 'import-1',
+        user_id: 'legacy-user',
         filename: 'original.se',
-        file_hash: 'abc123',
-        file_storage_path: 'company-1/import-1.se',
+        file_hash: sourceFormat === 'provided_text' ? rawHash : 'abc123',
+        file_storage_path: sourceFormat === 'provided_text' ? `company-1/sie-jobs/${rawHash}.se` :
+          sourceFormat === 'legacy_user' ? 'legacy-user/import-1.se' : 'company-1/import-1.se',
         ...(durable ? {manifest:{originalSource:{format:'original_bytes',path:`company-1/sie-originals/${rawHash}.se`,sha256:rawHash}}} : {}),
+        ...(sourceFormat === 'provided_text' ? {manifest:{originalSource:{format:'provided_text'}}} : {}),
         org_number: '5560000000',
         company_name: 'Test AB',
         sie_type: 4,

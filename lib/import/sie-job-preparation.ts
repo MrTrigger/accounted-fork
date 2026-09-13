@@ -74,7 +74,12 @@ export function jobInput(job: SIEJob): SIEJobInput {
   const mappings = SIEJobMappingsSchema.safeParse(input.mappings)
   const options = SIEJobOptionsSchema.safeParse(input.options)
   if (!mappings.success || !options.success) throw new SIEJobValidationError('Importens kontomappningar eller inställningar är ogiltiga.')
-  return { ...input, mappings:mappings.data, options:{...options.data,filename:input.options.filename} }
+  const checkedMappings = new Map(mappings.data.map(mapping => [mapping.sourceAccount, mapping]))
+  // Accepted jobs retain their original checkpoint positions across upgrades.
+  // Identical duplicates are safe within a checkpoint; removing them globally
+  // here could shift rows past metadata checkpoints that already completed.
+  return { ...input, mappings:input.mappings.map(mapping => checkedMappings.get(mapping.sourceAccount)!),
+    options:{...options.data,filename:input.options.filename} }
 }
 
 function reviveVoucher(value: SIEVoucher): SIEVoucher {

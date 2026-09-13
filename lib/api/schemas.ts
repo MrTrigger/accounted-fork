@@ -63,7 +63,22 @@ export const SIEJobMappingsSchema = z.array(z.object({
   defaultVatRate: z.number().min(0).max(100).nullable().optional(),
   vatTreatmentSuggested: z.boolean().optional(), vatTreatmentReviewed: z.boolean().optional(),
   requiresVatTreatmentReview: z.boolean().optional(),
-})).max(10_000)
+})).max(10_000).superRefine((mappings, ctx) => {
+  const sources = new Map<string, string>()
+  for (const [index, mapping] of mappings.entries()) {
+    const serialized = JSON.stringify(mapping)
+    const previous = sources.get(mapping.sourceAccount)
+    if (previous !== undefined && previous !== serialized) {
+      ctx.addIssue({ code: 'custom', path: [index, 'sourceAccount'],
+        message: `Konto ${mapping.sourceAccount} har motstridiga kontomappningar.` })
+    }
+    sources.set(mapping.sourceAccount, serialized)
+  }
+}).transform(mappings => {
+  // Repeated #KONTO definitions must not target the same metadata upsert row
+  // twice. Conflicting definitions are rejected before any import is queued.
+  return [...new Map(mappings.map(mapping => [mapping.sourceAccount, mapping])).values()]
+})
 export const SIEJobActionSchema = z.object({action:z.enum(['resume','undo'])})
 
 // ============================================================

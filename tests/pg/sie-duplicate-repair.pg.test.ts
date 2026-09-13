@@ -55,6 +55,38 @@ async function rejects(fn:()=>Promise<unknown>,message:RegExp) {
 }
 
 describe('reviewed legacy duplicate repair', () => {
+  it('keeps reviewed snapshots private while preserving service archive and tenant hold reads', async () => {
+    const job = await stage()
+    const snapshot = await client.query(
+      'SELECT import_id, keep_entry_id, reverse_entry_id FROM sie_duplicate_repair_items WHERE company_id=$1',
+      [company],
+    )
+    expect(snapshot.rows).toEqual([{ import_id: job.id, keep_entry_id: keep, reverse_entry_id: reverse }])
+
+    for (const role of ['anon', 'authenticated'] as const) {
+      await client.query('SAVEPOINT browser_snapshot_access')
+      await client.query(`SET LOCAL ROLE ${role}`)
+      await client.query("SELECT set_config('request.jwt.claims',$1,true)", [JSON.stringify({ role, sub: actor })])
+      await client.query("SELECT set_config('request.jwt.claim.role',$1,true)", [role])
+      await client.query("SELECT set_config('request.jwt.claim.sub',$1,true)", [actor])
+      for (const sql of [
+        'SELECT * FROM sie_duplicate_repair_items',
+        'INSERT INTO sie_duplicate_repair_items DEFAULT VALUES',
+        'UPDATE sie_duplicate_repair_items SET content_hash=content_hash WHERE false',
+        'DELETE FROM sie_duplicate_repair_items WHERE false',
+      ]) await rejects(() => client.query(sql), /permission denied/i)
+
+      if (role === 'authenticated') {
+        expect((await client.query('SELECT sie_active_repair_for_entry($1) id', [keep])).rows[0].id).toBe(job.id)
+        const outsider = randomUUID()
+        await client.query("SELECT set_config('request.jwt.claims',$1,true)", [JSON.stringify({ role, sub: outsider })])
+        await client.query("SELECT set_config('request.jwt.claim.sub',$1,true)", [outsider])
+        expect((await client.query('SELECT sie_active_repair_for_entry($1) id', [keep])).rows[0].id).toBeNull()
+      }
+      await client.query('ROLLBACK TO SAVEPOINT browser_snapshot_access')
+      await client.query('RELEASE SAVEPOINT browser_snapshot_access')
+    }
+  })
   it('replays the exact repair without changing provenance or reversing the keeper', async () => {
     const job=await stage()
     expect((await stage()).id).toBe(job.id)

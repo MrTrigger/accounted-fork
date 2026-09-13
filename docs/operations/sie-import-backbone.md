@@ -170,6 +170,35 @@ pruning or trigger shortcut is included before that evidence exists.
 
 ## Verification
 
+### PR review follow-up, 2026-09-13
+
+The adversarial review found and fixed malformed source records being omitted
+before admission, duplicate account mappings failing finalization after posting,
+exclusive observation locks rejecting unrelated concurrent work, browser access
+to operator repair snapshots, and privileged archive reads trusting supplied
+storage paths. Undo confirmation now describes retained storno history.
+Resumed jobs keep their original metadata checkpoint positions. Archive reads
+also retain the exact historic user/import-id paths found by a read-only
+production inventory, without accepting unrelated objects.
+
+The two follow-up migrations were applied only to staging, under their actual
+versions `20260913162552` and `20260913162620`. The focused staging run passed
+152 tests across 17 files, including job preparation/finalization, duplicate
+mappings, recovery, undo, repair, reset, concurrent observations, and the three
+previously failing CI regressions.
+
+`node --import tsx scripts/sie-import/acceptance-providers-staging.ts` checks
+seven provider cases through real staging Storage, admission, worker, and
+Postgres services: Fortnox UTF-8 and CP437 each across two fiscal years, Visma
+Administration CP437, Visma eEkonomi Latin-1, and Bokio UTF-8. Each file has 205
+vouchers and crosses a chunk boundary. Assertions cover opening balances,
+dimensions, balances, source bytes, numbering, and identical retries. Later
+years intentionally reuse prior ledger activity rather than posting IB twice.
+Fortnox HTTP responses are synthetic fixtures passed through the real provider
+client and SIE fetcher. This is not a live provider-account or OAuth test. Visma
+and Bokio ledger history still enters through uploaded SIE files; their entity
+API imports are separate.
+
 Repeatable runners use explicit staging credentials in ignored files:
 
 ```sh

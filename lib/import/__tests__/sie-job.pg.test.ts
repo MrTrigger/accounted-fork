@@ -237,13 +237,13 @@ describe('SIE database execution protocol', () => {
     await client.query('SELECT start_sie_import_job($1,$2,$3,$4,$5,$6)',[company,actor,nextPeriod,'2027.se','b'.repeat(64),JSON.stringify(nextManifest)])
     await rejects(()=>client.query('SELECT request_sie_import_undo($1,$2,$3)',[company,job,actor]),/Another SIE execution/)
   })
-  it('prepares a file, resumes with persisted chunks, and finalizes through the real engine', async () => {
-    const content = '#FLAGGA 0\n#PROGRAM "Synthetic" 1\n#SIETYP 4\n#FNAMN "Synthetic AB"\n#RAR 0 20260101 20261231\n#KONTO 1930 "Bank"\n#KONTO 3001 "Sales"\n'+
+  it('prepares repeated identical account definitions, resumes, and finalizes through the real engine', async () => {
+    const content = '#FLAGGA 0\n#PROGRAM "Synthetic" 1\n#SIETYP 4\n#FNAMN "Synthetic AB"\n#RAR 0 20260101 20261231\n#KONTO 1930 "Bank"\n#KONTO 1930 "Bank"\n#KONTO 3001 "Sales"\n'+
       Array.from({length:205},(_,i)=>`#VER A ${i+1} 20260201 "Test"\n{\n#TRANS 1930 {} 100\n#TRANS 3001 {} -100\n}`).join('\n')
     const hash = createHash('sha256').update(content).digest('hex')
     const mappings = ['1930','3001'].map(number=>({sourceAccount:number,targetAccount:number,sourceName:number === '1930' ? 'Bank' : 'Sales',
       targetName:'Account',confidence:1,matchType:'exact',isOverride:false}))
-    const input = {version:1,sourceHash:hash,mappings,options:{filename:'synthetic.se',createFiscalPeriod:true,
+    const input = {version:1,sourceHash:hash,mappings:[...mappings,mappings[0]],options:{filename:'synthetic.se',createFiscalPeriod:true,
       importOpeningBalances:false,importTransactions:true,updateAccountNames:true,markImportedNoDocRequired:true}}
     await client.query('RESET ROLE')
     await client.query('UPDATE sie_imports SET manifest=$1,file_hash=$2,file_storage_path=$3 WHERE id=$4',

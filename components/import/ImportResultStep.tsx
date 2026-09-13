@@ -62,9 +62,9 @@ export default function ImportResultStep({
   const handleUndoClick = async () => {
     if (!result.importId || !onUndo) return
     const ok = await confirm({
-      title: 'Ångra hela importen?',
-      description: `Detta raderar ${result.journalEntriesCreated} verifikation${result.journalEntriesCreated === 1 ? '' : 'er'} och rensar ingående balanser från den här importen. Bifogade dokument blir okopplade men finns kvar.`,
-      confirmLabel: 'Ångra import',
+      title: t('sie_history_undo_confirm_title'),
+      description: t('sie_job.undoConfirm'),
+      confirmLabel: t('sie_history_undo_confirm_label'),
     })
     if (!ok) return
     await onUndo(result.importId)

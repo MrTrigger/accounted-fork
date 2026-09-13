@@ -33,7 +33,8 @@ async function finalize(supabase: SupabaseClient, job: SIEJob, deadline: number)
   for (let n = 0; n < mappings.length; n += 100) {
     if (Date.now() > deadline) return false
     if (completed.has(SIE_CHECKPOINTS.mappings+n/100)) continue
-    await applyMetadata(supabase,job,'mappings',SIE_CHECKPOINTS.mappings+n/100,mappings.slice(n,n+100).map(m => ({
+    const batch = [...new Map(mappings.slice(n,n+100).map(mapping => [mapping.sourceAccount,mapping])).values()]
+    await applyMetadata(supabase,job,'mappings',SIE_CHECKPOINTS.mappings+n/100,batch.map(m => ({
       source_account:m.sourceAccount,source_name:m.sourceName,target_account:m.targetAccount,confidence:m.confidence,match_type:m.matchType,
     })))
   }

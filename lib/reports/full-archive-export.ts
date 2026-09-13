@@ -767,6 +767,7 @@ function buildDocumentZipPath(
 
 interface SieImportRow {
   id: string
+  user_id: string
   filename: string | null
   file_hash: string | null
   file_storage_path: string | null
@@ -822,7 +823,7 @@ async function writeSieSourceFiles(
       supabase
         .from('sie_imports')
         .select(
-          'id, filename, file_hash, file_storage_path, org_number, company_name, sie_type, fiscal_year_start, fiscal_year_end, accounts_count, transactions_count, status, fiscal_period_id, imported_at, created_at, job_state, manifest, supersedes_import_id, migration_documentation'
+          'id, user_id, filename, file_hash, file_storage_path, org_number, company_name, sie_type, fiscal_year_start, fiscal_year_end, accounts_count, transactions_count, status, fiscal_period_id, imported_at, created_at, job_state, manifest, supersedes_import_id, migration_documentation'
         )
         .eq('company_id', companyId)
         .order('created_at', { ascending: true })
@@ -864,6 +865,18 @@ async function writeSieSourceFiles(
             (!sourceHash || !/^[a-f0-9]{64}$/.test(sourceHash) ||
               storagePath !== `${companyId}/sie-originals/${sourceHash}.se`)) {
             throw new Error('Invalid original SIE source reference')
+          }
+          // Archive generation uses a service-role client. Both legacy rows
+          // and submitted job manifests can contain caller-supplied paths.
+          // Accept only the object identities our import writers generate.
+          // Before multi-tenancy, the writer used the persisted user id as
+          // its prefix. Keep that exact path bound to this retained import id.
+          if (original?.format !== 'original_bytes' &&
+            storagePath !== `${companyId}/${imp.id}.se` &&
+            (!imp.user_id || storagePath !== `${imp.user_id}/${imp.id}.se`) &&
+            (!imp.file_hash || !/^[a-f0-9]{64}$/.test(imp.file_hash) ||
+              storagePath !== `${companyId}/sie-jobs/${imp.file_hash}.se`)) {
+            throw new Error('Invalid SIE source reference')
           }
           const { data: fileData, error } = await supabase.storage
             .from('sie-files')

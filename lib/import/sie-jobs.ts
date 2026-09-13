@@ -43,6 +43,11 @@ export function validateSIEJobInput(content: string, parsed: ParsedSIEFile, mapp
   if (!content || Buffer.byteLength(content, 'utf8') > SIE_LIMITS.fileBytes) {
     throw new SIEJobValidationError('SIE-filen måste vara högst 50 MB och får inte vara tom.')
   }
+  const parseErrors = parsed.issues.filter(issue => issue.severity === 'error')
+  if (parseErrors.length) {
+    const details = parseErrors.slice(0, 5).map(issue => `Rad ${issue.line}: ${issue.message}`).join(' ')
+    throw new SIEJobValidationError(`SIE-filen innehåller ${parseErrors.length} tolkningsfel. ${details}`)
+  }
   if (parsed.vouchers.length > SIE_LIMITS.fileVouchers) throw new SIEJobValidationError('SIE-filen har fler än 50 000 verifikationer.')
   if (!parsed.stats.fiscalYearStart || !parsed.stats.fiscalYearEnd) throw new SIEJobValidationError('SIE-filen saknar räkenskapsår.')
   if (!options.importOpeningBalances && !options.importTransactions) throw new SIEJobValidationError('Välj vad som ska importeras.')
