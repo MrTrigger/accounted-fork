@@ -1280,6 +1280,7 @@ export const enableBankingExtension: Extension = {
             delete next.claimed_by_company_id
             delete next.claimed_by_company_name
             delete next.deselected_elsewhere
+            delete next.mirror_card_account
           }
           return next
         })
