@@ -67,3 +67,54 @@ export function isSkvSessionRefreshable(session: SkvSessionLike, now: number | D
   const nowMs = now instanceof Date ? now.getTime() : now
   return nowMs < expiresAt + SKV_REFRESH_WINDOW_AFTER_EXPIRY_MS
 }
+
+/**
+ * True when the stored session is PROVABLY past recovery: the access token
+ * expired more than the refresh window ago, or the refresh budget is spent.
+ * Nothing on our side can revive it, so a caller may answer from the stored
+ * row instead of spending a call on Skatteverket.
+ *
+ * Deliberately not the negation of isSkvSessionRefreshable: the two questions
+ * fail in opposite directions. "May we claim this connection is healthy"
+ * fails closed on a row we cannot read (an unparsable expiry is not health),
+ * while "may we skip the network call" fails open (an unparsable expiry is no
+ * proof of death, so the call still happens and Skatteverket decides).
+ */
+export function isSkvSessionBeyondRecovery(
+  session: Pick<SkvSessionLike, 'expiresAt' | 'refreshCount'>,
+  now: number | Date = Date.now(),
+): boolean {
+  if ((session.refreshCount ?? 0) >= SKV_MAX_REFRESH_COUNT) return true
+  const expiresAt = toEpochMs(session.expiresAt)
+  if (expiresAt === null) return false
+  const nowMs = now instanceof Date ? now.getTime() : now
+  return nowMs >= expiresAt + SKV_REFRESH_WINDOW_AFTER_EXPIRY_MS
+}
+
+/**
+ * Health-flag codes that can sit on a `needs_reconsent` row without being a
+ * fault. Only SESSION_EXPIRED qualifies: until 2026-09-13 the crons latched
+ * the ordinary hourly BankID expiry as a permanent health fault, so most
+ * connected companies carry a needs_reconsent row whose entire cause is that
+ * an hour passed (on 2026-08-26, 97 of the 101 token rows touched in 30 days;
+ * see DECISIONS 2026-08-26). Those rows would otherwise keep the "reconnect,
+ * something is broken" copy forever even though the time math above already
+ * reports the expiry honestly.
+ */
+const NON_TERMINAL_RECONSENT_CODES = new Set(['SESSION_EXPIRED'])
+
+/**
+ * True when a stored `needs_reconsent` flag means a real terminal fault that
+ * only a fresh BankID consent fixes: REFRESH_EXHAUSTED, MISSING_SCOPE,
+ * TOKEN_CORRUPTED (the extension's RECONSENT_ERROR_CODES). Every surface that
+ * turns the persisted health flag into user-facing copy runs this, so a
+ * legacy SESSION_EXPIRED latch is read as what it is: an expired session, not
+ * a broken connection.
+ */
+export function isTerminalReconsentState(
+  status: string | null | undefined,
+  lastErrorCode: string | null | undefined,
+): boolean {
+  if (status !== 'needs_reconsent') return false
+  return !NON_TERMINAL_RECONSENT_CODES.has(lastErrorCode ?? '')
+}
