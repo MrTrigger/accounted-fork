@@ -177,6 +177,10 @@ before admission, duplicate account mappings failing finalization after posting,
 exclusive observation locks rejecting unrelated concurrent work, browser access
 to operator repair snapshots, and privileged archive reads trusting supplied
 storage paths. Undo confirmation now describes retained storno history.
+The second pass also found monetary records being skipped or coerced to zero
+after a permissive parse. Structured amount issues now block the records used
+for postings, opening balances and migration adjustments, while unused report
+metadata and historical correction rows retain their preview warnings.
 Resumed jobs keep their original metadata checkpoint positions. Archive reads
 also retain the exact historic user/import-id paths found by a read-only
 production inventory, without accepting unrelated objects.

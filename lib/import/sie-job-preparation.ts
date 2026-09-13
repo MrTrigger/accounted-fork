@@ -6,10 +6,10 @@ import { buildSIEAccountRows } from './account-sync'
 import { mappingsToMap } from './account-mapper'
 import { collectSIEDimensionUsage } from './sie-dimensions'
 import { buildSIEMigrationAdjustmentEntry, buildSIEOpeningBalanceEntry, importVouchers, validateIBBalance } from './sie-import'
-import { getEffectiveOpeningBalances, parseSIEFile } from './sie-parser'
+import { getEffectiveOpeningBalances, hasOpeningBalanceVoucherCandidate, parseSIEFile } from './sie-parser'
 import { defaultOpeningBalanceSeries } from './opening-balance-defaults'
 import { chunkSIEEntries, hashSIEPayload, SIE_JOB_VERSION, SIE_LIMITS, type SIEJob, type SIEPreparedEntry } from './sie-job-contract'
-import { applySIEFiscalYear, readSIEJobSource, SIEJobValidationError, validateSIEJobInput, type SIEJobInput } from './sie-jobs'
+import { applySIEFiscalYear, readSIEJobSource, SIEJobValidationError, validateSIEAccountingAmounts, validateSIEJobInput, type SIEJobInput } from './sie-jobs'
 import type { ParsedSIEFile, SIEVoucher } from './types'
 import { scanSieForCp1252Artifacts, formatSieArtifactWarning } from './sie-artifact-scan'
 import { SIEJobMappingsSchema, SIEJobOptionsSchema } from '@/lib/api/schemas'
@@ -27,7 +27,7 @@ interface PreparedSummary {
   chunkCount: number
 }
 interface Snapshot { parsed: ParsedSIEFile; voucherGroups: number; hasCurrentYearIb: boolean; sourceSeries: string[];
-  metadataGroups:number; artifactWarning?:string }
+  metadataGroups:number; artifactWarning?:string; openingBalanceVoucherCandidate?:boolean }
 interface PreparationTotals {
   entries:number; movements:Array<[string,number]>; skippedSample:VoucherPreparation['skippedDetails']
   openingEntries?:number
@@ -129,6 +129,7 @@ async function snapshotSource(supabase: SupabaseClient, job: SIEJob, deadline: n
   const metadata = boundedChunks(SNAPSHOT_ARRAYS.flatMap(key => parsed[key].map((value,index) => ({sourceId:`${key}:${index+1}`,key,value,lines:[]}))))
   const artifactScan = scanSieForCp1252Artifacts(parsed)
   const snapshot: Snapshot = { parsed: { ...parsed, vouchers: [] }, voucherGroups: groups.length,
+    openingBalanceVoucherCandidate:hasOpeningBalanceVoucherCandidate(parsed),
     metadataGroups:metadata.length,artifactWarning:artifactScan.flagged ? formatSieArtifactWarning(artifactScan) : undefined,
     sourceSeries:[...new Set(parsed.vouchers.map(v => v.series || input.options.voucherSeries || 'B'))],
     hasCurrentYearIb: getEffectiveOpeningBalances(parsed).balances.length > 0 }
@@ -261,6 +262,18 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
       ...adjustment.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,1),adjustment[adjustment.length-1]] : adjustment
     await checkpointProgress(supabase,job,{...job.manifest,preparedGroups:group+1,preparedChunks:chunkNo,preparationTotals:totals},sourceOrdinal)
   }
+  const adjustmentCount = totals.skippedCounts.unbalanced+totals.skippedCounts.unmapped+totals.skippedCounts.singleLine
+  if (adjustmentCount) {
+    let validationSource = snapshot.parsed
+    if (snapshot.openingBalanceVoucherCandidate === undefined) {
+      // Older checkpoints omitted the global candidate flag. Re-read only for
+      // validation; never reinterpret or replace their prepared entry payloads.
+      validationSource = parseSIEFile(await readSIEJobSource(supabase,job))
+      applySIEFiscalYear(validationSource,input.fiscalYear)
+    }
+    validateSIEAccountingAmounts(validationSource,accountMap,{importTransactions:false,importOpeningBalances:false,
+      migrationAdjustment:true,openingBalanceVoucherCandidate:snapshot.openingBalanceVoucherCandidate})
+  }
   const movements = new Map(totals.movements)
   // Use the globally resolved IB set from the sealed parse, including the
   // explicit absence of IB when a source voucher represents it instead.
@@ -279,7 +292,6 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
       finalEntries.push(toPrepared(opening,job,50_000,accountIds))
     }
   }
-  const adjustmentCount = totals.skippedCounts.unbalanced+totals.skippedCounts.unmapped+totals.skippedCounts.singleLine
   const adjustment = adjustmentCount ? buildSIEMigrationAdjustmentEntry(job.fiscal_period_id,parsed,accountMap,movements,totals.skippedSample,adjustmentCount) : null
   if (adjustment?.input) finalEntries.push(toPrepared(adjustment.input,job,50_001,accountIds))
   if (input.options.importTransactions && snapshot.parsed.stats.totalVouchers > 0 && totals.entries === 0 && !finalEntries.length) {

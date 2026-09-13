@@ -151,6 +151,10 @@ export interface ParseIssue {
   line: number
   message: string
   tag?: string
+  /** Machine-readable scope for records omitted by the tolerant preview parser. */
+  code?: 'invalid_amount'
+  account?: string
+  yearIndex?: number
 }
 
 /**

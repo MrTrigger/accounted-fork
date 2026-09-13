@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AccountMapping, ImportResult, ParsedSIEFile, SIEVoucher } from './types'
-import { calculateFileHash, getEffectiveOpeningBalances, parseSIEFile } from './sie-parser'
+import { calculateFileHash, getEffectiveOpeningBalances, hasOpeningBalanceVoucherCandidate, isBalanceSheetAccount, parseSIEFile } from './sie-parser'
 import { ensureFiscalPeriod } from './sie-import'
 import { SIE_JOB_VERSION, SIE_LIMITS, type SIEJob } from './sie-job-contract'
 import { SIEJobMappingsSchema, SIEJobOptionsSchema } from '@/lib/api/schemas'
@@ -39,6 +39,44 @@ function jobDatabaseError(error:{code?:string;message:string}):Error {
 export function acceptsSIEJobs(): boolean { return process.env.SIE_IMPORT_JOBS === 'true' }
 export function runsSIEJobs(): boolean { return process.env.SIE_IMPORT_WORKER_PAUSED !== 'true' }
 
+/** Warnings remain useful in previews; selected accounting records must be complete. */
+export function validateSIEAccountingAmounts(parsed: ParsedSIEFile, accountMap: ReadonlyMap<string, string>, selection: {
+  importTransactions: boolean
+  importOpeningBalances: boolean
+  migrationAdjustment?: boolean
+  openingBalanceVoucherCandidate?: boolean
+}): void {
+  // No adjustment is generated without current-year report balances. Include
+  // omitted damaged records, so an all-invalid report cannot disable the guard.
+  const usesAdjustment = selection.migrationAdjustment && (parsed.closingBalances.some(balance => balance.yearIndex === 0) ||
+    parsed.resultBalances.some(balance => balance.yearIndex === 0) || parsed.issues.some(issue =>
+      issue.code === 'invalid_amount' && issue.yearIndex === 0 && (issue.tag === 'UB' || issue.tag === 'RES')))
+  const usesOpeningBalances = selection.importOpeningBalances || usesAdjustment
+  const hasExplicitIB = parsed.openingBalances.some(balance => balance.yearIndex === 0)
+  const hasOpeningVoucher = selection.openingBalanceVoucherCandidate ?? hasOpeningBalanceVoucherCandidate(parsed)
+  const invalid = parsed.issues.filter(issue => {
+    if (issue.code !== 'invalid_amount') return false
+    if (issue.tag === 'TRANS') {
+      // Without explicit IB, active lines also decide whether an opening
+      // voucher suppresses the prior-year UB fallback, even for IB-only jobs.
+      return selection.importTransactions || (usesOpeningBalances && !hasExplicitIB)
+    }
+    if (issue.tag === 'IB' && issue.yearIndex === 0) return usesOpeningBalances
+    const target = accountMap.get(issue.account ?? '')
+    if (issue.tag === 'UB' && issue.yearIndex === -1) {
+      return usesOpeningBalances && !hasExplicitIB && !hasOpeningVoucher && isBalanceSheetAccount(issue.account ?? '') &&
+        (selection.importOpeningBalances || !!target && isBalanceSheetAccount(target))
+    }
+    if (!usesAdjustment || issue.yearIndex !== 0 || !target) return false
+    // The adjustment selects current-year UB/RES by the mapped account class.
+    return issue.tag === 'UB' && isBalanceSheetAccount(target) || issue.tag === 'RES' && !isBalanceSheetAccount(target)
+  })
+  if (invalid.length) {
+    const details = invalid.slice(0, 5).map(issue => `Rad ${issue.line}: ${issue.message}`).join(' ')
+    throw new SIEJobValidationError(`SIE-filen innehåller ${invalid.length} ogiltiga belopp i bokföringsunderlaget. ${details}`)
+  }
+}
+
 export function validateSIEJobInput(content: string, parsed: ParsedSIEFile, mappings: AccountMapping[], options: SIEJobOptions): void {
   if (!content || Buffer.byteLength(content, 'utf8') > SIE_LIMITS.fileBytes) {
     throw new SIEJobValidationError('SIE-filen måste vara högst 50 MB och får inte vara tom.')
@@ -48,6 +86,7 @@ export function validateSIEJobInput(content: string, parsed: ParsedSIEFile, mapp
     const details = parseErrors.slice(0, 5).map(issue => `Rad ${issue.line}: ${issue.message}`).join(' ')
     throw new SIEJobValidationError(`SIE-filen innehåller ${parseErrors.length} tolkningsfel. ${details}`)
   }
+  validateSIEAccountingAmounts(parsed, new Map(mappings.map(mapping => [mapping.sourceAccount, mapping.targetAccount])), options)
   if (parsed.vouchers.length > SIE_LIMITS.fileVouchers) throw new SIEJobValidationError('SIE-filen har fler än 50 000 verifikationer.')
   if (!parsed.stats.fiscalYearStart || !parsed.stats.fiscalYearEnd) throw new SIEJobValidationError('SIE-filen saknar räkenskapsår.')
   if (!options.importOpeningBalances && !options.importTransactions) throw new SIEJobValidationError('Välj vad som ska importeras.')
