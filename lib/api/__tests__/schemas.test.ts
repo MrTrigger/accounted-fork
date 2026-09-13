@@ -784,11 +784,31 @@ describe('CreateCustomerSchema: personnummer placement', () => {
     }
   })
 
-  it('still rejects a personnummer-shaped org_number on a business customer', () => {
+  it('still rejects a personnummer-shaped org_number on a foreign business customer', () => {
+    for (const customer_type of ['eu_business', 'non_eu_business'] as const) {
+      const result = CreateCustomerSchema.safeParse({
+        name: 'Auslandsfirma GmbH',
+        customer_type,
+        country: 'DE',
+        org_number: '19900101-1234',
+      })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.issues.some((issue) => issue.path.join('.') === 'org_number')).toBe(true)
+      }
+    }
+  })
+
+  // #2367: a Swedish enskild firma has no organisationsnummer of its own, so
+  // the owner's personnummer IS the firm's org number. It stays in org_number
+  // (it is not rerouted to personal_number, which is for privatpersoner) and
+  // the list surfaces mask it.
+  it('accepts a personnummer-shaped org_number on a Swedish business (enskild firma)', () => {
     const result = CreateCustomerSchema.safeParse(validCustomer({ org_number: '19900101-1234' }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.issues.some((issue) => issue.path.join('.') === 'org_number')).toBe(true)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.org_number).toBe('19900101-1234')
+      expect(result.data.personal_number).toBeUndefined()
     }
   })
 

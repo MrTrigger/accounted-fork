@@ -356,10 +356,31 @@ describe('commitPendingOperation: create_customer', () => {
     expect(JSON.stringify(inserted)).not.toContain(PERSONAL_NUMBER)
   })
 
-  it('still refuses a personnummer-shaped org_number on a business customer', async () => {
+  it('still refuses a personnummer-shaped org_number on a foreign business customer', async () => {
     const { supabase, enqueue, findCall } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
     enqueue({ data: null, error: null }) // dispatcher's reject update
+
+    const op = makePendingOp({
+      operation_type: 'create_customer',
+      params: { name: 'Auslandsfirma GmbH', customer_type: 'eu_business', org_number: PERSONAL_NUMBER },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('failed')
+    expect(result.http_status).toBe(400)
+    expect(findCall('customers', 'insert')).toBeUndefined()
+  })
+
+  // #2367: a Swedish enskild firma has no org number of its own, so its
+  // owner's personnummer is the firm's org number and is stored as one.
+  it('commits a personnummer-shaped org_number on swedish_business as the org number', async () => {
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // company_settings read (payment-terms default)
+    enqueue({ data: makeCustomer({ id: 'cust-1' }), error: null }) // customers insert
+    enqueue({ data: null, error: null }) // dispatcher's pending_operations update
 
     const op = makePendingOp({
       operation_type: 'create_customer',
@@ -368,9 +389,13 @@ describe('commitPendingOperation: create_customer', () => {
 
     const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
 
-    expect(result.status).toBe('failed')
-    expect(result.http_status).toBe(400)
-    expect(findCall('customers', 'insert')).toBeUndefined()
+    expect(result.status).toBe('committed')
+    const inserted = findCall('customers', 'insert')?.[0] as {
+      org_number: string | null
+      personal_number: string | null
+    }
+    expect(inserted.org_number).toBe(PERSONAL_NUMBER)
+    expect(inserted.personal_number).toBeNull()
   })
 })
 

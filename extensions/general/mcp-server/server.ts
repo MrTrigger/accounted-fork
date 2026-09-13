@@ -117,9 +117,10 @@ import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { expandParty } from '@/lib/parties/party-api'
 import { listForCompany as listCashAccountsForCompany } from '@/lib/cash-accounts/service'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
+  orgNumberIsPersonalIdentifier,
   personalNumberDigits,
 } from '@/lib/customers/personal-number-shape'
 import {
@@ -6214,22 +6215,27 @@ export const tools: McpTool[] = [
       }
       rows.sort((a, b) => a.name.localeCompare(b.name, 'sv') || a.id.localeCompare(b.id))
 
-      // GDPR art. 5.1 c, same rule as the v1 list: an individual's
-      // personnummer never leaves this tool raw. personal_number is stored as
-      // ciphertext and is exposed only as personal_number_masked
-      // (********-1234); a legacy individual row that still carries the
-      // personnummer in org_number (written before the write paths started
-      // moving it into personal_number) shows it masked the same way, and its
-      // org_number is nulled rather than listed.
+      // GDPR art. 5.1 c, same rule as the v1 list: a natural person's
+      // identity number never leaves this tool raw. personal_number is stored
+      // as ciphertext and is exposed only as personal_number_masked
+      // (********-1234). An org_number that IS a personnummer is nulled and
+      // masked the same way: that covers a Swedish enskild firma (its org
+      // number is the owner's personnummer) and the legacy individual rows
+      // written before the write paths started moving it into personal_number.
+      // gnubok_get_customer, a deliberate drill-in to one record, still
+      // returns the full value.
       const customers = rows.map(({ personal_number, ...customer }) => {
-        if (customer.customer_type !== 'individual') return customer
-        const legacyInOrgNumber = orgNumberHoldsPersonalNumber(customer.customer_type, customer.org_number)
+        const orgNumberIsPersonal = orgNumberIsPersonalIdentifier(
+          customer.customer_type,
+          customer.org_number,
+        )
+        if (customer.customer_type !== 'individual' && !orgNumberIsPersonal) return customer
         return {
           ...customer,
-          org_number: legacyInOrgNumber ? null : customer.org_number,
+          org_number: orgNumberIsPersonal ? null : customer.org_number,
           personal_number_masked:
             maskStoredCustomerPersonalNumber(personal_number)
-            ?? (legacyInOrgNumber ? maskCustomerPersonalNumber(customer.org_number) : null),
+            ?? (orgNumberIsPersonal ? maskCustomerPersonalNumber(customer.org_number) : null),
         }
       })
 
@@ -6255,7 +6261,9 @@ export const tools: McpTool[] = [
         },
         customer_number: { type: 'string', maxLength: 32 },
         email: { type: 'string', description: 'Email address' },
-        org_number: { type: 'string', description: 'Swedish org number (business types). A personnummer belongs in personal_number.' },
+        // Kept no longer than the sentence it replaced: the tool catalog is
+        // within ~5 tokens of its payload-size ceiling (payload-size.bench).
+        org_number: { type: 'string', description: 'Swedish org number (business types). An enskild firma\'s is its personnummer.' },
         personal_number: { type: 'string', description: 'Personnummer for customer_type=individual. Encrypted at staging, masked on read.' },
         vat_number: { type: 'string', description: 'EU VAT number' },
         payment_terms: { type: 'number', description: 'Days. Default: the company setting, else 30.' },
@@ -6299,21 +6307,22 @@ export const tools: McpTool[] = [
         throw new Error('customer_number must be at most 32 characters.')
       }
 
-      // Identifiers. A personnummer belongs in personal_number on an
-      // individual and nowhere else. The business-type guard mirrors
-      // CreateCustomerSchema (nothing masks org_number, GDPR art. 5.1 c); a
-      // personnummer-shaped org_number on an individual is the personnummer
-      // submitted in the wrong field, which is all an agent COULD do before
-      // this tool had a personal_number input, so it is moved rather than
-      // refused. Everything is checked here, at staging, so the user never
-      // approves an operation that then fails at commit.
+      // Identifiers. A Swedish enskild firma's org number IS its owner's
+      // personnummer, so swedish_business accepts one (the list tool masks
+      // it); only a foreign business, which cannot have one, refuses it, the
+      // same predicate CreateCustomerSchema uses. A personnummer-shaped
+      // org_number on an individual is the personnummer submitted in the wrong
+      // field, which is all an agent COULD do before this tool had a
+      // personal_number input, so it is moved rather than refused. Everything
+      // is checked here, at staging, so the user never approves an operation
+      // that then fails at commit.
       const orgNumberArg = typeof args.org_number === 'string' ? args.org_number.trim() : ''
       const personalNumberArg = typeof args.personal_number === 'string' ? args.personal_number.trim() : ''
-      if (orgNumberArg && customerType !== 'individual' && looksLikeSwedishPersonalNumber(orgNumberArg)) {
+      if (isPersonalNumberOrgNumberDisallowed(customerType, orgNumberArg)) {
         throw new Error(
-          'org_number looks like a Swedish personal identity number (personnummer). Create the customer with '
-          + 'customer_type "individual" and pass the number as personal_number instead, so it is stored encrypted '
-          + 'and masked in lists.',
+          'org_number looks like a Swedish personal identity number (personnummer), which a foreign business '
+          + 'cannot have. Use customer_type "swedish_business" for a Swedish enskild firma, or "individual" with '
+          + 'the number passed as personal_number for a private person.',
         )
       }
       if (personalNumberArg && customerType !== 'individual') {
@@ -6531,11 +6540,11 @@ export const tools: McpTool[] = [
       if (error) throw dbError(error)
       if (!current) throw new Error('Customer not found.')
 
-      // Same guard as gnubok_create_customer and the REST PATCH route: only
-      // individual rows get their identifiers masked on read (GDPR art.
-      // 5.1 c), so a personnummer on a business customer is refused. Checked
-      // against the type the row will END UP with, so a simultaneous type
-      // change cannot smuggle one through.
+      // Same guard as gnubok_create_customer and the REST PATCH route: the
+      // personal_number column exists for privatpersoner only (a business
+      // keeps its identifier in org_number, an enskild firma included).
+      // Checked against the type the row will END UP with, so a simultaneous
+      // type change cannot smuggle one through.
       const effectiveCustomerType = (parsed.data.changes.customer_type ?? current.customer_type) as string
       if (personalNumber && effectiveCustomerType !== 'individual') {
         throw new Error('personal_number is only allowed for customer_type "individual".')

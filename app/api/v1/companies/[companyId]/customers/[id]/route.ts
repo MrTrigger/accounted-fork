@@ -37,7 +37,7 @@ import {
 } from '@/lib/customers/protect-personal-number'
 import { isMaskedPersonalNumber } from '@/lib/customers/mask-personal-number'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
   personalNumberDigits,
@@ -266,7 +266,7 @@ registerEndpoint({
     'org_number uniqueness is enforced at DB level: 23505 → 409 CUSTOMER_DUPLICATE_ORG_NUMBER.',
     'VIES re-validation is best-effort and runs only on commit. A VIES timeout does not fail the update.',
     'personal_number: a plaintext value is stored encrypted (individual customers only); the masked form a read returned (********-1234) means "leave unchanged" and is never stored; null clears it. Changing customer_type away from individual clears any stored personal_number.',
-    'An org_number shaped like a Swedish personnummer is rejected for business customer_types (400 CUSTOMER_ORG_NUMBER_IS_PERSONAL). On an individual it is the personnummer in the wrong field: it is stored encrypted as personal_number and org_number is cleared; next to a different personal_number in the same body it is 400 CUSTOMER_PERSONAL_NUMBER_CONFLICT.',
+    'An org_number shaped like a Swedish personnummer is accepted on customer_type=swedish_business: an enskild firma has no separate org number, so it is the firm\'s identifier, and the list endpoint masks it. It is rejected for eu_business and non_eu_business (400 CUSTOMER_ORG_NUMBER_IS_PERSONAL). On an individual it is the personnummer in the wrong field: it is stored encrypted as personal_number and org_number is cleared; next to a different personal_number in the same body it is 400 CUSTOMER_PERSONAL_NUMBER_CONFLICT.',
   ],
   example: {
     request: { default_payment_terms: 14, notes: 'New payment terms agreed 2026-05-12.' },
@@ -376,14 +376,10 @@ export const PATCH = withApiV1<{ params: Promise<{ companyId: string; id: string
       })
     }
 
-    // GDPR art. 5.1 c: only customer_type='individual' rows get their
-    // identifiers masked, so a personnummer accepted as a business
-    // org_number would be displayed unmasked everywhere.
-    if (
-      body.org_number &&
-      effectiveType !== 'individual' &&
-      looksLikeSwedishPersonalNumber(body.org_number)
-    ) {
+    // A Swedish enskild firma's org number IS its owner's personnummer, so
+    // swedish_business accepts one and the lists mask it. Only the foreign
+    // business types, which cannot have one, still refuse it.
+    if (isPersonalNumberOrgNumberDisallowed(effectiveType, body.org_number)) {
       return v1ErrorResponseFromCode('CUSTOMER_ORG_NUMBER_IS_PERSONAL', ctx.log, {
         requestId: ctx.requestId,
         details: { field: 'org_number' },

@@ -36,7 +36,7 @@ import { bookResidualAndLink, ReconciliationResidualError } from '@/lib/reconcil
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { validateVatNumber } from '@/lib/vat/vies-client'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
 } from '@/lib/customers/personal-number-shape'
@@ -534,19 +534,16 @@ async function commitCreateCustomer(
     return { error: 'customer_number must be a string of at most 32 characters', status: 400 }
   }
 
-  // Same GDPR guard as CreateCustomerSchema: identifiers are only masked on
-  // customer_type='individual' rows, so a personnummer stored as a business
-  // org_number would be shown unmasked everywhere.
+  // Same guard as CreateCustomerSchema: a Swedish enskild firma's org number
+  // IS its owner's personnummer, so swedish_business accepts one (the lists
+  // mask it); only a foreign business, which cannot have one, refuses it.
   let orgNumber = (params.org_number as string) || null
-  if (
-    orgNumber &&
-    params.customer_type !== 'individual' &&
-    looksLikeSwedishPersonalNumber(orgNumber)
-  ) {
+  if (isPersonalNumberOrgNumberDisallowed(params.customer_type as string, orgNumber)) {
     return {
       error:
-        'org_number ser ut som ett personnummer. Skapa kunden som privatperson '
-        + '(customer_type=individual) i stället, så maskeras numret i listor.',
+        'org_number ser ut som ett personnummer, vilket ett utländskt företag inte kan ha. '
+        + 'Välj kundtypen svenskt företag (customer_type=swedish_business) för en enskild firma, '
+        + 'eller privatperson (customer_type=individual) och skicka numret som personal_number.',
       status: 400,
     }
   }
