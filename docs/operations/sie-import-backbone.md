@@ -195,7 +195,10 @@ vouchers and crosses a chunk boundary. Assertions cover opening balances,
 dimensions, balances, source bytes, numbering, and identical retries. Later
 years intentionally reuse prior ledger activity rather than posting IB twice.
 Fortnox HTTP responses are synthetic fixtures passed through the real provider
-client and SIE fetcher. This is not a live provider-account or OAuth test. Visma
+client and SIE fetcher. Its retained-byte check covers the decoded UTF-8 upload;
+the file paths preserve the original uploaded encoding. The two-year fixture
+also verifies a balanced report opening through `getOpeningBalances` after the
+prior year's result transfer. This is not a live provider-account or OAuth test. Visma
 and Bokio ledger history still enters through uploaded SIE files; their entity
 API imports are separate.
 
