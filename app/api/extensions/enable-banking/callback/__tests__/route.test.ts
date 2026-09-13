@@ -917,6 +917,92 @@ describe('GET /api/extensions/enable-banking/callback', () => {
     expect(mockUpsertFromPsd2).not.toHaveBeenCalled()
   })
 
+  it('still re-keys the cash_accounts row of a disabled mirror card account paired across a uid change', async () => {
+    // The mirror-card re-stamp must not shadow the #1709 pairing: when the
+    // ASPSP mints a new uid for the (still off) card account, its existing
+    // row is promoted in place exactly as for any other paired account, so
+    // enabling it later reuses that ledger instead of allocating a second slot.
+    const capturedUpdates: Record<string, unknown>[] = []
+    let callIndex = 0
+    mockFrom.mockImplementation((table: string) => {
+      callIndex++
+      if (callIndex === 1) {
+        return mockChain({
+          data: {
+            id: 'conn-1',
+            user_id: 'user-1',
+            company_id: 'company-1',
+            bank_name: 'Svea Bank',
+            status: 'expired',
+            session_id: null,
+            accounts_data: [
+              { uid: 'card-old', name: 'BOKIO_Debit_Business', currency: 'SEK', dedup_scope: 'card-old', enabled: false, mirror_card_account: true },
+            ],
+          },
+          error: null,
+        })
+      }
+      if (table === 'cash_accounts') {
+        return mockChain({
+          data: [{ id: 'row-old', external_uid: 'card-old', ledger_account: '1931' }],
+          error: null,
+        })
+      }
+      const chain: Record<string, unknown> = {}
+      chain.update = vi.fn((payload: Record<string, unknown>) => {
+        capturedUpdates.push(payload)
+        return chain
+      })
+      chain.eq = vi.fn().mockReturnValue(chain)
+      chain.select = vi.fn().mockReturnValue(chain)
+      chain.in = vi.fn().mockReturnValue(chain)
+      chain.single = vi.fn().mockResolvedValue({
+        data: { id: 'conn-1', bank_name: 'Svea Bank', company_id: 'company-1', user_id: 'user-1' },
+        error: null,
+      })
+      chain.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null })
+      return chain
+    })
+    mockCrossCompanyContext.mockResolvedValue({
+      claims: new Map(),
+      deselectedIbans: new Set(),
+      activeCompanyIbans: new Set(),
+    })
+    mockCreateSession.mockResolvedValue({
+      session_id: 'sess-2',
+      accounts: [{ uid: 'card-new', name: 'BOKIO_Debit_Business', currency: 'SEK' }],
+      access: { valid_until: '2027-12-31T00:00:00Z' },
+      aspsp: { name: 'Svea Bank', country: 'SE' },
+    })
+
+    const response = await GET(makeRequest({ code: 'auth-code', state: 'valid-state' }))
+    expect(response.status).toBe(200)
+    await response.text()
+
+    const accountsData = capturedUpdates[0].accounts_data as Array<{
+      uid: string
+      dedup_scope?: string
+      enabled?: boolean
+      mirror_card_account?: boolean
+    }>
+    expect(accountsData).toHaveLength(1)
+    expect(accountsData[0]).toMatchObject({
+      uid: 'card-new',
+      dedup_scope: 'card-old',
+      enabled: false,
+      mirror_card_account: true,
+    })
+    // Promoted in place under the new uid: same row, same ledger, no allocation.
+    expect(mockAllocate).not.toHaveBeenCalled()
+    expect(mockUpsertFromPsd2).toHaveBeenCalledTimes(1)
+    expect(mockUpsertFromPsd2.mock.calls[0][2]).toMatchObject({
+      external_uid: 'card-new',
+      ledger_account: '1931',
+      reuse_cash_account_id: 'row-old',
+      enabled: false,
+    })
+  })
+
   it('fails closed when the claim lookup errors: new accounts stored deselected, unflagged', async () => {
     const capturedUpdates = mockConnectionFlow({
       id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'SEB', status: 'pending',

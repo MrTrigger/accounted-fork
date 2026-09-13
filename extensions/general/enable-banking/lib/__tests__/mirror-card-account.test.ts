@@ -3,8 +3,9 @@ import { describe, it, expect } from 'vitest'
 import { isMirrorCardAccount, MIRROR_CARD_ACCOUNT_NAMES } from '../mirror-card-account'
 
 describe('isMirrorCardAccount', () => {
-  it('flags the Svea BOKIO_Debit_Business account when it carries no IBAN and no BBAN', () => {
+  it('flags the Svea card accounts when they carry no IBAN and no BBAN', () => {
     expect(isMirrorCardAccount({ name: 'BOKIO_Debit_Business' })).toBe(true)
+    expect(isMirrorCardAccount({ name: 'SVEA_MQ_Debit_B2B' })).toBe(true)
     expect(isMirrorCardAccount({ name: 'BOKIO_Debit_Business', iban: undefined, bban: undefined })).toBe(true)
     // Whitespace around a system identifier is noise, not a different name.
     expect(isMirrorCardAccount({ name: ' BOKIO_Debit_Business ' })).toBe(true)
@@ -25,6 +26,6 @@ describe('isMirrorCardAccount', () => {
   })
 
   it('keeps the known-name list explicit', () => {
-    expect([...MIRROR_CARD_ACCOUNT_NAMES]).toEqual(['BOKIO_Debit_Business'])
+    expect([...MIRROR_CARD_ACCOUNT_NAMES]).toEqual(['BOKIO_Debit_Business', 'SVEA_MQ_Debit_B2B'])
   })
 })

@@ -637,11 +637,15 @@ async function finalizeConnection(
         }
       }
       // Same re-stamp for a mirror card account the user has left off: the
-      // note must survive a renewal, and the row stays unmirrored. An
-      // ENABLED one is the user's deliberate choice and is never touched.
+      // note must survive a renewal. An ENABLED one is the user's deliberate
+      // choice and is never touched. Only a same-uid account is kept out of
+      // the mirror pass (it was never mirrored, or its row already carries
+      // this uid); a PAIRED one (uid change, see pairedPriorUidByNewUid) must
+      // reach the mirror pass so its existing cash_accounts row is re-keyed
+      // to the new uid instead of going stale under the retired one.
       if (account.enabled === false && isMirrorCardAccount(account)) {
         account.mirror_card_account = true
-        guardDisabledUids.add(account.uid)
+        if (!pairedPriorUidByNewUid.has(account.uid)) guardDisabledUids.add(account.uid)
       }
       continue
     }
