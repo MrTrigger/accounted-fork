@@ -29,7 +29,14 @@ vi.mock('../lib/system-auth/config', async (importOriginal) => {
 import { resolveReadAuth, hasVerifiedGrant, findCompanyTokenUser } from '../lib/resolve-auth'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-type TokenRow = { user_id: string; status: string; created_at?: string }
+type TokenRow = {
+  user_id: string
+  status: string
+  created_at?: string
+  expires_at?: string | null
+  refresh_count?: number | null
+  last_error_code?: string | null
+}
 
 /**
  * Chain stub for the company token lookup: `.select().eq().order()` resolves

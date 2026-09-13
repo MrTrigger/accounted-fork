@@ -94,7 +94,7 @@ describe('markNeedsReconsent', () => {
       eq: vi.fn(() => eqChain),
       then: (resolve: (value: unknown) => void) => resolve({ error: null }),
     } as never
-    const update = vi.fn(() => eqChain)
+    const update = vi.fn((_payload: Record<string, unknown>) => eqChain)
     ;(createClient as unknown as { mockReturnValue: (v: unknown) => void }).mockReturnValue({
       from: vi.fn(() => ({ update })),
     })
