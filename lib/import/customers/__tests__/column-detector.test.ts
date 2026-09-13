@@ -111,4 +111,9 @@ describe('detectCustomerColumns', () => {
     expect(result.name_col).toBe(-1)
     expect(result.confidence).toBe(0)
   })
+  it('keeps "Adress 2" as line 2 when there is no line 1', () => {
+    const result = detectCustomerColumns(['Namn', 'Adress 2', 'Postnr'])
+    expect(result.address_line2_col).toBe(1)
+    expect(result.address_line1_col).toBeNull()
+  })
 })

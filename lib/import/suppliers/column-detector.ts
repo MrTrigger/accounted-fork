@@ -97,8 +97,11 @@ export function detectSupplierColumns(headers: string[]): DetectedSupplierColumn
   const supplier_type_col = findColumn(headers, SUPPLIER_TYPE_KEYWORDS, taken)
   const email_col = findColumn(headers, EMAIL_KEYWORDS, taken)
   const phone_col = findColumn(headers, PHONE_KEYWORDS, taken)
-  const address_line1_col = findColumn(headers, ADDRESS_LINE1_KEYWORDS, taken)
+  // Line 2 before line 1: "Address line 2" also contains the whole word
+  // "address", so a file that has line 2 but no line 1 would otherwise hand it
+  // to line 1.
   const address_line2_col = findColumn(headers, ADDRESS_LINE2_KEYWORDS, taken)
+  const address_line1_col = findColumn(headers, ADDRESS_LINE1_KEYWORDS, taken)
   const postal_code_col = findColumn(headers, POSTAL_CODE_KEYWORDS, taken)
   const city_col = findColumn(headers, CITY_KEYWORDS, taken)
   const country_col = findColumn(headers, COUNTRY_KEYWORDS, taken)

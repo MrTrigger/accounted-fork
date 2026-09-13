@@ -99,4 +99,9 @@ describe('detectSupplierColumns', () => {
     expect(result.name_col).toBe(-1)
     expect(result.confidence).toBe(0)
   })
+  it('keeps "Address line 2" as line 2 when there is no line 1', () => {
+    const result = detectSupplierColumns(['Namn', 'Address line 2', 'Postnr'])
+    expect(result.address_line2_col).toBe(1)
+    expect(result.address_line1_col).toBeNull()
+  })
 })
