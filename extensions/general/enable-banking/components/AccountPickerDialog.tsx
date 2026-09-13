@@ -36,6 +36,7 @@ import {
   resolveGapFillStart,
 } from '../lib/date-suggestions'
 import { describeClaimedElsewhere, partitionByClaim } from '../lib/claimed-accounts'
+import { CARD_RESOURCE_NOTE } from '../lib/card-resource'
 import type { StoredAccount } from '../types'
 import {
   BankSyncProgressDialog,
@@ -316,7 +317,10 @@ export function AccountPickerDialog({
   // selected by an explicit tick inside the disclosure. Vacuously true when
   // there are no own accounts, so "Markera alla" is disabled instead of
   // being a live button that does nothing.
-  const allSelected = ownAccounts.every((a) => selected.has(a.uid))
+  // A card view of a payment account (card_resource) is never part of "alla":
+  // it stays unchecked unless ticked by hand, so it neither blocks the
+  // all-selected state nor gets swept in by "Markera alla".
+  const allSelected = ownAccounts.every((a) => a.card_resource || selected.has(a.uid))
   const noneSelected = selected.size === 0
   // Claimed accounts the user deliberately ticked inside the disclosure. They
   // count in "x av y valda" and are named on the disclosure line even while
@@ -358,7 +362,7 @@ export function AccountPickerDialog({
     // Own accounts only; a claimed account already ticked stays ticked.
     setSelected(prev => {
       const next = new Set(prev)
-      for (const a of ownAccounts) next.add(a.uid)
+      for (const a of ownAccounts) if (!a.card_resource) next.add(a.uid)
       return next
     })
   }
@@ -618,6 +622,13 @@ export function AccountPickerDialog({
               <p className="text-xs text-muted-foreground">
                 Tidigare bortvald: markera för att synka i detta bolag
               </p>
+            )}
+            {/* Card view of a payment account (Svea): its rows mirror the
+                account's own card purchases with the sign flipped. Off by
+                default and left out of "Markera alla"; ticking it is a
+                deliberate act. */}
+            {account.card_resource && (
+              <p className="text-xs text-muted-foreground">{CARD_RESOURCE_NOTE}</p>
             )}
           </div>
           {account.balance !== undefined && (

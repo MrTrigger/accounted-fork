@@ -5,6 +5,7 @@ import { ensureInitialized } from '@/lib/init'
 import { createLogger } from '@/lib/logger'
 import { createSession, extractBban, type AccountInfo } from '@/extensions/general/enable-banking/lib/api-client'
 import type { StoredAccount } from '@/extensions/general/enable-banking/types'
+import { isCardResource } from '@/extensions/general/enable-banking/lib/card-resource'
 import { eventBus } from '@/lib/events/bus'
 import {
   upsertFromPsd2,
@@ -491,11 +492,20 @@ async function finalizeConnection(
 
   const accountsMetadata: StoredAccount[] = accounts.map((account: AccountInfo) => {
     const normalizedIban = normalizeIban(account.account_id?.iban)
+    const cardResource = isCardResource({
+      cash_account_type: account.cash_account_type,
+      product: account.product,
+      name: account.name,
+      iban: account.account_id?.iban,
+    })
     return {
       uid: account.uid,
       iban: account.account_id?.iban,
       bban: extractBban(account),
       name: account.name || account.product,
+      ...(account.cash_account_type ? { cash_account_type: account.cash_account_type } : {}),
+      ...(account.product ? { product: account.product } : {}),
+      ...(cardResource ? { card_resource: true } : {}),
       currency: account.currency,
       // Carry the user's earlier choice for an account we have seen before;
       // only genuinely new accounts default to enabled. The picker shown
@@ -514,6 +524,20 @@ async function finalizeConnection(
         normalizedIban ??
         account.uid,
     }
+  })
+  // Which resource types the bank lists, per uid. No account numbers, no
+  // balances: this is what tells whether an ASPSP types its card view CARD or
+  // hides it behind a product code (issue #2564).
+  console.log('[enable-banking] Session account types', {
+    connectionId: pendingConnection.id,
+    bankName: pendingConnection.bank_name,
+    accounts: accountsMetadata.map((a) => ({
+      uid: a.uid,
+      cashAccountType: a.cash_account_type ?? null,
+      product: a.product ?? null,
+      hasIban: Boolean(a.iban),
+      cardResource: a.card_resource === true,
+    })),
   })
 
   // The maps above leave one corner open (issue #1709): a NO-IBAN account
@@ -602,6 +626,7 @@ async function finalizeConnection(
   // selection save allocates + mirrors any of them the user turns on.
   const guardDisabledUids = new Set<string>()
   let claimedCount = 0
+  let cardResourceCount = 0
   for (const account of accountsMetadata) {
     const normalizedIban = normalizeIban(account.iban)
     // Row-local memory only. The active company's standing state on OTHER
@@ -635,6 +660,18 @@ async function finalizeConnection(
           claimedCount += 1
         }
       }
+      continue
+    }
+
+    if (account.card_resource) {
+      // A card view of a payment account (Svea, issue #2564): its rows are
+      // the account's own card purchases mirrored with the sign flipped and
+      // no text. Stored off and unmirrored; the picker says why, and turning
+      // it on stays a deliberate act. Independent of the claim lookup below:
+      // a mirror is a mirror whatever the sibling companies book.
+      account.enabled = false
+      guardDisabledUids.add(account.uid)
+      cardResourceCount += 1
       continue
     }
 
@@ -674,6 +711,14 @@ async function finalizeConnection(
       connectionId: pendingConnection.id,
       companyId: pendingConnection.company_id,
       claimedCount,
+      accountCount: accountsMetadata.length,
+    })
+  }
+  if (cardResourceCount > 0) {
+    log.info('session lists card views of payment accounts: stored disabled', {
+      connectionId: pendingConnection.id,
+      bankName: pendingConnection.bank_name,
+      cardResourceCount,
       accountCount: accountsMetadata.length,
     })
   }

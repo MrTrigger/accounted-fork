@@ -791,6 +791,128 @@ describe('GET /api/extensions/enable-banking/callback', () => {
     expect(mockUpsertFromPsd2).not.toHaveBeenCalled()
   })
 
+  // Issue #2564: Svea lists a card view of the payment account as a second
+  // resource (no IBAN, product-code name). Its rows are the account's own
+  // card purchases mirrored with the sign flipped and no text, so it must
+  // arrive unchecked, flagged, and unmirrored.
+  it('stores a card view of a payment account disabled + flagged and never mirrors it', async () => {
+    const capturedUpdates = mockConnectionFlow({
+      id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'Svea Bank', status: 'pending',
+    })
+    mockCreateSession.mockResolvedValue({
+      session_id: 'sess-1',
+      accounts: [
+        {
+          uid: 'acc-main',
+          account_id: { iban: 'SE1234' },
+          name: 'Testbrand AB',
+          cash_account_type: 'CACC',
+          currency: 'SEK',
+        },
+        {
+          uid: 'acc-card',
+          name: 'BOKIO_Debit_Business',
+          product: 'BOKIO_Debit_Business',
+          cash_account_type: 'CARD',
+          currency: 'SEK',
+        },
+      ],
+      access: { valid_until: '2027-12-31T00:00:00Z' },
+      aspsp: { name: 'Svea Bank', country: 'SE' },
+    })
+
+    const response = await GET(makeRequest({ code: 'auth-code', state: 'valid-state' }))
+    await response.text()
+
+    const accountsData = capturedUpdates[0].accounts_data as Array<{
+      uid: string
+      enabled: boolean
+      card_resource?: boolean
+      cash_account_type?: string
+      product?: string
+      claimed_by_company_id?: string
+    }>
+    const main = accountsData.find(a => a.uid === 'acc-main')
+    const card = accountsData.find(a => a.uid === 'acc-card')
+    expect(main?.enabled).toBe(true)
+    expect(main?.card_resource).toBeUndefined()
+    expect(main?.cash_account_type).toBe('CACC')
+    expect(card?.enabled).toBe(false)
+    expect(card?.card_resource).toBe(true)
+    expect(card?.cash_account_type).toBe('CARD')
+    expect(card?.product).toBe('BOKIO_Debit_Business')
+    // Not a sibling claim: the picker note names the mirror, not a company.
+    expect(card?.claimed_by_company_id).toBeUndefined()
+
+    // No cash_accounts row and no 19xx slot for the mirror.
+    expect(mockUpsertFromPsd2).toHaveBeenCalledTimes(1)
+    expect((mockUpsertFromPsd2.mock.calls[0][2] as { external_uid: string }).external_uid).toBe('acc-main')
+    expect(mockAllocate).toHaveBeenCalledTimes(1)
+  })
+
+  it('recognizes the card view from its product code when the bank types it CACC', async () => {
+    const capturedUpdates = mockConnectionFlow({
+      id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'Svea Bank', status: 'pending',
+    })
+    mockCreateSession.mockResolvedValue({
+      session_id: 'sess-1',
+      accounts: [
+        { uid: 'acc-main', account_id: { iban: 'SE1234' }, name: 'Testbrand AB', currency: 'SEK' },
+        { uid: 'acc-card', product: 'SVEA_MQ_Debit_B2B', cash_account_type: 'CACC', currency: 'SEK' },
+      ],
+      access: { valid_until: '2027-12-31T00:00:00Z' },
+      aspsp: { name: 'Svea Bank', country: 'SE' },
+    })
+
+    const response = await GET(makeRequest({ code: 'auth-code', state: 'valid-state' }))
+    await response.text()
+
+    const accountsData = capturedUpdates[0].accounts_data as Array<{
+      uid: string
+      enabled: boolean
+      name?: string
+      card_resource?: boolean
+    }>
+    const card = accountsData.find(a => a.uid === 'acc-card')
+    expect(card?.enabled).toBe(false)
+    expect(card?.card_resource).toBe(true)
+    expect(card?.name).toBe('SVEA_MQ_Debit_B2B')
+    expect(mockUpsertFromPsd2).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a card view this row already synced enabled across a renewal (standing choice outranks the flag)', async () => {
+    const capturedUpdates = mockConnectionFlow({
+      id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'Svea Bank', status: 'expired',
+      accounts_data: [
+        { uid: 'acc-main', iban: 'SE1234', name: 'Testbrand AB', currency: 'SEK', enabled: true },
+        { uid: 'acc-card', name: 'BOKIO_Debit_Business', currency: 'SEK', enabled: true },
+      ],
+    })
+    mockCreateSession.mockResolvedValue({
+      session_id: 'sess-2',
+      accounts: [
+        { uid: 'acc-main', account_id: { iban: 'SE1234' }, name: 'Testbrand AB', currency: 'SEK' },
+        { uid: 'acc-card', name: 'BOKIO_Debit_Business', cash_account_type: 'CARD', currency: 'SEK' },
+      ],
+      access: { valid_until: '2027-12-31T00:00:00Z' },
+      aspsp: { name: 'Svea Bank', country: 'SE' },
+    })
+
+    const response = await GET(makeRequest({ code: 'auth-code', state: 'valid-state' }))
+    await response.text()
+
+    const accountsData = capturedUpdates[0].accounts_data as Array<{
+      uid: string
+      enabled: boolean
+      card_resource?: boolean
+    }>
+    const card = accountsData.find(a => a.uid === 'acc-card')
+    // The flag is stamped (the picker note shows) but the user's standing
+    // enable on this row is not silently reversed by a renewal.
+    expect(card?.card_resource).toBe(true)
+    expect(card?.enabled).toBe(true)
+  })
+
   it('fails closed when the claim lookup errors: new accounts stored deselected, unflagged', async () => {
     const capturedUpdates = mockConnectionFlow({
       id: 'conn-1', user_id: 'user-1', company_id: 'company-1', bank_name: 'SEB', status: 'pending',

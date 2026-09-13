@@ -105,6 +105,15 @@ export interface AccountInfo {
   all_account_ids?: GenericIdentification[]
   name?: string
   product?: string
+  /**
+   * Enable Banking CashAccountType: CACC, CARD, CASH, LOAN, OTHR, SVGS.
+   * Captured because some ASPSPs (Svea) list a CARD view of a payment account
+   * as a separate resource whose rows mirror the account's own purchases
+   * (lib/card-resource.ts, issue #2564).
+   */
+  cash_account_type?: string
+  /** PRIV or ORGA. */
+  usage?: string
   currency: string
   identification_hash?: string
 }

@@ -8,6 +8,18 @@ export interface StoredAccount {
   // stay IBAN-then-uid (see dedup_scope).
   bban?: string
   name?: string
+  // Enable Banking CashAccountType (CACC, CARD, ...) and the bank's product
+  // name, as the session listed them. Stored so a card view of a payment
+  // account can be told from a real account (lib/card-resource.ts).
+  cash_account_type?: string
+  product?: string
+  // Set by the OAuth callback when the resource is a card view of a payment
+  // account (Svea, issue #2564): its rows are the account's own card
+  // purchases mirrored with the sign flipped and no text. Stored disabled
+  // and never mirrored into cash_accounts; the picker renders the note and
+  // leaves it out of "Markera alla". A fact about the resource, not a state:
+  // survives a deliberate enable, unlike the claimed_by_* flags.
+  card_resource?: boolean
   currency: string
   balance?: number
   // Bank-reported available balance from the same BALANCES response as
