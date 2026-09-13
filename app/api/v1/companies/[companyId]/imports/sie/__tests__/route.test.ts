@@ -2,7 +2,7 @@
  * Integration tests for POST /api/v1/companies/:companyId/imports/sie.
  *
  * Regression: the route used to pass [] as account mappings, which
- * executeSIEImport's mapping-coverage guard rejects for any real file
+ * durable job admission's mapping-coverage guard rejects for any real file
  * (before that guard existed, every voucher was silently skipped). The
  * route must generate mappings server-side from the file's #KONTO records,
  * like the dashboard execute route does.
@@ -24,26 +24,8 @@ vi.mock('@supabase/supabase-js', async () => {
   return { ...actual, createClient: vi.fn().mockReturnValue({}) }
 })
 
-const { submitSIEJobMock, checkDuplicateImportMock, startOperationMock } = vi.hoisted(() => ({
+const { submitSIEJobMock } = vi.hoisted(() => ({
   submitSIEJobMock: vi.fn(),
-  checkDuplicateImportMock: vi.fn().mockResolvedValue(null),
-  startOperationMock: vi.fn().mockResolvedValue({ id: 'op-1' }),
-}))
-
-vi.mock('@/lib/import/sie-import', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/import/sie-import')>(
-    '@/lib/import/sie-import',
-  )
-  return {
-    ...actual,
-
-    checkDuplicateImport: checkDuplicateImportMock,
-  }
-})
-vi.mock('@/lib/api/v1/operations', () => ({
-  startOperation: startOperationMock,
-  completeOperation: vi.fn().mockResolvedValue(undefined),
-  failOperation: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/import/sie-jobs', () => ({ submitSIEJob: submitSIEJobMock }))
@@ -126,18 +108,8 @@ beforeEach(() => {
     scopes: ['bookkeeping:write'],
     mode: 'live',
   })
-  checkDuplicateImportMock.mockResolvedValue(null)
-  startOperationMock.mockResolvedValue({ id: 'op-1' })
   submitSIEJobMock.mockResolvedValue({
-    success: true, id: 'op-1', job_state:'queued', fiscal_period_id:'fp-1',
-    importId: 'imp-1',
-    fiscalPeriodId: 'fp-1',
-    openingBalanceEntryId: 'ob-1',
-    journalEntriesCreated: 1,
-    journalEntryIds: ['je-1'],
-    errors: [],
-    warnings: [],
-    replacedPriorImport: null,
+    id: 'op-1', job_state: 'queued', fiscal_period_id: 'fp-1',
   })
   mockServiceClient.mockReturnValue(
     makeFlexibleSupabase({
@@ -197,7 +169,7 @@ describe('POST /imports/sie', () => {
     submitSIEJobMock.mockClear()
     await callRoute()
     options = submitSIEJobMock.mock.calls[0][5] as Record<string, unknown>
-    // Undefined lets executeSIEImport pick a series the file's own vouchers
+    // Undefined lets job preparation pick a series the file's own vouchers
     // do not use, instead of a hardcoded default that could collide.
     expect(options.openingBalanceSeries).toBeUndefined()
   })

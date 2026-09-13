@@ -53,3 +53,6 @@ supabase/migrations/20260911165308_sie_review_conflict_response.sql -text whites
 supabase/migrations/20260911171453_sie_period_hold_insert_guard.sql -text whitespace=blank-at-eol,space-before-tab,-blank-at-eof,cr-at-eol
 supabase/migrations/20260913162552_sie_repair_browser_lockdown.sql text eol=lf
 supabase/migrations/20260913162620_sie_observer_shared_period_locks.sql text eol=lf
+supabase/migrations/20260913200625_sie_verified_sandbox_cleanup.sql text eol=lf
+supabase/migrations/20260913200705_sie_report_shared_observation.sql text eol=lf
+supabase/migrations/20260913200922_sie_sandbox_operation_receipts.sql text eol=lf
