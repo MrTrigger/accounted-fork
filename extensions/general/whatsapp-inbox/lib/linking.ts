@@ -18,7 +18,10 @@
 import crypto from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WhatsAppPhoneLink } from '@/types'
+import { createLogger } from '@/lib/logger'
 import { encryptPhone, hashPhone, hashSecret, maskPhone } from './phone-crypto'
+
+const log = createLogger('whatsapp-inbox/linking')
 
 /** Uppercased twin of generate_inbox_local_part's ambiguity-free alphabet
  *  (no I/L/O/U, no 0/1): codes survive being read aloud or retyped. */
@@ -247,6 +250,16 @@ export async function lookupActiveLink(
     .eq('phone_hash', phoneHash)
     .is('revoked_at', null)
     .maybeSingle()
-  if (error) return 'transient_error'
+  if (error) {
+    // The error itself is the only signal that separates a one-off timeout
+    // from a standing condition: two active rows for one phone hash fail this
+    // read the same way on every message, forever. Nothing identifying is
+    // logged, the phone hash is peppered and never appears here.
+    log.warn('phone link lookup failed; reporting transient', {
+      code: error.code,
+      error: error.message,
+    })
+    return 'transient_error'
+  }
   return (data as WhatsAppPhoneLink | null) ?? null
 }
