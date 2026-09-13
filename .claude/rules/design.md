@@ -123,7 +123,7 @@ Never render raw `{x.invoice_date}` directly: always route through `formatDate()
 **Currency.** `formatCurrency(n, currency?)` from `lib/utils.ts`. Default SEK.
 
 **Typography.**
-- Page title: use `PageHeader` (renders `font-display text-2xl leading-8 tracking-tight`, exactly 24px/32px, locked). Do not hand-roll an `<h1>`.
+- Page title: use `PageHeader`. Its base classes (`font-display text-2xl leading-8 tracking-tight`) are restyled into the 13px/500 top-bar title by `.page-header-title` in `app/globals.css` (convention 2). Do not hand-roll an `<h1>`.
 - Card title: `<CardTitle className="text-base">` for sections, default for primary cards. The primitive already drops `font-medium`: do not add it back.
 - Section divider header inside a page: `<h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">`.
 - Headline number: `font-display text-xl tabular-nums`. No `font-medium`: Hedvig's natural weight carries the gravitas.
