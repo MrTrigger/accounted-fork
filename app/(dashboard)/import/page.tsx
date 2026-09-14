@@ -1007,7 +1007,12 @@ function SIEImportWizard({
       const res = await fetch('/api/import/sie/execute', { method: 'POST', body: formData })
       const data = await res.json()
 
-      if (!res.ok) {setError(getErrorMessage(data));return}
+      if (!res.ok) {
+        const msg = getErrorMessage(data)
+        setError(msg)
+        toast({ title: 'Import avbröts', description: msg, variant: 'destructive' })
+        return
+      }
       showJob(data.data.importId)
     } catch (err) {
       const isNetworkError = err instanceof TypeError && (err.message === 'Failed to fetch' || err.message.includes('NetworkError'))
@@ -1081,7 +1086,7 @@ function SIEImportWizard({
       {step === 'review' && preview && (
         <ImportReviewStep preview={preview} mappings={mappings}
           onExecute={handleExecuteImport} onBack={goBack} isLoading={isLoading}
-          theaterModel={theaterModel} />
+          theaterModel={theaterModel} error={error} />
       )}
       {step === 'result' && importResult && (
         <ImportResultStep result={importResult} onNewImport={handleNewImport} onUndo={handleUndo}

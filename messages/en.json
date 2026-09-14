@@ -8199,6 +8199,7 @@
     "ib_series_label": "Voucher series for opening balances",
     "ib_series_hint": "Pick a series the file's own vouchers do not use, otherwise their numbering shifts",
     "ib_series_in_file": "used in the file",
+    "execute_rejected_title": "The import did not start",
     "ib_series_collision": "This series is used by the file's own vouchers: the opening-balance voucher takes the series' next number and shifts the file's numbering by one",
     "ib_exists_hint": "An opening-balance voucher already exists for this fiscal year, so opening-balance import is off by default",
     "back_to_choices": "Back to choices",
