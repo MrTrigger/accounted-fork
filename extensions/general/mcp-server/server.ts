@@ -63,6 +63,7 @@ import { ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { dbError, errorCauseTag } from '@/lib/errors/db-error'
 import { getStructuredError } from '@/lib/errors/get-structured-error'
 import { applySettlementAccount } from '@/lib/bookkeeping/mapping-engine'
+import { creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildTransactionEntryLines, createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
 import { upsertCounterpartyTemplate, findCounterpartyTemplatesBatch, formatCounterpartyName } from '@/lib/bookkeeping/counterparty-templates'
@@ -19112,13 +19113,13 @@ export const tools: McpTool[] = [
     name: 'gnubok_credit_invoice',
     keywords: ['kreditfaktura', 'kreditera', 'kundfaktura'],
     title: 'Credit Customer Invoice (Kreditfaktura)',
-    description: 'Stage credit note (kreditfaktura) for a customer invoice: KR- prefixed mirror invoice + reverses original JE (accrual). Original must be sent/paid/overdue and not already credited.',
+    description: 'Stage credit note (kreditfaktura) for a customer invoice: KR- mirror + reverses the original JE once the sale reached the ledger (kontantmetoden: at payment). Original must be sent/paid/overdue, not credited.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        invoice_id: { type: 'string', description: 'UUID of the invoice to credit' },
-        reason: { type: 'string', description: 'Optional reason note (Swedish, shown on the credit note)' },
+        invoice_id: { type: 'string', description: 'Invoice to credit' },
+        reason: { type: 'string', description: 'Reason note (Swedish), shown on the credit note' },
       },
       required: ['invoice_id'],
     },
@@ -19129,10 +19130,20 @@ export const tools: McpTool[] = [
       const reason = args.reason as string | undefined
       if (!id) throw new Error('invoice_id is required')
 
-      const { data: inv } = await supabase
-        .from('invoices')
-        .select('id, invoice_number, document_type, status, total, currency, customer:customers(name)')
-        .eq('id', id).eq('company_id', companyId).single()
+      // The booked-ness fields decide whether approval will post a verifikat:
+      // the preview must say which, so the agent never promises "nothing is
+      // booked" for a paid kontantmetod invoice (issue #2552).
+      const [{ data: inv }, { data: settings }] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('id, invoice_number, document_type, status, total, currency, journal_entry_id, paid_at, paid_amount, customer:customers(name)')
+          .eq('id', id).eq('company_id', companyId).single(),
+        supabase
+          .from('company_settings')
+          .select('accounting_method')
+          .eq('company_id', companyId)
+          .maybeSingle(),
+      ])
 
       if (!inv) throw new Error('Invoice not found')
       if (inv.document_type && inv.document_type !== 'invoice') {
@@ -19143,6 +19154,11 @@ export const tools: McpTool[] = [
         throw new Error('Endast skickade, betalda eller förfallna fakturor kan krediteras')
       }
 
+      const postsJournalEntry = creditNoteNeedsJournalEntry(
+        (settings as { accounting_method?: string | null } | null)?.accounting_method || 'accrual',
+        inv,
+      )
+
       return stagePendingOperation(supabase, companyId, userId, 'credit_invoice',
         `Kreditera faktura ${inv.invoice_number}`,
         { invoice_id: id, reason },
@@ -19152,11 +19168,16 @@ export const tools: McpTool[] = [
           total: inv.total,
           currency: inv.currency,
           reason: reason || null,
-          method: 'creates KR- mirror invoice + reverses original JE (accrual)',
+          posts_journal_entry: postsJournalEntry,
+          method: postsJournalEntry
+            ? 'creates KR- mirror invoice + reverses the original JE (debit 30xx + 26xx, credit 1510)'
+            : 'creates KR- mirror invoice only: the kontantmetod original is unpaid and was never booked',
         },
         actor,
         {
-          description: 'After approval the credit note posts and the kundfordring is cleared. If a refund is owed to the customer, book the outbound payment when it leaves the bank.',
+          description: postsJournalEntry
+            ? 'After approval the credit note posts and the kundfordring is cleared. If a refund is owed to the customer, book the outbound payment when it leaves the bank.'
+            : 'After approval the credit note is created without a verifikat: the unpaid kontantmetod original never reached the ledger, so there is nothing to reverse.',
           tool: 'gnubok_get_ar_ledger',
         }
       )
