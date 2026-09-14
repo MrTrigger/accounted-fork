@@ -1215,6 +1215,10 @@ export const ARCHIVE_COVERED_ELSEWHERE_TABLES: Record<string, string> = {
   account_reconciliation_attachments: 'bilagor/ + bilagor/manifest.json',
   sie_imports: 'sie/imports.json + sie/original/',
   sie_account_mappings: 'sie/account_mappings.json',
+  // Four marker rows per closed year, one per kontantmetod cut-off verifikat.
+  // The verifikat themselves ship in full, each still carrying the Swedish
+  // description a reader identifies it by, so the archive loses nothing.
+  kontantmetod_cutoff_entries: 'sie/<period>.se + rapporter/<period>/grundbok.json',
 }
 
 /**
