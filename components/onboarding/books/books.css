@@ -116,6 +116,19 @@
 .theater { display: grid; gap: 12px; grid-template-columns: 1fr; }
 .th-stage { position: relative; min-height: 420px; height: min(52vh, 490px); }
 .th-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; color: hsl(var(--foreground)); }
+.th-progress { display: grid; gap: 8px; padding: 8px 0 12px; font-size: 13px; }
+.th-progress-heading, .th-progress-detail { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.th-progress-label { display: flex; align-items: center; gap: 8px; }
+.th-progress-activity { width: 8px; height: 8px; flex-shrink: 0; border-radius: 99px; background: currentColor; animation: thProgressPulse 1.6s ease-in-out infinite; }
+.th-progress-detail { flex-wrap: wrap; font-size: 12px; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
+.th-progress-track[data-state="indeterminate"] > div { width: 30%; animation: thProgressTravel 1.8s ease-in-out infinite; }
+.th-progress[data-phase="failed"] .th-progress-track > div { animation: none; }
+@keyframes thProgressPulse { 50% { opacity: 0.3; } }
+@keyframes thProgressTravel { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) {
+  .th-progress-activity, .th-progress-track > div { animation: none !important; transition: none !important; }
+  .th-progress-track[data-state="indeterminate"] > div { transform: translateX(115%) !important; }
+}
 .th-lines { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .th-line { border-top: 1px solid hsl(var(--border) / 0.6); padding: 8px 0 0; opacity: 0; transition: opacity 500ms var(--ease-out); }
 .th-line.is-on { opacity: 1; }

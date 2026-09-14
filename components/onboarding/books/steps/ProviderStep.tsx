@@ -60,6 +60,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const [model, setModel] = useState<TheaterModelInput | null>(null)
   const [shown, setShown] = useState(0)
   const [tick, setTick] = useState(0)
+  const [prepared, setPrepared] = useState(0)
   const [total, setTotal] = useState(0)
   const [created, setCreated] = useState(0)
   const [accountsN, setAccountsN] = useState(0)
@@ -163,7 +164,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const lines: TheaterLine[] = [
     { title: t('th_read_from', { company: companyName, provider: provName }), sub: t('fact_years', { count: years.length }), tone: 'ok' },
     { title: t('th_map'), sub: created ? t('th_map_sub_new', { count: accountsN, created }) : t('th_map_sub_known', { count: accountsN }) },
-    { title: t('th_write'), sub: jobPhase === 'preparing' ? t('th_write_preparing', { total: total.toLocaleString('sv-SE') }) : jobPhase === 'checking' ? t('th_write_checking') : t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: total.toLocaleString('sv-SE') }) },
+    { title: t('th_write'), sub: jobPhase === 'preparing' ? t('th_write_preparing', { total: total.toLocaleString('sv-SE') }) : jobPhase === 'checking' ? t('th_write_checking') : t('progress_written', { count: tick.toLocaleString('sv-SE') }) },
     { title: t('th_registers'), sub: regText },
     { title: t('th_balance'), sub: importError ?? t('th_balance_sub'), tone: importError ? 'err' : 'ok' },
   ]
@@ -172,6 +173,9 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
     if (!consentId || years.length === 0) return
     setPhase('importing')
     setImportError(null)
+    setTick(0)
+    setPrepared(0)
+    setJobPhase('preparing')
     setOptsOpen(false)
     dispatch({ type: 'SET_WORKING', working: true })
     at(300, () => setShown(1))
@@ -216,14 +220,19 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
         const importedAccounts: string[] = data.parsed.accounts.map((a) => a.number)
         let writtenBefore = 0
         for (let i = 0; i < data.rawContent.length; i++) {
+          setJobPhase('preparing')
+          setPrepared(0)
           const yearLabel = data.fileStatuses?.[i]?.fiscalYear
           const result = await providerImportSie(data.rawContent[i], mappings, voucherSeries, (job) => {
             const { written, phase } = jobProgress(job)
             setJobPhase(phase)
+            setPrepared(job.prepared_through ?? 0)
+            setTick(writtenBefore + written)
             apiRef.current?.setFeedCap(Math.min(voucherTotal, writtenBefore + written))
           })
           if (!result.success) throw new Error(`${yearLabel ? `${t('year')} ${yearLabel}: ` : ''}${result.errors.join(' ') || t('provider_failed')}`)
           writtenBefore += result.journalEntriesCreated ?? 0
+          setTick(writtenBefore)
           void invalidateReferenceData(['ref:accounts', 'ref:fiscal-periods'])
         }
         setJobPhase(null)
@@ -231,6 +240,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
         dispatch({ type: 'IMPORTED', accounts: importedAccounts })
         at(400, () => apiRef.current?.spawnCounterparties())
       } else {
+        setJobPhase(null)
         setModel({ company: companyName, accounts: [], counterparties: [] })
         setShown(3)
       }
@@ -388,8 +398,13 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
           shown={shown}
           settled={phase === 'imported'}
           hold={phase === 'importing' ? t('sie_hold_open') : null}
+          progress={jobPhase || shown === 3 ? {
+            phase: importError ? 'failed' : jobPhase ?? 'checking',
+            written: tick,
+            total,
+            prepared,
+          } : undefined}
           onApi={(api) => { apiRef.current = api }}
-          onCount={(n) => setTick(Math.min(n, total || n))}
           groupLabels={{ tillgangar: t('grp_assets'), skulder: t('grp_liabilities'), intakter: t('grp_revenue'), kostnader: t('grp_costs') }}
           reviewLabel={t('grp_review')}
         />

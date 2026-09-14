@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { createTheater, type TheaterAccount, type TheaterApi, type TheaterGroup, type TheaterParty } from '../engines/theater-engine'
+import { ImportProgress, type ImportProgressProps } from './ImportProgress'
 
 export interface TheaterLine {
   title: string
@@ -23,6 +24,7 @@ interface TheaterProps {
   /** True when the last shown line has finished (its check may turn green). */
   settled?: boolean
   hold?: string | null
+  progress?: ImportProgressProps
   onApi: (api: TheaterApi | null) => void
   onCount?: (landed: number) => void
   groupLabels?: Partial<Record<TheaterGroup, string>>
@@ -34,7 +36,7 @@ interface TheaterProps {
  * The engine is created once the model exists and torn down on unmount;
  * the step drives it through the api (spawn, feed, register stage).
  */
-export function Theater({ model, lines, shown, settled, hold, onApi, onCount, groupLabels, reviewLabel }: TheaterProps) {
+export function Theater({ model, lines, shown, settled, hold, progress, onApi, onCount, groupLabels, reviewLabel }: TheaterProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const onApiRef = useRef(onApi)
   const onCountRef = useRef(onCount)
@@ -75,6 +77,7 @@ export function Theater({ model, lines, shown, settled, hold, onApi, onCount, gr
       <div className="th-stage">
         <canvas ref={canvasRef} aria-hidden="true" />
       </div>
+      {progress ? <ImportProgress {...progress} /> : null}
       <div className="th-lines" role="status" aria-live="polite">
         {lines.map((ln, i) => {
           const visible = shown > i

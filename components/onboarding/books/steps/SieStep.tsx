@@ -8,6 +8,7 @@ import { jobProgress, type JobPhase } from '../lib/job-progress'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { useCompanySettings } from '@/components/settings/useSettings'
 import { BRANCH_PROVIDERS } from '@/lib/onboarding-journey/branch'
+import { SIE_FIRST_PROVIDERS } from '@/lib/onboarding-books/reducer'
 import { defaultOpeningBalanceSeries } from '@/lib/import/opening-balance-defaults'
 import type { AccountMapping, ImportPreview, SIEAccount, SIEHeader } from '@/lib/import/types'
 import { InkText } from '@/components/onboarding/journey/ink'
@@ -15,7 +16,6 @@ import type { TheaterApi } from '../engines/theater-engine'
 import { Theater, type TheaterLine, type TheaterModelInput } from '../ui/Theater'
 import { Facts, Wait } from '../ui/Verdicts'
 import { InsightPanel } from '../ui/InsightPanel'
-import { Pill, Pills } from '../ui/Pills'
 import { OptRow, OptRows, Sentence, Switch } from '../ui/Sentence'
 import {
   openProviderWindow, pointWindow, providerAccept, providerConnect, providerMigrate, providerSubmitToken, useProviderMessage,
@@ -41,7 +41,7 @@ interface FileEntry {
 }
 
 type Phase = 'drop' | 'importing' | 'imported'
-type Reg = null | 'pick' | 'card' | 'connecting' | 'token' | 'running' | 'done' | 'skipped'
+type Reg = null | 'card' | 'connecting' | 'token' | 'running' | 'done' | 'skipped'
 
 function yearsOf(files: FileEntry[]): string[] {
   const set = new Set<string>()
@@ -54,8 +54,8 @@ function yearsOf(files: FileEntry[]): string[] {
  * sentence says what will be read with Ändra behind it, then the theater
  * runs while the server writes, oldest year first. Unmapped accounts are
  * created from the file, no mapping page, no VAT review gate: momskoder
- * for revenue accounts are set on the genomlysning instead. Then the
- * registers: kunder, leverantörer and fakturor from the old system.
+ * for revenue accounts are set on the genomlysning instead. Only a selected
+ * SIE-first provider offers its registers afterward; files alone go onward.
  */
 export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const t = useTranslations('books')
@@ -71,13 +71,14 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const [model, setModel] = useState<TheaterModelInput | null>(null)
   const [shown, setShown] = useState(0)
   const [tick, setTick] = useState(0)
+  const [prepared, setPrepared] = useState(0)
   const [jobPhase, setJobPhase] = useState<JobPhase | null>(null)
   const [written, setWritten] = useState(0)
   const [fileIdx, setFileIdx] = useState(0)
   const [created, setCreated] = useState(0)
   const [importError, setImportError] = useState<string | null>(null)
   const [reg, setReg] = useState<Reg>(null)
-  const [regProvider, setRegProvider] = useState<string | null>(state.provider)
+  const regProvider = state.provider
   const [regShown, setRegShown] = useState(0)
   const [regTick, setRegTick] = useState(0)
   const [regCounts, setRegCounts] = useState<{ customers: number; suppliers: number; invoices: number; linked: number } | null>(null)
@@ -93,8 +94,8 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
     return () => list.forEach((id) => window.clearTimeout(id))
   }, [])
 
-  const provName = useMemo(() => BRANCH_PROVIDERS.find((p) => p.id === (regProvider ?? state.provider))?.name ?? null, [regProvider, state.provider])
-  const sieFirst = !!state.provider
+  const provName = useMemo(() => BRANCH_PROVIDERS.find((p) => p.id === regProvider)?.name ?? null, [regProvider])
+  const sieFirst = SIE_FIRST_PROVIDERS.has(state.provider ?? '')
 
   /* ── parse ───────────────────────────────────────────────────────── */
   const parseOne = useCallback(async (file: File, index: number) => {
@@ -178,7 +179,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const lines: TheaterLine[] = [
     { title: t('th_read', { company: company ?? '' }), sub: t('fact_years', { count: nYears }), tone: 'ok' },
     { title: t('th_map'), sub: unmapped.length ? t('th_map_sub_new', { count: totalAccounts, created: created || unmapped.length }) : t('th_map_sub_known', { count: totalAccounts }) },
-    { title: t('th_write'), sub: jobPhase === 'preparing' ? t('th_write_preparing', { total: totalVouchers.toLocaleString('sv-SE') }) : jobPhase === 'checking' ? t('th_write_checking') : ordered.length > 1 ? t('th_write_sub_files', { i: Math.min(fileIdx + 1, ordered.length), n: ordered.length, tick: tick.toLocaleString('sv-SE'), total: totalVouchers.toLocaleString('sv-SE') }) : t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: totalVouchers.toLocaleString('sv-SE') }) },
+    { title: t('th_write'), sub: jobPhase === 'preparing' ? t('th_write_preparing', { total: totalVouchers.toLocaleString('sv-SE') }) : jobPhase === 'checking' ? t('th_write_checking') : t('progress_written', { count: tick.toLocaleString('sv-SE') }) },
     { title: t('th_parties'), sub: model ? t('th_parties_sub', { count: model.counterparties.length }) : '' },
     { title: t('th_balance'), sub: importError ?? t('th_balance_sub'), tone: importError ? 'err' : 'ok' },
   ]
@@ -207,6 +208,11 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
     if (ordered.length === 0 || parsing) return
     setPhase('importing')
     setImportError(null)
+    setTick(0)
+    setWritten(0)
+    setPrepared(0)
+    setReg(null)
+    setJobPhase('preparing')
     setOptsOpen(false)
     dispatch({ type: 'SET_WORKING', working: true })
     const m = (await buildModel(ordered[0].file)) ?? { company: company ?? '', accounts: [], counterparties: [] }
@@ -237,6 +243,8 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       const importedAccounts: string[] = []
       for (let i = 0; i < ordered.length; i++) {
         setFileIdx(i)
+        setPrepared(0)
+        setJobPhase('preparing')
         const f = ordered[i]
         const p = f.parsed!
         const mappings = p.mappings.map((mp) => (mp.targetAccount ? mp : { ...mp, targetAccount: mp.sourceAccount, targetName: mp.sourceName, matchType: 'exact' as const, confidence: 1, isOverride: true }))
@@ -262,6 +270,8 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
           ? await waitForSIEJob(jobId, (job) => {
               const { written, phase } = jobProgress(job)
               setJobPhase(phase)
+              setPrepared(job.prepared_through ?? 0)
+              setTick(writtenSoFar + written)
               apiRef.current?.setFeedCap(Math.min(totalVouchers, writtenSoFar + written))
             })
           : (res.ok ? data.result : data?.error?.details?.result)) as { success?: boolean; journalEntriesCreated?: number; errors?: string[] } | undefined
@@ -269,12 +279,13 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
         if (!result?.success) throw new Error(result?.errors?.length ? result.errors.join(' ') : getErrorMessage(data))
         writtenSoFar += result.journalEntriesCreated ?? 0
         setWritten(writtenSoFar)
+        setTick(writtenSoFar)
         for (const a of p.accounts) importedAccounts.push(a.number)
         void invalidateReferenceData(['ref:accounts', 'ref:fiscal-periods'])
       }
       setJobPhase(null)
       apiRef.current?.pulse()
-      setTick(totalVouchers)
+      setTick(writtenSoFar)
       setShown(4)
       apiRef.current?.spawnCounterparties()
       await new Promise((r) => at(1300, () => r(null)))
@@ -285,7 +296,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       await new Promise((r) => at(900, () => r(null)))
       setPhase('imported')
       dispatch({ type: 'SET_WORKING', working: false })
-      setReg(sieFirst ? 'card' : 'pick')
+      setReg(sieFirst ? 'card' : 'skipped')
     } catch (err) {
       setImportError(err instanceof Error ? err.message : t('sie_failed'))
       setJobPhase(null)
@@ -349,11 +360,10 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
 
   useProviderMessage(
     (cId) => { setConsentId(cId); void runRegisters(cId) },
-    (reason) => { setRegError(reason); setReg(sieFirst ? 'card' : 'pick') },
+    (reason) => { setRegError(reason); setReg('card') },
   )
 
   async function connectRegisters(providerId: string) {
-    setRegProvider(providerId)
     setRegError(null)
     setReg('connecting')
     const popup = openProviderWindow()
@@ -367,7 +377,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
     } catch (err) {
       popup?.close()
       setRegError(err instanceof Error ? err.message : t('reg_failed'))
-      setReg(sieFirst ? 'card' : 'pick')
+      setReg('card')
     }
   }
 
@@ -479,30 +489,24 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
           shown={regBusy || reg === 'done' ? regShown : shown}
           settled={phase === 'imported' && !regBusy}
           hold={phase === 'importing' ? t('sie_hold_open') : null}
+          progress={regBusy || reg === 'done' ? undefined : {
+            phase: importError ? 'failed' : phase === 'imported' ? 'complete' : jobPhase ?? 'checking',
+            written: tick,
+            total: totalVouchers,
+            prepared,
+            file: { current: fileIdx + 1, total: ordered.length },
+          }}
           onApi={(api) => { apiRef.current = api }}
-          onCount={(n) => setTick(Math.min(n, totalVouchers || n))}
           groupLabels={{ tillgangar: t('grp_assets'), skulder: t('grp_liabilities'), intakter: t('grp_revenue'), kostnader: t('grp_costs') }}
           reviewLabel={t('grp_review')}
         />
       ) : null}
-      {phase === 'imported' && !importError && reg === 'card' ? (
+      {phase === 'imported' && !importError && sieFirst && reg === 'card' ? (
         <div className="reg" style={{ marginTop: 18 }}>
           <button type="button" className="drop1" onClick={() => state.provider && void connectRegisters(state.provider)}>
             <p className="big">{t('reg_card_title', { provider: provName ?? '' })}</p>
             <p className="s">{t('reg_card_sub')}</p>
           </button>
-          {regError ? <p className="bks-err">{regError}</p> : null}
-          <div className="jny-qactions"><button type="button" className="jny-btn-quiet" onClick={() => setReg('skipped')}>{t('reg_skip')}</button></div>
-        </div>
-      ) : null}
-      {phase === 'imported' && !importError && reg === 'pick' ? (
-        <div className="reg" style={{ marginTop: 18 }}>
-          <p className="imp-line" style={{ marginTop: 0 }}>{t.rich('reg_pick', { b: (c) => <b>{c}</b> })}</p>
-          <Pills className="mt-3.5">
-            {BRANCH_PROVIDERS.map((p, i) => (
-              <Pill key={p.id} index={i} logo={p.logo} onClick={() => void connectRegisters(p.id)}>{p.name}</Pill>
-            ))}
-          </Pills>
           {regError ? <p className="bks-err">{regError}</p> : null}
           <div className="jny-qactions"><button type="button" className="jny-btn-quiet" onClick={() => setReg('skipped')}>{t('reg_skip')}</button></div>
         </div>
@@ -514,7 +518,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
           <input type="password" value={tokenA} onChange={(e) => setTokenA(e.target.value)} placeholder={t('tok_token', { provider: provName ?? '' })} autoComplete="off" />
           {regError ? <p className="bks-err">{regError}</p> : null}
           <div className="jny-qactions" style={{ marginTop: 12 }}>
-            <button type="button" className="jny-btn-quiet" onClick={() => setReg(sieFirst ? 'card' : 'pick')}>‹ {t('back')}</button>
+            <button type="button" className="jny-btn-quiet" onClick={() => setReg('card')}>‹ {t('back')}</button>
             <button type="button" className="jny-btn" disabled={!tokenA} onClick={() => void submitToken()}>{t('tok_connect')}</button>
           </div>
         </div>

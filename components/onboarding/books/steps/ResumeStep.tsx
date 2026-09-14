@@ -27,6 +27,7 @@ export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string 
   const [api, setApi] = useState<TheaterApi | null>(null)
   const [shown, setShown] = useState(0)
   const [tick, setTick] = useState(0)
+  const [prepared, setPrepared] = useState(0)
   const [total, setTotal] = useState(0)
   const [jobPhase, setJobPhase] = useState<JobPhase | null>('preparing')
   const [error, setError] = useState<string | null>(null)
@@ -59,8 +60,11 @@ export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string 
           importId,
           (job) => {
             const { written, phase } = jobProgress(job)
-            setTotal(job.transactions_count)
-            api.setFeedTotal(Math.max(1, job.transactions_count))
+            const sourceTotal = phase === 'preparing' ? 0 : job.prepared_through ?? 0
+            setTotal(sourceTotal)
+            setPrepared(job.prepared_through ?? 0)
+            setTick(written)
+            api.setFeedTotal(Math.max(1, sourceTotal, written))
             api.setFeedCap(written)
             setJobPhase(phase)
           },
@@ -96,10 +100,10 @@ export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string 
       title: t('th_write'),
       sub:
         jobPhase === 'preparing'
-          ? t('th_write_preparing', { total: total.toLocaleString('sv-SE') })
+          ? t('progress_preparing')
           : jobPhase === 'checking'
             ? t('th_write_checking')
-            : error ?? t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: total.toLocaleString('sv-SE') }),
+            : error ?? t('progress_written', { count: tick.toLocaleString('sv-SE') }),
       tone: error ? 'err' : 'ok',
     },
   ]
@@ -117,8 +121,8 @@ export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string 
           shown={shown}
           settled={!!error}
           hold={!error ? t('sie_hold_open') : null}
+          progress={{ phase: error ? 'failed' : jobPhase ?? 'checking', written: tick, total, prepared }}
           onApi={setApi}
-          onCount={(n) => setTick(Math.min(n, total || n))}
           groupLabels={{ tillgangar: t('grp_assets'), skulder: t('grp_liabilities'), intakter: t('grp_revenue'), kostnader: t('grp_costs') }}
           reviewLabel={t('grp_review')}
         />

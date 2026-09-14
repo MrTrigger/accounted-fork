@@ -4,24 +4,27 @@ import type { SIEJob } from '@/lib/import/sie-job-contract'
 export type JobPhase = 'preparing' | 'writing' | 'checking'
 
 /**
- * Read an import job's progress for the theatre: how many of its vouchers
- * the worker has written (chunks done over chunks total, scaled to the
- * file's voucher count) and which phase word fits. Pure so both steps
- * (Fortnox and SIE file) read the job the same way.
+ * transactions_count is the committed entry count, incremented by the
+ * chunk writer. It is not the file total and must not be scaled again
+ * by the chunk ratio. Keep the visible count independent of animation.
  */
 export function jobProgress(job: Pick<SIEJob, 'job_state' | 'chunks_total' | 'chunks_done' | 'transactions_count'>): {
   written: number
   phase: JobPhase
 } {
-  const total = Math.max(0, job.transactions_count ?? 0)
-  const written = job.chunks_total > 0
-    ? Math.min(total, Math.round((total * job.chunks_done) / job.chunks_total))
-    : 0
+  const written = Math.max(0, job.transactions_count ?? 0)
   const phase: JobPhase =
-    job.job_state === 'reconciling' || job.job_state === 'finalizing'
+    job.job_state === 'reconciling' || job.job_state === 'finalizing' || job.job_state === 'completed'
       ? 'checking'
       : job.job_state === 'running'
         ? 'writing'
         : 'preparing'
   return { written, phase }
+}
+
+/** Leave room for final checks; only a successful import reaches 100%. */
+export function importPercent(written: number, total: number, complete = false): number | null {
+  if (complete) return 100
+  if (total <= 0) return null
+  return Math.min(99, Math.max(0, Math.floor((written / total) * 100)))
 }
