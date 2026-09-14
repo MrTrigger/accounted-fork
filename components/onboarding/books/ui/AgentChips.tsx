@@ -4,14 +4,14 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Check } from 'lucide-react'
 import { useBranding } from '@/lib/branding/brand-context'
-import { AI_CLIENTS, aiConnectAction, type AiClient } from '@/lib/onboarding/ai-clients'
+import { AI_CLIENTS, aiConnectAction, openAiConnector, type AiClient } from '@/lib/onboarding/ai-clients'
 import { AiConnectorDialog } from '@/components/onboarding/AiConnectorDialog'
 
 /**
  * The Klart step's connectors: one chip per client (Claude, ChatGPT, Grok),
  * each with its logo and an Anslut pill. Claude has an add-connector deep
  * link that prefills everything. ChatGPT and Grok have none: the click
- * copies the server address and opens the client's connector page. Same
+ * offers a selectable server address and an explicit connector link. Same
  * URLs as Settings and the Hem checklist. A client that has completed the
  * OAuth sign-in (findings.ai.connected, polled by the Done step) turns its
  * chip into a green Ansluten mark. Founder direction 2026-09-14: no card,
@@ -33,7 +33,7 @@ export function AgentChips({ connected, onConnect }: {
       setConnectAction(action)
     } else {
       onConnect?.(client)
-      window.open(action.open, '_blank', 'noopener')
+      openAiConnector(action.open)
     }
   }
 

@@ -171,7 +171,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   ]
 
   async function runImport() {
-    if (!consentId || years.length === 0) return
+    if (!consentId || (preview?.sieAvailable !== false && years.length === 0)) return
     setPhase('importing')
     setImportError(null)
     setTick(0)

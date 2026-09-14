@@ -15,7 +15,7 @@ import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-exten
 import { useBranding } from '@/lib/branding/brand-context'
 import { useCapability, useCompanyOptional } from '@/contexts/CompanyContext'
 import { CAPABILITY } from '@/lib/entitlements/keys'
-import { AI_CLIENTS, aiConnectAction, type AiClient } from '@/lib/onboarding/ai-clients'
+import { AI_CLIENTS, aiConnectAction, openAiConnector, type AiClient } from '@/lib/onboarding/ai-clients'
 
 /**
  * Kopplingar: the three things Att göra can be wired to (an AI agent, the
@@ -54,7 +54,7 @@ export function KopplingarChips({
   function connect(client: AiClient) {
     const action = aiConnectAction(client, { origin: window.location.origin, appName })
     if (action.copy) setConnectAction(action)
-    else window.open(action.open, '_blank', 'noopener')
+    else openAiConnector(action.open)
   }
 
   const agentLogos = (aiOn ? connectedAi : AI_CLIENTS)

@@ -4,6 +4,9 @@
  * import's state lives in the database. This reads the latter.
  */
 
+import type { NavigationDraft } from '@/lib/onboarding/navigation'
+import type { BooksState, BooksStep } from './reducer'
+
 export type LatestImportJob = {
   id: string
   job_state: string | null
@@ -32,4 +35,22 @@ export function resolveBooksResume(latest: LatestImportJob | null, postedEntries
   }
   if (postedEntries > 0) return { kind: 'books' }
   return { kind: 'none' }
+}
+
+const PRE_IMPORT_STEPS = new Set<BooksStep>(['source', 'sie', 'provider', 'resume'])
+
+/** Completed server imports supersede stale drafts, including their Back history. */
+export function reconcileBooksDraft(
+  draft: NavigationDraft<BooksState>,
+  entry: { hasBooks: boolean; resumeImportId: string | null },
+): NavigationDraft<BooksState> | null {
+  if (!entry.hasBooks || entry.resumeImportId) return draft
+  if (PRE_IMPORT_STEPS.has(draft.entries[draft.index].state.step)) return null
+  return {
+    ...draft,
+    // Keep indexes aligned with browser history while retiring import screens.
+    entries: draft.entries.map((item) => PRE_IMPORT_STEPS.has(item.state.step)
+      ? { step: 'insight', state: { ...item.state, step: 'insight', imported: true, working: false } }
+      : item),
+  }
 }

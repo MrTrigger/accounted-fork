@@ -20,6 +20,19 @@ export const AI_CLIENTS: { id: AiClient; name: string; logo: string; home: strin
 
 const AI_CLIENT_IDS = new Set<string>(AI_CLIENTS.map((c) => c.id))
 
+/** Open the connector with no opener access, or continue in this tab if popups are blocked. */
+export function openAiConnector(url: string): void {
+  // Opening with noopener returns null even on success, so first open a blank
+  // same-origin page, sever its opener, and only then navigate externally.
+  const popup = window.open('about:blank', '_blank')
+  if (popup) {
+    popup.opener = null
+    popup.location.replace(url)
+  } else {
+    window.location.assign(url)
+  }
+}
+
 /**
  * Which clients have completed the MCP OAuth sign-in, from the user's live
  * OAuth-minted keys. `client` is what the token route stored from the

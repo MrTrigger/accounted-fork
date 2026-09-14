@@ -1,5 +1,28 @@
-import { describe, expect, it } from 'vitest'
-import { aiChatLink, aiConnectAction, connectedAiClients, pickConnectedAiClient } from '../ai-clients'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { aiChatLink, aiConnectAction, connectedAiClients, openAiConnector, pickConnectedAiClient } from '../ai-clients'
+
+describe('openAiConnector', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('severs opener access before navigating the popup and keeps this tab open', () => {
+    const assign = vi.fn()
+    const popup = { opener: {} as object | null, location: { replace: vi.fn() } }
+    popup.location.replace.mockImplementation(() => expect(popup.opener).toBeNull())
+    const open = vi.fn(() => popup)
+    vi.stubGlobal('window', { open, location: { assign } })
+    openAiConnector('https://claude.ai/customize/connectors')
+    expect(open).toHaveBeenCalledWith('about:blank', '_blank')
+    expect(popup.location.replace).toHaveBeenCalledWith('https://claude.ai/customize/connectors')
+    expect(assign).not.toHaveBeenCalled()
+  })
+
+  it('continues in this tab when the browser blocks the popup', () => {
+    const assign = vi.fn()
+    vi.stubGlobal('window', { open: vi.fn(() => null), location: { assign } })
+    openAiConnector('https://claude.ai/customize/connectors')
+    expect(assign).toHaveBeenCalledWith('https://claude.ai/customize/connectors')
+  })
+})
 
 describe('connectedAiClients', () => {
   it('reads the three clients off live OAuth keys, in display order, once each', () => {

@@ -9,6 +9,7 @@ interface Options<S> {
   state: S
   restore: (state: S) => void
   beforeStep?: (previous: S, current: S) => S
+  reconcileDraft?: (draft: NavigationDraft<S>) => NavigationDraft<S> | null
   blocked: boolean
   resetOnMount?: boolean
   complete?: boolean
@@ -27,6 +28,7 @@ export function useOnboardingNavigation<S>(options: Options<S>) {
     let saved: NavigationDraft<S> | null = null
     try { saved = readNavigationDraft<S>(sessionStorage.getItem(key), Date.now()) } catch { /* Storage can be disabled. */ }
     if (latest.current.resetOnMount) saved = null
+    if (saved && latest.current.reconcileDraft) saved = latest.current.reconcileDraft(saved)
     draft.current = saved
     if (saved) {
       restoring.current = true

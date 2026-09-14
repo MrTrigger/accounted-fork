@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import type { BooksFindings } from '@/lib/onboarding/findings'
 import { useOnboardingNavigation } from '@/lib/hooks/use-onboarding-navigation'
+import { reconcileBooksDraft } from '@/lib/onboarding-books/resume'
 import { booksReducer, initialState, stationOf, type BooksEntry, type BooksFlags } from '@/lib/onboarding-books/reducer'
 import JourneyOrb, { type OrbState } from '@/components/onboarding/journey/JourneyOrb'
 import JourneyTrack from '@/components/onboarding/journey/JourneyTrack'
@@ -82,6 +83,7 @@ export default function BooksJourney(props: BooksJourneyProps) {
     restore: (saved) => dispatch({ type: 'RESTORE', state: saved }),
     blocked: state.working || leaving,
     resetOnMount: !!(props.initialStation || props.landedFromProvider || props.selectAccounts || props.skvConnected || props.resumeImportId),
+    reconcileDraft: (draft) => reconcileBooksDraft(draft, entry),
   })
   const clearDraft = navigation.clear
 
