@@ -37,11 +37,21 @@ function makeAdoptedRow(overrides: Partial<AdoptedRow> = {}): AdoptedRow {
   }
 }
 
-/** The duplicate branch: the item lookup, then (at most) the kind_hint update. */
-function mockSupabaseFor(row: AdoptedRow, updateError: { message: string } | null = null) {
+/**
+ * The duplicate branch: the item lookup, then (at most) the guarded
+ * kind_hint update. `updateRows` is what the UPDATE ... RETURNING id gives
+ * back: one row when the guard passed, none when a concurrent booking won.
+ */
+function mockSupabaseFor(
+  row: AdoptedRow,
+  opts: { updateRows?: Array<{ id: string }>; updateError?: { message: string } | null } = {},
+) {
   const mock = createQueuedMockSupabase()
   mock.enqueue({ data: [row], error: null })
-  mock.enqueue({ data: null, error: updateError })
+  mock.enqueue({
+    data: opts.updateRows ?? [{ id: row.id }],
+    error: opts.updateError ?? null,
+  })
   return mock
 }
 
@@ -79,6 +89,61 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
       kind_hint_incoming: 'supplier_invoice',
       kind_hint_before: null,
       kind_hint_after: 'supplier_invoice',
+      kind_hint_skipped: null,
+    })
+  })
+
+  it('guards the update with the consumption predicates, not just the id', async () => {
+    const { supabase, findCalls } = mockSupabaseFor(makeAdoptedRow())
+
+    await processArchivedDocument(
+      supabase as never,
+      'user-1',
+      'company-1',
+      { id: 'doc-1', deduplicated: true },
+      FILE,
+      'email',
+      { kindHint: 'supplier_invoice' },
+    )
+
+    // The row was read a statement earlier: the write must re-check the same
+    // predicate itself, and ask for the changed row back.
+    expect(findCalls('invoice_inbox_items', 'is').map((args) => args[0])).toEqual([
+      'created_supplier_invoice_id',
+      'created_journal_entry_id',
+      'matched_transaction_id',
+    ])
+    expect(findCalls('invoice_inbox_items', 'eq').map((args) => args[0])).toContain('id')
+    expect(findCalls('invoice_inbox_items', 'select').at(-1)).toEqual(['id'])
+  })
+
+  it('does not re-badge when a concurrent booking wins the race', async () => {
+    // The lookup sees an open item, but by the time the UPDATE runs another
+    // request has booked it: the guarded write matches zero rows.
+    const { supabase, findCall } = mockSupabaseFor(makeAdoptedRow({ kind_hint: 'receipt' }), {
+      updateRows: [],
+    })
+
+    await processArchivedDocument(
+      supabase as never,
+      'user-1',
+      'company-1',
+      { id: 'doc-1', deduplicated: true },
+      FILE,
+      'email',
+      { kindHint: 'supplier_invoice' },
+    )
+
+    // The write was attempted (the pre-check could not know) but changed
+    // nothing, so the history must not claim the new value.
+    expect(findCall('invoice_inbox_items', 'update')?.[0]).toEqual({
+      kind_hint: 'supplier_invoice',
+    })
+    expect(historyPayload()).toMatchObject({
+      kind_hint_incoming: 'supplier_invoice',
+      kind_hint_before: 'receipt',
+      kind_hint_after: 'receipt',
+      kind_hint_skipped: 'consumed',
     })
   })
 
@@ -101,6 +166,7 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
     expect(historyPayload()).toMatchObject({
       kind_hint_before: 'receipt',
       kind_hint_after: 'supplier_invoice',
+      kind_hint_skipped: null,
     })
   })
 
@@ -124,6 +190,7 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
       kind_hint_incoming: 'supplier_invoice',
       kind_hint_before: 'receipt',
       kind_hint_after: 'receipt',
+      kind_hint_skipped: 'consumed',
     })
   })
 
@@ -146,7 +213,7 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
       )
 
       expect(findCall('invoice_inbox_items', 'update')).toBeUndefined()
-      expect(historyPayload()).toMatchObject({ kind_hint_after: null })
+      expect(historyPayload()).toMatchObject({ kind_hint_after: null, kind_hint_skipped: 'consumed' })
     }
   })
 
@@ -169,6 +236,7 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
     expect(historyPayload()).toMatchObject({
       kind_hint_before: 'supplier_invoice',
       kind_hint_after: 'supplier_invoice',
+      kind_hint_skipped: null,
     })
   })
 
@@ -189,11 +257,12 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
       kind_hint_incoming: null,
       kind_hint_before: 'receipt',
       kind_hint_after: 'receipt',
+      kind_hint_skipped: null,
     })
   })
 
   it('reports the unchanged hint when the update fails', async () => {
-    const { supabase, findCall } = mockSupabaseFor(makeAdoptedRow(), { message: 'boom' })
+    const { supabase, findCall } = mockSupabaseFor(makeAdoptedRow(), { updateError: { message: 'boom' } })
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     const result = await processArchivedDocument(
@@ -213,6 +282,7 @@ describe('duplicate delivery keeps the sender kind hint (#2569)', () => {
     expect(historyPayload()).toMatchObject({
       kind_hint_incoming: 'supplier_invoice',
       kind_hint_after: null,
+      kind_hint_skipped: 'write_failed',
     })
     consoleError.mockRestore()
   })

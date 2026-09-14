@@ -343,25 +343,48 @@ export async function processArchivedDocument(
       // become a supplier invoice, a journal entry or a transaction match the
       // routing decision is already made, and re-badging it would contradict
       // what was booked.
+      //
+      // That predicate lives on the UPDATE itself, not only in the branch
+      // below. The row was read a statement ago; a concurrent request can
+      // book or match it in between, and a WHERE on id alone would re-badge
+      // an item that is no longer open and then log the new value as
+      // kind_hint_after. `stillOpen` is kept as a cheap short-circuit that
+      // saves a pointless write; the UPDATE's own guard is what decides, and
+      // hintAfter moves only when a row actually came back changed.
       const hintBefore = adopted.kind_hint ?? null
       let hintAfter = hintBefore
+      let hintSkipped: 'consumed' | 'write_failed' | null = null
       const incomingHint = emailMeta?.kindHint ?? null
       const stillOpen =
         adopted.created_supplier_invoice_id == null &&
         adopted.created_journal_entry_id == null &&
         adopted.matched_transaction_id == null
-      if (incomingHint !== null && incomingHint !== hintBefore && stillOpen) {
-        const { error: hintError } = await supabase
-          .from('invoice_inbox_items')
-          .update({ kind_hint: incomingHint })
-          .eq('id', adopted.id)
-          .eq('company_id', companyId)
-        if (hintError) {
-          // Non-fatal: the document is already archived and visible. Losing
-          // the hint is exactly the old behavior, not a new failure mode.
-          console.error('[invoice-inbox] Failed to adopt kind hint on duplicate:', hintError)
+      if (incomingHint !== null && incomingHint !== hintBefore) {
+        if (!stillOpen) {
+          hintSkipped = 'consumed'
         } else {
-          hintAfter = incomingHint
+          const { data: updatedRows, error: hintError } = await supabase
+            .from('invoice_inbox_items')
+            .update({ kind_hint: incomingHint })
+            .eq('id', adopted.id)
+            .eq('company_id', companyId)
+            .is('created_supplier_invoice_id', null)
+            .is('created_journal_entry_id', null)
+            .is('matched_transaction_id', null)
+            .select('id')
+          const changed = ((updatedRows as Array<{ id: string }> | null) ?? []).length > 0
+          if (hintError) {
+            // Non-fatal: the document is already archived and visible. Losing
+            // the hint is exactly the old behavior, not a new failure mode.
+            console.error('[invoice-inbox] Failed to adopt kind hint on duplicate:', hintError)
+            hintSkipped = 'write_failed'
+          } else if (!changed) {
+            // The guard rejected the write: the item was booked or matched
+            // between the lookup and here. The booking wins, the hint stands.
+            hintSkipped = 'consumed'
+          } else {
+            hintAfter = incomingHint
+          }
         }
       }
       try {
@@ -377,11 +400,13 @@ export async function processArchivedDocument(
             inbox_item_id: adopted.id,
             reason: 'duplicate_content',
             // What the second delivery declared and what the item ended up
-            // with, so the audit trail shows the reclassification (or shows
-            // that a consumed item deliberately kept its hint).
+            // with, so the audit trail shows the reclassification, or shows
+            // why it was refused. kind_hint_after is the value that was
+            // actually persisted, never the one that was merely attempted.
             kind_hint_incoming: incomingHint,
             kind_hint_before: hintBefore,
             kind_hint_after: hintAfter,
+            kind_hint_skipped: hintSkipped,
           },
           actor: opts.actorId
             ? { type: 'system', id: opts.actorId }
