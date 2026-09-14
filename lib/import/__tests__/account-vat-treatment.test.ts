@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applySourceVatCodes,
   applyVatTreatmentReview,
   enrichChangedAccountMappingWithVat,
   enrichAccountMappingsWithVat,
@@ -204,5 +205,116 @@ describe('applyVatTreatmentReviewAll', () => {
     expect(result.filter((m: { requiresVatTreatmentReview?: boolean; vatTreatmentReviewed?: boolean }) =>
       m.requiresVatTreatmentReview && !m.vatTreatmentReviewed
     )).toHaveLength(0)
+  })
+})
+
+describe('applySourceVatCodes (#2585)', () => {
+  const translate = (code: string, accountClass: number) =>
+    code === 'MP1' && accountClass === 3 ? ('standard_25' as const)
+    : code === 'IVEU' && accountClass >= 4 ? ('reverse_charge_eu_goods' as const)
+    : null
+
+  it('prefills a translated source code as a reviewed provider treatment', () => {
+    const [sales, purchase] = applySourceVatCodes(
+      [mapping('3041', 'Försäljn tjänst 25% sv'), mapping('4056', 'Inköp varor EU')],
+      new Map([['3041', 'MP1'], ['4056', 'IVEU']]),
+      translate,
+    )
+    expect(sales).toMatchObject({
+      providerVatCode: 'MP1',
+      vatTreatmentSource: 'provider',
+      defaultVatTreatment: 'standard_25',
+      defaultVatRate: 0.25,
+      vatTreatmentSuggested: false,
+      vatTreatmentReviewed: true,
+      requiresVatTreatmentReview: false,
+    })
+    expect(purchase).toMatchObject({
+      providerVatCode: 'IVEU',
+      vatTreatmentSource: 'provider',
+      defaultVatTreatment: 'reverse_charge_eu_goods',
+      defaultVatRate: 0.25,
+      vatTreatmentReviewed: true,
+    })
+  })
+
+  it('keeps an untranslated code visible without deciding the treatment', () => {
+    const [result] = applySourceVatCodes(
+      [mapping('3001', 'Uttag')],
+      new Map([['3001', 'UT']]),
+      translate,
+    )
+    expect(result.providerVatCode).toBe('UT')
+    expect(result.vatTreatmentSource).toBeUndefined()
+    expect(result.defaultVatTreatment).toBeUndefined()
+  })
+
+  it('leaves remapped accounts, other classes and accounts without a code alone', () => {
+    const remapped = { ...mapping('3041', 'Försäljning'), targetAccount: '3010', targetName: 'Försäljning' }
+    const [asset, moms, noCode, moved] = applySourceVatCodes(
+      [mapping('1930', 'Bank'), mapping('2611', 'Utgående moms'), mapping('3041', 'Försäljning'), remapped],
+      new Map([['1930', 'MP1'], ['2611', 'U1'], ['3010', 'MP1']]),
+      translate,
+    )
+    for (const row of [asset, moms, noCode, moved]) {
+      expect(row.providerVatCode).toBeUndefined()
+      expect(row.vatTreatmentSource).toBeUndefined()
+      expect(row.defaultVatTreatment).toBeUndefined()
+    }
+  })
+
+  it('is kept by the mapping-step enrichment instead of the label suggestion', () => {
+    // The label alone would say standard_25 for this account; the source
+    // system says it is momsfri, and the user's own configuration wins.
+    const [prefilled] = applySourceVatCodes(
+      [mapping('3041', 'Försäljning tjänster 25%')],
+      new Map([['3041', 'MF']]),
+      () => 'exempt',
+    )
+    const [enriched] = enrichAccountMappingsWithVat([prefilled], [])
+    expect(enriched).toMatchObject({
+      providerVatCode: 'MF',
+      vatTreatmentSource: 'provider',
+      defaultVatTreatment: 'exempt',
+      defaultVatRate: 0,
+      vatTreatmentSuggested: false,
+      vatTreatmentReviewed: true,
+      requiresVatTreatmentReview: false,
+    })
+  })
+
+  it('yields to a treatment the company already set on the account', () => {
+    const [prefilled] = applySourceVatCodes(
+      [mapping('3041', 'Försäljning')],
+      new Map([['3041', 'MF']]),
+      () => 'exempt',
+    )
+    const [enriched] = enrichAccountMappingsWithVat([prefilled], [{
+      account_number: '3041',
+      default_vat_treatment: 'standard_25',
+      default_vat_rate: 0.25,
+    } as never])
+    expect(enriched).toMatchObject({
+      defaultVatTreatment: 'standard_25',
+      defaultVatRate: 0.25,
+      providerVatCode: 'MF',
+      vatTreatmentReviewed: true,
+    })
+  })
+
+  it('still label-suggests an account whose code could not be translated', () => {
+    const [prefilled] = applySourceVatCodes(
+      [mapping('4056', 'Inköp varor 25% EU')],
+      new Map([['4056', 'XYZ']]),
+      () => null,
+    )
+    const [enriched] = enrichAccountMappingsWithVat([prefilled], [])
+    expect(enriched).toMatchObject({
+      providerVatCode: 'XYZ',
+      defaultVatTreatment: 'reverse_charge_eu_goods',
+      vatTreatmentSuggested: true,
+      vatTreatmentReviewed: false,
+      requiresVatTreatmentReview: true,
+    })
   })
 })

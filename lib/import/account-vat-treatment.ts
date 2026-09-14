@@ -1,14 +1,65 @@
 import type { BASAccount } from '@/types'
 import {
+  defaultRateForVatTreatment,
   suggestVatTreatment,
   type AccountVatTreatment,
 } from '@/lib/vat/account-vat-treatment'
 import type { AccountMapping } from './types'
 
 /**
+ * Prefill identity mappings with the momskod the source system has on each
+ * account. SIE4 carries no VAT code, so this runs server-side after the
+ * provider's chart was fetched next to the SIE export (Fortnox /accounts);
+ * `codesByAccount` is source account number to the provider's verbatim code
+ * and `translate` turns a code into a treatment for the account's class, or
+ * null when the code has no equivalent.
+ *
+ * A translated code lands as reviewed: it is the user's own configuration
+ * in the system they are leaving, which outranks a guess from the label.
+ * The code is kept on the row either way (providerVatCode) so the mapping
+ * step can show it, and an untranslated code changes nothing else: the row
+ * still gets the label suggestion in enrichAccountMappingsWithVat.
+ *
+ * Only class 3-6 identity mappings are touched, the same rows the label
+ * suggestion covers: a remapped account gets the target's treatment, and
+ * classes 1-2 and 7-8 carry no treatment.
+ */
+export function applySourceVatCodes(
+  mappings: AccountMapping[],
+  codesByAccount: ReadonlyMap<string, string>,
+  translate: (code: string, accountClass: number) => AccountVatTreatment | null,
+): AccountMapping[] {
+  return mappings.map((mapping) => {
+    if (!mapping.targetAccount || mapping.sourceAccount !== mapping.targetAccount) return mapping
+    const accountClass = Number(mapping.sourceAccount.charAt(0))
+    if (accountClass < 3 || accountClass > 6) return mapping
+
+    const code = codesByAccount.get(mapping.sourceAccount)?.trim()
+    if (!code) return mapping
+
+    const treatment = translate(code, accountClass)
+    if (!treatment) return { ...mapping, providerVatCode: code }
+
+    return {
+      ...mapping,
+      providerVatCode: code,
+      vatTreatmentSource: 'provider',
+      defaultVatTreatment: treatment,
+      defaultVatRate: defaultRateForVatTreatment(treatment, accountClass),
+      vatTreatmentSuggested: false,
+      vatTreatmentReviewed: true,
+      requiresVatTreatmentReview: false,
+    }
+  })
+}
+
+/**
  * Add reviewable VAT suggestions to identity mappings. SIE itself has no VAT
  * treatment record, so suggestions come only from the account label and are
  * never considered reviewed until the user continues from the mapping step.
+ * Two sources outrank the label and are kept as reviewed: a treatment the
+ * company already set on the account in its chart, and one translated from
+ * the source system's momskod (applySourceVatCodes).
  */
 export function enrichAccountMappingsWithVat(
   mappings: AccountMapping[],
@@ -38,6 +89,15 @@ export function enrichAccountMappingsWithVat(
         ...mapping,
         defaultVatTreatment: existing.default_vat_treatment,
         defaultVatRate: existing.default_vat_rate,
+        vatTreatmentReviewed: true,
+        vatTreatmentSuggested: false,
+        requiresVatTreatmentReview: false,
+      }
+    }
+
+    if (mapping.vatTreatmentSource === 'provider' && mapping.defaultVatTreatment) {
+      return {
+        ...mapping,
         vatTreatmentReviewed: true,
         vatTreatmentSuggested: false,
         requiresVatTreatmentReview: false,
