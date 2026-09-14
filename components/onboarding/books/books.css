@@ -47,7 +47,7 @@
 
 /* ── the upload surface and the facts that ink in ─────────────────── */
 .drop1 {
-  max-width: 560px; margin: 0 auto; border: 1px dashed hsl(var(--muted-foreground) / 0.6); border-radius: 8px;
+  display: block; max-width: 560px; margin: 0 auto; border: 1px dashed hsl(var(--muted-foreground) / 0.6); border-radius: 8px;
   padding: 46px 24px; text-align: center; cursor: pointer; background: none; color: inherit; width: 100%; font-family: inherit;
   transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out);
 }
@@ -65,8 +65,12 @@
 .imp-sec { margin: 20px auto 0; max-width: 560px; }
 .imp-k { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: hsl(var(--muted-foreground)); margin: 0 0 10px; }
 .imp-line { max-width: 560px; margin: 18px auto 0; font-size: 13px; line-height: 1.65; color: hsl(var(--muted-foreground)); text-align: center; }
+/* on the bank step every block sits in the accounts' own column */
+.bank-stage .imp-line, .bank-stage .opts, .bank-stage .imp-info { max-width: 400px; }
 .imp-line b { font-weight: 500; color: hsl(var(--foreground)); }
-.imp-change { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; color: hsl(var(--foreground)); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; margin-left: 4px; }
+/* the tools row under the sentence: Ändra, and whatever the step adds, on one quiet line */
+.imp-tools { display: flex; justify-content: center; align-items: center; gap: 14px; margin: 8px 0 0; }
+.imp-change { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; color: hsl(var(--foreground)); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
 .opts { margin: 12px auto 0; max-width: 480px; text-align: left; border-top: 1px solid hsl(var(--border)); animation: jnyQIn 300ms var(--ease-out); }
 .opt { display: flex; align-items: center; gap: 14px; padding: 9px 4px; border-bottom: 1px solid hsl(var(--border) / 0.6); font-size: 13px; }
 .opt .l { flex: 1; }
@@ -77,8 +81,12 @@
 .sw.is-on { background: hsl(var(--foreground)); }
 .sw.is-on::after { transform: translateX(12px); }
 .opt.is-locked .sw { opacity: 0.35; cursor: default; }
-.unm-pick { border: 1px solid hsl(var(--border)); border-radius: 99px; padding: 4px 12px; font: inherit; font-size: 12.5px; background: hsl(var(--background)); color: inherit; cursor: pointer; }
+/* the ledger pick: a native select dressed as the pill, every free 19xx in the list */
+.unm-sel { position: relative; display: inline-flex; align-items: center; }
+.unm-sel > span { position: absolute; right: 12px; pointer-events: none; font-size: 11px; color: hsl(var(--muted-foreground)); }
+.unm-pick { appearance: none; -webkit-appearance: none; border: 1px solid hsl(var(--border)); border-radius: 99px; padding: 4px 28px 4px 12px; font: inherit; font-size: 12.5px; background: hsl(var(--background)); color: inherit; cursor: pointer; }
 .unm-pick:hover { background: hsl(var(--secondary) / 0.6); }
+.unm-pick:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
 .vpick { border: 1px solid hsl(var(--border)); border-radius: 99px; padding: 2px 9px; font: inherit; font-size: 11.5px; background: none; cursor: pointer; color: inherit; transition: background-color 150ms var(--ease-out); }
 .vpick:hover { background: hsl(var(--secondary) / 0.6); }
 .vpick.is-sel { background: hsl(var(--foreground)); color: hsl(var(--background)); border-color: hsl(var(--foreground)); }
@@ -187,6 +195,13 @@
 .srclist .pill .pmark { width: 28px; height: 28px; }
 .srclist .pmark img { width: 18px; height: 18px; }
 .srclist-sep { border: 0; border-top: 1px solid hsl(var(--border) / 0.7); margin: 6px 4px; }
+/* under the list: where the data will live, as a quiet line and four small facts */
+.trust { margin: 34px auto 0; max-width: 520px; }
+.trust-line { margin: 0 0 10px; font-size: 14px; color: hsl(var(--foreground) / 0.75); }
+.trust-chips { list-style: none; margin: 0 auto; padding: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.trust-chips li { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: hsl(var(--foreground) / 0.75); white-space: nowrap; }
+.trust-chips svg { color: hsl(var(--muted-foreground)); }
+.trust-flag { width: 17px; height: 11px; border-radius: 1.5px; flex: none; }
 
 /* the provider's own colour on the one button that leaves for it */
 .brandbtn { display: inline-flex; align-items: center; gap: 10px; border-radius: 99px; padding: 11px 26px 11px 12px; border: 0; font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; color: #fff; background: var(--brand, hsl(var(--primary))); transition: filter 150ms var(--ease-out), transform 150ms var(--ease-out); animation: jnyQIn 380ms var(--ease-out); }
@@ -203,7 +218,7 @@
 .connline { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 14px; margin: 0 0 18px; animation: jnyQIn 380ms var(--ease-out); }
 .connline .pmark { width: 28px; height: 28px; }
 .connline .pmark img { width: 18px; height: 18px; }
-.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; max-width: 480px; margin: 0 auto; text-align: left; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; max-width: 480px; margin: 0 auto; text-align: center; }
 .stat { border-top: 1px solid hsl(var(--border)); padding-top: 10px; opacity: 0; animation: bksFadeIn 500ms var(--ease-out) forwards; }
 .stat dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: hsl(var(--muted-foreground)); margin: 0; }
 .stat dd { margin: 4px 0 0; font-family: var(--font-display); font-size: 24px; line-height: 1.1; font-variant-numeric: tabular-nums; }
@@ -220,7 +235,13 @@
 @media (max-width: 560px) { .bankgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .bank-search input { padding-left: 36px; text-align: left; border-radius: 99px; }
 .bank-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: hsl(var(--muted-foreground)); pointer-events: none; }
-.imp-line .jny-qhelp { vertical-align: -2px; }
+.imp-tools .jny-qhelp { vertical-align: middle; }
+/* one column of actions: the primary alone, the quiet choice under it */
+.jny-qactions.is-stack { flex-direction: column; gap: 14px; }
+/* Tillbaka for the whole act: the page's top left corner, level with the rail, one place on every step */
+.bks-backrow { position: absolute; top: 34px; left: 28px; z-index: 2; }
+.bks-back { padding: 4px 2px; font-size: 13px; }
+@media (max-width: 640px) { .bks-backrow { top: 8px; left: 12px; } }
 .imp-info { max-width: 480px; margin: 10px auto 0; font-size: 12.5px; line-height: 1.55; color: hsl(var(--muted-foreground)); animation: jnyQIn 300ms var(--ease-out); }
 
 /* the fetch: what was on the page fades out in place, the chart fades in where it stood */
@@ -249,21 +270,68 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 .opt.is-stacked .acc-picks { max-width: none; justify-content: flex-start; gap: 8px; }
 .acc-picks .vpick { padding: 5px 12px; font-size: 12.5px; }
 .acc-picks .from-date { padding: 4px 10px; border-radius: 99px; }
-.unm-pick { padding: 5px 14px; }
+.unm-pick { padding: 5px 30px 5px 14px; }
 
 /* verdicts under a centred mark sit in a narrower column */
 .bks-verdicts.is-narrow { max-width: 380px; margin-top: 8px; }
-.stamp.is-done { margin-bottom: -28px; }
+.stamp.is-done { margin-bottom: -40px; }
+/* the success: the balance counts up under the stamp, one line against 1630, the next deadline */
+.skv-result { animation: jnyQIn 420ms var(--ease-out) 320ms both; }
+.skv-result .saldo { margin: 0; }
+.skv-line { display: block; margin: 8px 0 0; font-size: 12.5px; color: hsl(var(--success)); }
+.skv-line.is-attn { color: hsl(var(--attn)); text-decoration: underline dotted; text-underline-offset: 3px; }
+.skv-next { margin: 16px 0 0; font-size: 13px; color: hsl(var(--muted-foreground)); }
 
-/* ── the AI card: one click per client ────────────────────────────── */
-.aicard { margin: 18px auto 0; max-width: 380px; text-align: left; border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 16px 20px; background: hsl(var(--card)); opacity: 0; animation: cardIn 500ms var(--ease-out) 900ms forwards; }
+/* ── the AI card: a header, bubbles out of the card (top, left, right), then one click per client ── */
+.bks .jny-card { max-width: 440px; }
+.aiwrap { max-width: 440px; margin: 30px auto 0; }
+.aihead { font-family: var(--font-display); font-size: 21px; line-height: 1.25; margin: 0 0 16px; text-align: center; opacity: 0; animation: bksFadeIn 500ms var(--ease-out) 800ms forwards; }
+.aistage { position: relative; }
+.aicard { text-align: left; border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 16px 20px; background: hsl(var(--card)); box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 16px 40px -24px hsl(0 0% 0% / 0.25); opacity: 0; animation: cardIn 500ms var(--ease-out) 900ms forwards; }
 @keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.aicard-title { font-family: var(--font-display); font-size: 17px; margin: 0 0 8px; }
+.aicard-title { font-family: var(--font-display); font-size: 17px; margin: 0 0 10px; }
+/* the slots hold the bubbles in place around the card; the bubble inside animates on its own */
+.aislot { display: block; }
+.aislot.is-top { max-width: 380px; margin: 0 auto 16px; }
+.aislot.is-left, .aislot.is-right { position: absolute; top: 50%; transform: translateY(-50%); width: 200px; }
+.aislot.is-left { right: 100%; margin-right: 20px; }
+.aislot.is-right { left: 100%; margin-left: 20px; }
+/* the bubble: the work the connected client can do first, in quotes, built from the company's own numbers; a click copies one */
+.aiprompt {
+  position: relative; display: block; width: 100%; text-align: left; cursor: pointer; font: inherit; font-size: 12.5px; line-height: 1.45;
+  padding: 9px 13px; border: 1px solid hsl(var(--border)); border-radius: 14px; color: hsl(var(--foreground)); background: hsl(var(--card));
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 10px 24px -18px hsl(0 0% 0% / 0.3);
+  transition: background-color 150ms var(--ease-out); opacity: 0; animation: bubbleIn 560ms var(--ease-spring) forwards;
+}
+/* each bubble opens out of the card's edge, one after the other: it starts small against the card and springs outward */
+.aislot.is-top .aiprompt { text-align: center; transform-origin: 50% 100%; animation-name: bubbleUp; }
+.aislot.is-left .aiprompt { transform-origin: 100% 50%; animation-name: bubbleLeft; }
+.aislot.is-right .aiprompt { transform-origin: 0 50%; animation-name: bubbleRight; }
+@keyframes bubbleUp { from { opacity: 0; transform: translateY(28px) scale(0.35); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
+@keyframes bubbleLeft { from { opacity: 0; transform: translateX(36px) scale(0.35); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
+@keyframes bubbleRight { from { opacity: 0; transform: translateX(-36px) scale(0.35); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
+/* the tail: a rotated square on the edge that faces the card */
+.aiprompt::after { content: ''; position: absolute; width: 11px; height: 11px; background: inherit; transform: rotate(45deg); }
+.aislot.is-top .aiprompt::after { left: 50%; margin-left: -6px; bottom: -6.5px; border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
+.aislot.is-left .aiprompt::after { top: 50%; margin-top: -6px; right: -6.5px; border-top: 1px solid hsl(var(--border)); border-right: 1px solid hsl(var(--border)); }
+.aislot.is-right .aiprompt::after { top: 50%; margin-top: -6px; left: -6.5px; border-bottom: 1px solid hsl(var(--border)); border-left: 1px solid hsl(var(--border)); }
+@keyframes bubbleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+/* no room beside the card: every bubble stacks above it */
+@media (max-width: 900px) {
+  .aislot.is-left, .aislot.is-right { position: static; transform: none; width: auto; max-width: 380px; margin: 0 auto 16px; }
+  .aislot.is-left .aiprompt, .aislot.is-right .aiprompt { transform-origin: 50% 100%; animation-name: bubbleUp; }
+  .aislot.is-left .aiprompt::after, .aislot.is-right .aiprompt::after { top: auto; margin-top: 0; right: auto; left: 50%; margin-left: -6px; bottom: -6.5px; border: 0; border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
+}
+.aiprompt:hover { background: hsl(var(--secondary) / 0.5); }
+.aiprompt:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.aiprompt.is-copied { background: hsl(var(--success) / 0.12); }
+.aiprompt small { display: block; margin-top: 3px; font-size: 11px; color: hsl(var(--success)); }
 .airow { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px dashed hsl(var(--border) / 0.8); font-size: 13px; }
 .airow .pmark { width: 30px; height: 30px; }
 .airow .pmark img { width: 20px; height: 20px; }
 .airow .n { flex: 1; }
 .airow .jny-btn { padding: 6px 16px; font-size: 12.5px; }
+.aidone { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 500; color: hsl(var(--success)); background: hsl(var(--success) / 0.1); animation: bksFadeIn 300ms var(--ease-out) forwards; }
 
 /* ── reduced motion: every rule lands on its end state at once ────── */
 @media (prefers-reduced-motion: reduce) {

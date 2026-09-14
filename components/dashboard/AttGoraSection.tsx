@@ -12,6 +12,9 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { useCapability } from '@/contexts/CompanyContext'
 import { CAPABILITY } from '@/lib/entitlements/keys'
 import { visibleWorklistTotal } from '@/lib/worklist/visible-total'
+import { pickFirstAiTask } from '@/lib/worklist/ai-task'
+import type { AiClient } from '@/lib/onboarding/ai-clients'
+import { AttGoraAiCta } from './AttGoraAiCta'
 import {
   ArrowLeftRight,
   ArrowRight,
@@ -79,6 +82,12 @@ interface AttGoraSectionProps {
    * degrades to the ordinary all-clear copy, never to a wrong nag.
    */
   hasActiveBankConnection?: boolean
+  /**
+   * AI clients this user has connected over MCP OAuth (lib/onboarding/
+   * ai-clients). Drives the footer: hand the first row to a connected
+   * client, or offer the connect buttons when there is none.
+   */
+  aiClients?: AiClient[]
 }
 
 interface WorklistRowProps {
@@ -130,6 +139,7 @@ export default function AttGoraSection({
   expiringBankConnections = [],
   emptyLedger = false,
   hasActiveBankConnection = true,
+  aiClients = [],
 }: AttGoraSectionProps) {
   const t = useTranslations('dashboard')
   const { toast } = useToast()
@@ -248,6 +258,8 @@ export default function AttGoraSection({
     hasAi,
     extra: expiringBankConnections.length,
   })
+  // Off the live counts, so a confirmed match moves the footer's target too.
+  const firstAiTask = pickFirstAiTask(counts, { hasAi })
 
   return (
     <section aria-label={t('att_gora_title')}>
@@ -541,6 +553,7 @@ export default function AttGoraSection({
             </div>
           )}
       </div>
+      <AttGoraAiCta clients={aiClients} task={firstAiTask} />
     </section>
   )
 }

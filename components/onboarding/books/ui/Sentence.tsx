@@ -3,8 +3,9 @@
 import type { ReactNode } from 'react'
 
 /**
- * The one-sentence summary with Ändra behind it: what will happen, in
- * words, and the rows that change it only when asked for.
+ * The one-sentence summary with Ändra under it: what will happen, in
+ * words, then one quiet row of tools (Ändra, and whatever the step adds),
+ * and the rows that change it only when asked for.
  */
 export function Sentence({
   children,
@@ -13,6 +14,7 @@ export function Sentence({
   changeLabel,
   closeLabel,
   hasOptions = true,
+  tools,
 }: {
   children: ReactNode
   open: boolean
@@ -20,16 +22,23 @@ export function Sentence({
   changeLabel: string
   closeLabel: string
   hasOptions?: boolean
+  /** Extra controls on the tools row, after Ändra. */
+  tools?: ReactNode
 }) {
   return (
-    <p className="imp-line">
-      {children}
-      {hasOptions ? (
-        <button type="button" className="imp-change" onClick={onToggle} aria-expanded={open}>
-          {open ? closeLabel : changeLabel}
-        </button>
+    <div className="imp-sentence">
+      <p className="imp-line">{children}</p>
+      {hasOptions || tools ? (
+        <p className="imp-tools">
+          {hasOptions ? (
+            <button type="button" className="imp-change" onClick={onToggle} aria-expanded={open}>
+              {open ? closeLabel : changeLabel}
+            </button>
+          ) : null}
+          {tools}
+        </p>
       ) : null}
-    </p>
+    </div>
   )
 }
 

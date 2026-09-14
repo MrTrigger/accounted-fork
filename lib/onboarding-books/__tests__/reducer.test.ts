@@ -110,6 +110,11 @@ describe('booksReducer', () => {
     expect(s.step).toBe('skv')
     s = booksReducer({ ...initialState(entry()), step: 'bank', imported: true }, { type: 'GO_BACK' })
     expect(s.step).toBe('insight')
+    // A fetched bank re-enters on its verdict: the pour never replays.
+    s = booksReducer({ ...initialState(entry()), step: 'skv', bankPhase: 'connected', bankConnectionId: 'c1' }, { type: 'GO_BACK' })
+    expect(s.step).toBe('bank')
+    expect(s.bankPhase).toBe('pick')
+    expect(s.bankConnectionId).toBeNull()
     const src = initialState(entry())
     expect(booksReducer(src, { type: 'GO_BACK' })).toBe(src)
   })

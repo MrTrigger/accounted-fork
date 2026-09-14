@@ -204,16 +204,17 @@ function stay(state: JourneyState, patch: Partial<JourneyState>): JourneyState {
 /**
  * The Företaget station asks only what is still unknown, then hands over to
  * the fiscal-year station. Order: name → address → F-skatt.
- * - AB with a known company_name (lookup or BankID roles) skips the name
- *   question; EF always confirms the verksamhetsnamn (it defaults to the
- *   person's name but is freely choosable, same as the wizard).
+ * - A company_name from the lookup (or BankID roles) skips the name
+ *   question for every form: the orgnr answers it, Enter is the whole step
+ *   (founder call 2026-09-11). An EF without lookup data still names its
+ *   verksamhet, and the name stays editable in Settings.
  * - Address is asked only when the lookup did not provide one.
  * - F-skatt is asked whenever it is not lookup data.
  */
 function nextCompanyStep(state: JourneyState): JourneyStep {
   const s = state.settings
   const nameKnown =
-    s.entity_type === 'aktiebolag'
+    s.entity_type === 'aktiebolag' || state.lookupRan
       ? Boolean(s.company_name)
       : Boolean(s.company_name) && state.nameConfirmedForEf === true
   if (!nameKnown) return 'name'

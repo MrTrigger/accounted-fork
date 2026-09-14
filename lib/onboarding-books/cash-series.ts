@@ -4,7 +4,7 @@
  * through the fetched transactions. Nothing is estimated: a day without
  * rows keeps the previous balance. The named moments are the biggest
  * outflows and the single biggest inflow, labelled with the counterpart's
- * own text.
+ * own text and carrying their signed amount for the chart's lane.
  */
 
 export interface CashTx {
@@ -20,6 +20,8 @@ export interface CashPoint {
   outflow: number
   /** Short label for a named moment on this day, or null. */
   ev: string | null
+  /** The named moment's signed amount (the day's outflow, negative), or null. */
+  evAmount: number | null
 }
 
 export interface CashSeriesInput {
@@ -83,7 +85,7 @@ export function buildCashSeries(input: CashSeriesInput): CashPoint[] {
     const d = new Date(from + i * DAY_MS)
     const iso = d.toISOString().slice(0, 10)
     const row = perDay.get(iso)
-    points.push({ d, v: values[i], inflow: row?.inflow ?? 0, outflow: row?.outflow ?? 0, ev: null })
+    points.push({ d, v: values[i], inflow: row?.inflow ?? 0, outflow: row?.outflow ?? 0, ev: null, evAmount: null })
   }
 
   // Name the biggest outflows: the moments the line dips for.
@@ -97,6 +99,7 @@ export function buildCashSeries(input: CashSeriesInput): CashPoint[] {
     const iso = points[r.i].d.toISOString().slice(0, 10)
     const row = perDay.get(iso)
     points[r.i].ev = shortLabel(row?.big && row.big.amount === r.out ? row.big.text : null)
+    points[r.i].evAmount = -r.out
   }
   return points
 }

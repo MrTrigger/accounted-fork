@@ -196,9 +196,10 @@ export function booksReducer(state: BooksState, action: BooksAction): BooksState
           return { ...state, step: 'source', provider: null, working: false }
         case 'bank':
           if (state.bankPhase === 'authed') return { ...state, bankPhase: 'pick', bankConnectionId: null, working: false }
-          return { ...state, step: state.imported ? 'insight' : 'source', bankSkipped: false, working: false }
+          // Past the fetch the connection is real: the step re-enters on its verdict, never on the pour.
+          return { ...state, step: state.imported ? 'insight' : 'source', bankPhase: 'pick', bankConnectionId: null, bankSkipped: false, working: false }
         case 'skv':
-          return { ...state, step: 'bank', skvSkipped: false, skvPhase: 'open', working: false }
+          return { ...state, step: 'bank', bankPhase: 'pick', bankConnectionId: null, skvSkipped: false, skvPhase: 'open', working: false }
         case 'done':
           return { ...state, step: 'skv', working: false }
         default:

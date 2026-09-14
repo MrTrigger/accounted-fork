@@ -13,10 +13,10 @@ import { loadBooksFindings } from '@/lib/onboarding/findings'
  */
 export const GET = withRouteContext(
   'onboarding-findings.get',
-  async (_request, { supabase, companyId, log, requestId }) => {
+  async (_request, { supabase, companyId, user, log, requestId }) => {
     try {
       const today = new Date().toISOString().slice(0, 10)
-      const data = await loadBooksFindings(supabase, companyId, today)
+      const data = await loadBooksFindings(supabase, companyId, today, user.id)
       return NextResponse.json({ data })
     } catch (error) {
       log.error('books findings failed', error as Error)

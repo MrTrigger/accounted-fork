@@ -259,7 +259,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
     <div className="bks-host">
       <div className="jny-qstep" style={{ textAlign: 'center' }}>
         <h1 className="jny-qtitle"><InkText text={t('provider_title')} /></h1>
-        <p className="jny-qsub">{t('provider_sub')}</p>
+        {phase === 'connect' || phase === 'connecting' || phase === 'token' ? <p className="jny-qsub">{t('provider_sub')}</p> : null}
         {error ? <p className="jny-attn">{error}</p> : null}
       </div>
 
@@ -279,7 +279,6 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
             ) : null}
             {t('provider_login', { provider: provName })}
           </button>
-          <p className="brandhint">{t('provider_login_sub')}</p>
         </div>
       ) : null}
       {phase === 'connecting' ? <Wait text={t('provider_connecting', { provider: provName })} /> : null}
@@ -355,11 +354,9 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
               {optDefs.map((o) => (
                 <OptRow key={o.key} name={o.name} desc={o.desc} off={!opts[o.key]} control={<Switch on={opts[o.key]} onToggle={() => setOpts((p) => ({ ...p, [o.key]: !p[o.key] }))} label={o.name} />} />
               ))}
-              <OptRow name={t('opt_docs')} desc={t('opt_docs_desc')} locked control={<Switch on={false} onToggle={() => {}} label={t('opt_docs')} locked />} />
             </OptRows>
           ) : null}
           <div className="jny-qactions">
-            <button type="button" className="jny-btn-quiet" onClick={() => { setPhase('connect'); setPreview(null) }}>{t('provider_disconnect')}</button>
             <button type="button" className="jny-btn" disabled={years.length === 0 && preview.sieAvailable !== false} onClick={() => void runImport()}>
               {years.length === 0 && preview.sieAvailable !== false ? t('years_pick_one') : t('sie_import', { count: years.length })}
             </button>
@@ -387,16 +384,28 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
         </div>
       ) : null}
 
-      <div className="jny-qactions">
-        {phase === 'connect' ? (
-          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BACK_TO_SOURCE' })}>‹ {t('back')}</button>
-        ) : null}
-        {phase === 'imported' ? (
+      {/* The door onward opens only on a successful import: a failed one
+          (0 of N vouchers written) must never reach the bank step or Klart.
+          A failed attempt never blocks the retry (sie_imports 'failed' rows
+          are ignored by the overlap check) and the opening balance it may
+          have written is skipped, not duplicated, on the next run. */}
+      {phase === 'imported' && !importError ? (
+        <div className="jny-qactions">
           <button type="button" className="jny-btn" onClick={() => dispatch({ type: 'AFTER_BOOKS', flags })}>
             {flags.hasBanking ? t('to_bank') : flags.hasSkatteverket ? t('to_skv') : t('to_done')}
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+      {phase === 'imported' && importError ? (
+        <div className="jny-qactions">
+          <button type="button" className="jny-btn" onClick={() => { setShown(0); setTick(0); void runImport() }}>
+            {t('provider_retry')}
+          </button>
+          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'GO_BACK' })}>
+            {t('provider_change_source')}
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

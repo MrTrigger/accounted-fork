@@ -7,6 +7,7 @@ import { COMPANY_PICKED_COOKIE } from '@/lib/company/context'
 import { isCockpitLandingRole } from '@/lib/company/home-domain'
 import { OAUTH_MCP_KEY_NAME } from '@/lib/auth/api-keys'
 import { claudeStepDone } from '@/lib/onboarding/checklist'
+import { loadConnectedAiClients } from '@/lib/onboarding/ai-clients'
 import { createServiceClient } from '@/lib/supabase/server'
 import {
   getDashboardAuthContext,
@@ -94,6 +95,7 @@ export default async function DashboardPage() {
     { count: skatteverketTokenCount },
     { count: oauthKeyCount, error: oauthKeyError },
     { data: userPrefs },
+    aiClients,
   ] =
     await Promise.all([
       getDashboardSettings(),
@@ -118,6 +120,10 @@ export default async function DashboardPage() {
       // Shell v2 opt-in (ui_state.shell): picks the three-pane Att göra over
       // the v1 Hem. Same row the layout reads for the sidebar.
       supabase.from('user_preferences').select('ui_state').eq('user_id', user.id).maybeSingle(),
+      // Which of Claude / ChatGPT / Grok completed the OAuth sign-in: the
+      // Att göra footer hands the first row to a connected client. Same
+      // per-user rule as the count above; a failed read answers none.
+      loadConnectedAiClients(serviceClient, user.id),
     ])
 
   // A FAILED settings read must not masquerade as "onboarding not done":
@@ -196,12 +202,17 @@ export default async function DashboardPage() {
       agentBuilt={agentBuilt}
       userFirstName={userFirstName}
       initialSetup={initialSetup}
-      hasSkatteverketConnected={(skatteverketTokenCount || 0) > 0}
       notices={notices}
       checklist={checklist}
       panes={
         <Suspense fallback={<PanesSkeleton />}>
-          <HemPanesSection companyId={companyId} now={now} setupOpen={setupOpen} />
+          <HemPanesSection
+            companyId={companyId}
+            now={now}
+            setupOpen={setupOpen}
+            hasSkatteverketConnected={(skatteverketTokenCount || 0) > 0}
+            aiClients={aiClients}
+          />
         </Suspense>
       }
     />

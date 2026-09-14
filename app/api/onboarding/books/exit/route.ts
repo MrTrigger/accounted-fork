@@ -11,8 +11,11 @@ import { BOOKS_GATE_COOKIE } from '@/lib/onboarding/books-gate'
  *
  * Leaves the books act (issue #2438): clears the first-session gate cookie
  * so the dashboard opens, and records how the books arrived when the act
- * knows (the Hem checklist's step one reads initial_setup_path). A pure
- * skip records nothing: the checklist then still asks.
+ * knows (the Hem checklist's step one reads initial_setup_path). Finishing
+ * the act (outcome 'done') is the initial setup: it stamps
+ * initial_setup_completed_at so Hem opens on Att göra instead of the
+ * getting-started checklist that would ask for the same imports again.
+ * A pure skip records nothing: the checklist then still asks.
  */
 const ExitSchema = z.object({
   outcome: z.enum(['done', 'skipped']),
@@ -29,10 +32,10 @@ export const POST = withRouteContext(
     if (!validation.success) return validation.response
     const body = validation.data
 
-    if (body.path) {
+    if (body.path || body.outcome === 'done') {
       const { data: existing, error: lookupError } = await supabase
         .from('company_settings')
-        .select('initial_setup_path')
+        .select('initial_setup_path, initial_setup_completed_at')
         .eq('company_id', companyId)
         .maybeSingle()
       if (lookupError) {
@@ -43,10 +46,15 @@ export const POST = withRouteContext(
         })
       }
       if (!existing) return errorResponseFromCode('NOT_FOUND', log, { requestId })
-      if (!existing.initial_setup_path) {
+      const patch: { initial_setup_path?: string; initial_setup_completed_at?: string } = {}
+      if (body.path && !existing.initial_setup_path) patch.initial_setup_path = body.path
+      if (body.outcome === 'done' && !existing.initial_setup_completed_at) {
+        patch.initial_setup_completed_at = new Date().toISOString()
+      }
+      if (Object.keys(patch).length > 0) {
         const { error: updateError } = await supabase
           .from('company_settings')
-          .update({ initial_setup_path: body.path })
+          .update(patch)
           .eq('company_id', companyId)
         if (updateError) {
           log.error('books exit: path persist failed', updateError)

@@ -1,8 +1,8 @@
 /**
  * The cash line: the balance over the fetched window growing left to right,
  * with in/ut ticks along the baseline, the named moments (biggest outflows
- * and the biggest inflow) in a lane above, and a head that rings when the
- * line lands. Starts in a hold: baseline and dates only, the origin
+ * in amber, the biggest inflow in sage, each with its date and signed
+ * amount) in a lane above, and a head that rings when the line lands. Starts in a hold: baseline and dates only, the origin
  * pulsing, until setPoints() hands it the real series (the bank request is
  * still running). Ported from the founder-approved prototype.
  */
@@ -36,6 +36,11 @@ function dayLabel(d: Date, locale: string): string {
   return d.toLocaleDateString(locale, { day: 'numeric', month: 'short' }).replace('.', '')
 }
 
+/** "+4 749" / "−1 240": every named moment carries its signed amount. */
+function fmtSigned(n: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 0, signDisplay: 'always' }).format(n)
+}
+
 export function createCashLine(canvas: HTMLCanvasElement, cfg: CashLineConfig): CashLineApi {
   const C = readPalette(canvas)
   const FONT = canvasFont(canvas)
@@ -66,11 +71,16 @@ export function createCashLine(canvas: HTMLCanvasElement, cfg: CashLineConfig): 
     marks = []
     dots = []
     if (cfg.events) {
-      pts.forEach((p, i) => { if (p.ev) { dots.push(i); marks.push({ i, label: `${p.ev} ${dayLabel(p.d, cfg.locale)}`, tone: 'out' }) } })
+      pts.forEach((p, i) => {
+        if (!p.ev) return
+        dots.push(i)
+        const amount = p.evAmount !== null ? ` ${fmtSigned(p.evAmount, cfg.locale)}` : ''
+        marks.push({ i, label: `${p.ev} ${dayLabel(p.d, cfg.locale)}${amount}`, tone: 'out' })
+      })
       if (inflowMark) {
         let bi = -1, bv = 0
         pts.forEach((p, i) => { if (p.inflow > bv) { bv = p.inflow; bi = i } })
-        if (bi >= 0) marks.push({ i: bi, label: `${inflowMark.label} +${new Intl.NumberFormat(cfg.locale, { maximumFractionDigits: 0 }).format(inflowMark.amount)}`, tone: 'in' })
+        if (bi >= 0) marks.push({ i: bi, label: `${inflowMark.label} ${dayLabel(pts[bi].d, cfg.locale)} ${fmtSigned(inflowMark.amount, cfg.locale)}`, tone: 'in' })
       }
       marks.sort((a, b) => a.i - b.i)
     }

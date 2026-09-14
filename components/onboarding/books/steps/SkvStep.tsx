@@ -1,13 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useBranding } from '@/lib/branding/brand-context'
 import { useFormat } from '@/lib/hooks/use-format'
-import { formatCurrency } from '@/lib/utils'
 import { InkText } from '@/components/onboarding/journey/ink'
+import { fmtKr } from '../engines/cash-draw'
 import { SkvHandshake } from '../ui/SkvHandshake'
-import { VerdictList, type Verdict } from '../ui/Verdicts'
 import type { BooksCtx } from '../context'
 
 const RETURN_TO = '/onboarding/books?station=skv'
@@ -17,15 +16,15 @@ const AUTHORIZE_URL = `/api/extensions/ext/skatteverket/authorize?return_to=${en
  * Anslut Skatteverket? The BankID button folds and leaves; the consent
  * runs in a new tab (the callback posts back and closes itself) while the
  * thread carries a light; on the message the rings meet, one ring closes
- * on the pair, the title inks and the verdicts follow. A blocked tab falls
+ * on the pair, the title inks and the tax account's own balance counts up
+ * under the stamp with the next deadline beneath it. A blocked tab falls
  * back to the full-page flow: the return mounts straight into the back
  * phase from ?skv_connected=true.
  */
 export function SkvStep({ ctx }: { ctx: BooksCtx }) {
   const t = useTranslations('books')
   const { appName } = useBranding()
-  const { formatDateLong } = useFormat()
-  const { state, dispatch, flags, findings, loadingFindings, loadFindings, landedError } = ctx
+  const { state, dispatch, flags, findings, loadFindings, landedError } = ctx
   const phase = state.skvPhase
   const [saldo, setSaldo] = useState<number | null>(null)
   const [attn, setAttn] = useState<string | null>(landedError)
@@ -142,21 +141,6 @@ export function SkvStep({ ctx }: { ctx: BooksCtx }) {
     }, 1000)
   }
 
-  const verdicts = useMemo<Verdict[]>(() => {
-    if (!findings?.skv.connected) return []
-    const s = findings.skv
-    const out: Verdict[] = [{ tone: 'ok', text: t('v_skv_connected') }]
-    if (saldo !== null) {
-      if (s.ledger1630 === null) out.push({ tone: 'info', text: t('v_skv_saldo', { amount: formatCurrency(saldo) }) })
-      else if (Math.abs(saldo - s.ledger1630) < 1) out.push({ tone: 'ok', text: t('v_skv_reconciled', { amount: formatCurrency(saldo) }) })
-      else out.push({ tone: 'warn', text: t('v_skv_diff', { skv: formatCurrency(saldo), ledger: formatCurrency(s.ledger1630) }), href: '/skattekonto' })
-    }
-    for (const d of s.nextDeadlines.slice(0, 2)) {
-      out.push({ tone: 'info', text: t('v_deadline', { type: t(`deadline_${d.type}`), date: formatDateLong(d.dueDate) }) })
-    }
-    return out
-  }, [findings, saldo, t, formatDateLong])
-
   const open = phase === 'open' || phase === 'leaving'
   const bodyCls = phase === 'leaving' ? ' is-away' : ''
 
@@ -185,21 +169,74 @@ export function SkvStep({ ctx }: { ctx: BooksCtx }) {
       {phase === 'away' || phase === 'back' || phase === 'done' ? (
         <SkvHandshake phase={phase} holdText={t('skv_hold')} leftLabel={appName} rightLabel={t('station_skv')} />
       ) : null}
-      {phase === 'done' ? <VerdictList verdicts={verdicts} loading={loadingFindings && !findings} base={400} narrow /> : null}
+      {phase === 'done' ? (
+        <SkvSaldo saldo={saldo} ledger={findings?.skv.ledger1630 ?? null} next={findings?.skv.nextDeadlines[0] ?? null} />
+      ) : null}
       <div className="jny-qactions">
         {phase === 'done' ? (
           <button type="button" className="jny-btn" onClick={() => dispatch({ type: 'TO_DONE' })}>
             {t('to_done')}
           </button>
         ) : open ? (
-          <>
-            <button type="button" className={`jny-btn-quiet${bodyCls}`} onClick={() => dispatch({ type: 'GO_BACK' })}>‹ {t('back')}</button>
-            <button type="button" className={`jny-btn-quiet${bodyCls}`} onClick={() => dispatch({ type: 'SKV_SKIP' })}>
-              {t('skv_skip')}
-            </button>
-          </>
+          <button type="button" className={`jny-btn-quiet${bodyCls}`} onClick={() => dispatch({ type: 'SKV_SKIP' })}>
+            {t('skv_skip')}
+          </button>
         ) : null}
       </div>
     </div>
   )
+}
+
+/**
+ * The success under the stamp, every line centred and unmarked: the tax
+ * account's balance counting up (or, before the first fetch, one line that
+ * it is on its way), how it sits against 1630, the next deadline.
+ */
+function SkvSaldo({ saldo, ledger, next }: { saldo: number | null; ledger: number | null; next: { type: string; dueDate: string } | null }) {
+  const t = useTranslations('books')
+  const { locale, formatDateLong } = useFormat()
+  const shown = useCountUp(saldo ?? 0, 700)
+  const differs = saldo !== null && ledger !== null && Math.abs(saldo - ledger) >= 1
+  return (
+    <div className="skv-result">
+      {saldo !== null ? (
+        <p className="saldo">
+          <b>{fmtKr(shown, locale)}</b>
+          <span>{t('skv_saldo_label')}</span>
+        </p>
+      ) : (
+        <p className="skv-next">{t('v_skv_connected')}</p>
+      )}
+      {saldo !== null && ledger !== null ? (
+        differs ? (
+          <a href="/skattekonto" className="skv-line is-attn">{t('skv_diff_short', { ledger: fmtKr(ledger, locale) })}</a>
+        ) : (
+          <p className="skv-line">{t('skv_reconciled_short')}</p>
+        )
+      ) : null}
+      {next ? <p className="skv-next">{t('v_deadline', { type: t(`deadline_${next.type}`), date: formatDateLong(next.dueDate) })}</p> : null}
+    </div>
+  )
+}
+
+/** 0 to target over `ms` with an ease-out; lands at once under reduced motion. */
+function useCountUp(target: number, ms: number): number {
+  const [value, setValue] = useState(0)
+  useEffect(() => {
+    let raf = 0
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      raf = requestAnimationFrame(() => setValue(target))
+      return () => cancelAnimationFrame(raf)
+    }
+    const t0 = performance.now()
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - t0) / ms)
+      const e = 1 - Math.pow(1 - p, 3)
+      setValue(Math.round(target * e))
+      if (p < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [target, ms])
+  return value
 }

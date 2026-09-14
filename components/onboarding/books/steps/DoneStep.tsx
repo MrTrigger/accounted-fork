@@ -10,13 +10,26 @@ import { Confetti } from '../ui/Confetti'
 import { AiCard } from '../ui/AiCard'
 import type { BooksCtx } from '../context'
 
+/** How often the Done step asks whether an AI client has signed in, while it is showing. */
+export const AI_POLL_MS = 4000
+
 /** Klart: a few flecks let go, the card of what got connected, then the door to Hem. */
 export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (outcome: 'done') => void; leaving: boolean }) {
   const t = useTranslations('books')
   const { company } = useCompany()
   const { appName } = useBranding()
   const { formatDateLong } = useFormat()
-  const { findings, state } = ctx
+  const { findings, state, loadFindings } = ctx
+
+  // The OAuth sign-in happens in another tab. Poll the findings while this
+  // step is on screen so the client's row turns green the moment the token
+  // route has minted its key; stop once all three are connected.
+  const allConnected = (findings?.ai.connected.length ?? 0) >= 3
+  useEffect(() => {
+    if (allConnected) return
+    const id = window.setInterval(() => { void loadFindings() }, AI_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [allConnected, loadFindings])
   const b = findings?.books
   const rows: [string, string][] = [
     [
@@ -49,9 +62,8 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
           ))}
         </dl>
       </div>
-      <AiCard />
+      <AiCard findings={findings} />
       <div className="jny-qactions">
-        <button type="button" className="jny-btn-quiet" onClick={() => ctx.dispatch({ type: 'GO_BACK' })}>‹ {t('back')}</button>
         <button type="button" className="jny-btn" disabled={leaving} onClick={() => onLeave('done')}>
           {t('open_app', { appName })}
         </button>

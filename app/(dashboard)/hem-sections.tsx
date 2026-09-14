@@ -2,6 +2,8 @@ import { after } from 'next/server'
 import { countCompletedSieImports, countInboxItems, countTransactions, readActiveBankConnections } from './hem-reads'
 import NewUserChecklist from '@/components/onboarding/NewUserChecklist'
 import AttGoraSection from '@/components/dashboard/AttGoraSection'
+import { KopplingarStrip } from '@/components/dashboard/KopplingarStrip'
+import type { AiClient } from '@/lib/onboarding/ai-clients'
 import ResumePane from '@/components/dashboard/ResumePane'
 import { HemNotices } from '@/components/dashboard/HemNotices'
 import {
@@ -191,10 +193,15 @@ export async function HemPanesSection({
   companyId,
   now,
   setupOpen,
+  hasSkatteverketConnected,
+  aiClients,
 }: {
   companyId: string
   now: Date
   setupOpen: boolean
+  hasSkatteverketConnected: boolean
+  /** See AttGoraSection.aiClients. */
+  aiClients: AiClient[]
 }) {
   const { supabase } = await getDashboardAuthContext()
   // Fetched once at the scan cap: the Att göra pane shows the first five and
@@ -255,17 +262,26 @@ export async function HemPanesSection({
   )
 
   return (
-    <div className={resumeItems.length > 0 ? 'grid items-start gap-x-6 gap-y-8 md:grid-cols-2' : undefined}>
-      <AttGoraSection
-        worklist={worklist}
-        suggestedMatches={suggestedMatches.slice(0, 5)}
-        expensePayouts={expensePayouts}
-        skattekontoPayment={skattekontoPayment}
-        expiringBankConnections={expiringBankConnections}
-        emptyLedger={emptyLedger}
-        hasActiveBankConnection={hasActiveBankConnection}
-      />
-      <ResumePane items={resumeItems} />
-    </div>
+    <>
+      <div className={resumeItems.length > 0 ? 'grid items-start gap-x-6 gap-y-8 md:grid-cols-2' : undefined}>
+        <AttGoraSection
+          worklist={worklist}
+          suggestedMatches={suggestedMatches.slice(0, 5)}
+          expensePayouts={expensePayouts}
+          skattekontoPayment={skattekontoPayment}
+          expiringBankConnections={expiringBankConnections}
+          emptyLedger={emptyLedger}
+          hasActiveBankConnection={hasActiveBankConnection}
+          aiClients={aiClients}
+        />
+        <ResumePane items={resumeItems} />
+      </div>
+      {/* While the getting-started checklist is open it carries the bank and
+          Skatteverket steps itself; afterwards the strip keeps the two
+          connections visible for whoever declined them in the books act. */}
+      {!setupOpen && (
+        <KopplingarStrip hasBank={hasActiveBankConnection} hasSkatteverket={hasSkatteverketConnected} />
+      )}
+    </>
   )
 }

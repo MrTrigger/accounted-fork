@@ -12,10 +12,12 @@ import {
   fetchCompanyLookup,
   fetchCompanySearch,
   fetchCompanySuggestions,
+  type CompanyLookupOutcome,
 } from '@/lib/company-lookup/fetch-company-lookup'
 import { normalizeOrgNumber } from '@/lib/company-lookup/normalize-org-number'
 import {
   COMPANY_SEARCH_MIN_CHARS,
+  type CompanyLookupResult,
   type CompanySearchHit,
   type CompanySuggestion,
 } from '@/lib/company-lookup/types'
@@ -62,8 +64,10 @@ import './journey.css'
  * performs the side effects, and collects the exact settings payload the
  * wizard sends today.
  *
- * TIC budget: fetchCompanyLookup fires exactly once per confirmed orgnr
- * (Enter, the auto-submitted BankID deep link, or a picked suggestion).
+ * TIC budget: fetchCompanyLookup fires once per orgnr, cached for the
+ * session. A complete number is looked up while it is still in the field
+ * (the company inks in under it), and Enter, the auto-submitted BankID deep
+ * link or a picked suggestion reuse that answer instead of asking again.
  * The search-as-you-type picker under the field is SCB (free), never TIC.
  * The advisory dup check is an internal endpoint.
  */
@@ -73,6 +77,8 @@ const STATION_FRACS = [0.07, 0.285, 0.5, 0.715, 0.93]
 /** Keystroke-to-search delay for the SCB picker: long enough to skip the
  *  middle of a word, short enough to feel live. */
 const SUGGEST_DEBOUNCE_MS = 300
+/** Pause after the last digit before a complete orgnr is looked up. */
+const PREVIEW_DEBOUNCE_MS = 350
 
 /** Digits, spaces and dashes only: the orgnr path, never a name search. */
 function looksLikeOrgNumber(raw: string): boolean {
@@ -143,6 +149,11 @@ export default function OnboardingJourney({
   // does not reopen for it, so the #2421 chip row or the nomatch note
   // stands alone until the text changes.
   const lastConfirmed = useRef<string | null>(null)
+  // One TIC call per orgnr: the answer is kept for the session so the
+  // preview under the field and the Enter that follows share it. A failed
+  // or aborted call is forgotten, so the next attempt asks again.
+  const lookupCache = useRef(new Map<string, Promise<CompanyLookupOutcome>>())
+  const [preview, setPreview] = useState<{ orgNumber: string; result: CompanyLookupResult } | null>(null)
 
   const station = stationOfStep(state.step)
   const entity = state.settings.entity_type
@@ -185,6 +196,21 @@ export default function OnboardingJourney({
       .catch(() => {})
   }, [])
 
+  const lookupFor = useCallback(
+    (orgNumber: string): Promise<CompanyLookupOutcome> => {
+      const key = normalizeOrgNumber(orgNumber) ?? orgNumber
+      const cached = lookupCache.current.get(key)
+      if (cached) return cached
+      const p = fetchCompanyLookup(orgNumber, { ticEnabled }).then((outcome) => {
+        if (outcome.status === 'error' || outcome.status === 'aborted') lookupCache.current.delete(key)
+        return outcome
+      })
+      lookupCache.current.set(key, p)
+      return p
+    },
+    [ticEnabled],
+  )
+
   // The one field takes either an orgnr or a company name. Digits (with
   // dashes/spaces) are always the orgnr path, so a mistyped number shakes
   // instead of turning into a name search; anything else is a name.
@@ -198,7 +224,7 @@ export default function OnboardingJourney({
           return
         }
         dispatch({ type: 'ORG_SUBMITTED', orgNumber: trimmed })
-        fetchCompanyLookup(trimmed, { ticEnabled }).then((outcome) => {
+        lookupFor(trimmed).then((outcome) => {
           dispatch({ type: 'LOOKUP_RESULT', outcome })
         })
         checkDuplicate(trimmed)
@@ -220,7 +246,7 @@ export default function OnboardingJourney({
         }
       })
     },
-    [ticEnabled, shakeOrg, checkDuplicate],
+    [ticEnabled, shakeOrg, checkDuplicate, lookupFor],
   )
 
   // The field keeps the name the user typed: writing the picked number into
@@ -289,13 +315,36 @@ export default function OnboardingJourney({
       setOrgInput(suggestion.name)
       setDupName(null)
       dispatch({ type: 'SUGGESTION_PICKED', suggestion })
-      fetchCompanyLookup(suggestion.orgNumber, { ticEnabled }).then((outcome) => {
+      lookupFor(suggestion.orgNumber).then((outcome) => {
         dispatch({ type: 'LOOKUP_RESULT', outcome })
       })
       checkDuplicate(suggestion.orgNumber)
     },
-    [ticEnabled, checkDuplicate],
+    [lookupFor, checkDuplicate],
   )
+
+  // A complete orgnr is looked up while it is still in the field: the
+  // company inks in under it, and Enter only confirms what is already
+  // there. Same single TIC call as the Enter path, taken early.
+  useEffect(() => {
+    const raw = orgInput.trim()
+    const key = looksLikeOrgNumber(raw) ? normalizeOrgNumber(raw) : null
+    if (state.step !== 'orgnr' || state.lookupPending || !key) {
+      setPreview(null)
+      return
+    }
+    let live = true
+    const timer = window.setTimeout(() => {
+      lookupFor(raw).then((outcome) => {
+        if (!live) return
+        setPreview(outcome.status === 'found' ? { orgNumber: key, result: outcome.result } : null)
+      })
+    }, PREVIEW_DEBOUNCE_MS)
+    return () => {
+      live = false
+      window.clearTimeout(timer)
+    }
+  }, [orgInput, state.step, state.lookupPending, lookupFor])
 
   const onOrgKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -586,9 +635,24 @@ export default function OnboardingJourney({
                 />
               </>
             ) : (
-              <p className="jny-enterhint">
-                {t('journey_press')} <b>Enter</b>
-              </p>
+              <>
+                {preview && normalizeOrgNumber(orgInput.trim()) === preview.orgNumber ? (
+                  <p className="jny-found" aria-live="polite">
+                    <InkText text={preview.result.companyName} step={40} />
+                    <span className="jny-found-sub">
+                      {[
+                        mapEntityType(preview.result.legalEntityType) === 'enskild_firma' ? t('journey_form_ef') : formatOrgNumber(preview.orgNumber),
+                        preview.result.address?.city,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  </p>
+                ) : null}
+                <p className="jny-enterhint">
+                  {t('journey_press')} <b>Enter</b>
+                </p>
+              </>
             )}
           </Question>
         )

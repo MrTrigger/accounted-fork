@@ -44,7 +44,7 @@ describe('GET /api/onboarding/findings', () => {
     )
     expect(status).toBe(200)
     expect(body.data).toEqual(findings)
-    expect(loadMock).toHaveBeenCalledWith(supabase, 'company-1', expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/))
+    expect(loadMock).toHaveBeenCalledWith(supabase, 'company-1', expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), 'user-1')
   })
 
   it('answers 500 with a reason when the ledger read fails', async () => {

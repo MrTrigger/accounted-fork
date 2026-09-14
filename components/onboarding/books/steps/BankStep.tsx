@@ -380,7 +380,6 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
     <div className="bks-host">
       <div className="jny-qstep" style={{ textAlign: 'center' }}>
         <h1 className="jny-qtitle"><InkText text={title} /></h1>
-        {phase === 'pick' && !alreadyConnected ? <p className="jny-qsub">{t('bank_sub')}</p> : null}
         {phase === 'authed' ? <p className="jny-qsub">{t('bank_sub_authed')}</p> : null}
         {attn ? <p className="jny-attn" style={{ margin: '0 0 16px' }}>{attn}</p> : null}
       </div>
@@ -439,7 +438,25 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
 
       {tickedList.length > 0 ? (
         <>
-          <Sentence open={open} onToggle={() => setOpen((v) => !v)} changeLabel={t('change')} closeLabel={t('close')}>
+          <Sentence
+            open={open}
+            onToggle={() => setOpen((v) => !v)}
+            changeLabel={t('change')}
+            closeLabel={t('close')}
+            tools={
+              lookback.days > LOOKBACK_SAFE_DAYS ? (
+                <button
+                  type="button"
+                  className={`jny-qhelp${helpOpen ? ' is-on' : ''}`}
+                  aria-label={t('bank_long_range_label')}
+                  aria-expanded={helpOpen}
+                  onClick={() => setHelpOpen((v) => !v)}
+                >
+                  ?
+                </button>
+              ) : null
+            }
+          >
             {tickedList.map((a, i) => (
               <span key={a.uid}>
                 {i === 0 ? '' : ', '}
@@ -451,17 +468,6 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
               lookback.rule === 'after_last_entry' ? 'bank_from_after' : lookback.rule === 'fiscal_year' ? 'bank_from_fy' : lookback.rule === 'date' ? 'bank_from_date' : 'bank_from_90',
               { b: (c) => <b>{c}</b>, date: formatDateLong(lookback.fromDate) },
             )}
-            {lookback.days > LOOKBACK_SAFE_DAYS ? (
-              <button
-                type="button"
-                className={`jny-qhelp${helpOpen ? ' is-on' : ''}`}
-                aria-label={t('bank_long_range_label')}
-                aria-expanded={helpOpen}
-                onClick={() => setHelpOpen((v) => !v)}
-              >
-                ?
-              </button>
-            ) : null}
           </Sentence>
           {open ? (
             <OptRows>
@@ -474,17 +480,21 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
                     name={a.name}
                     desc={[a.nr, a.currency === 'SEK' ? '' : a.currency].filter(Boolean).join(' · ')}
                     control={
-                      <button
-                        type="button"
-                        className="unm-pick"
-                        onClick={() => {
-                          const i = opts.indexOf(cur)
-                          setPicks((prev) => ({ ...prev, [a.uid]: opts[(i + 1) % opts.length] }))
-                        }}
-                        aria-label={t('bank_ledger_pick', { name: a.name })}
-                      >
-                        {cur} {ledgerName(cur, a.currency, chartNames)} ▾
-                      </button>
+                      <span className="unm-sel">
+                        <select
+                          className="unm-pick"
+                          value={cur}
+                          onChange={(e) => setPicks((prev) => ({ ...prev, [a.uid]: e.target.value }))}
+                          aria-label={t('bank_ledger_pick', { name: a.name })}
+                        >
+                          {opts.map((n) => (
+                            <option key={n} value={n}>
+                              {n} {ledgerName(n, a.currency, chartNames)}
+                            </option>
+                          ))}
+                        </select>
+                        <span aria-hidden="true">▾</span>
+                      </span>
                     }
                   />
                 )
@@ -540,13 +550,9 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
       </div>
       ) : null}
 
-      <div className="jny-qactions">
-        {phase === 'connected' && landed ? (
-          <button type="button" className="jny-btn" onClick={() => dispatch({ type: 'AFTER_BANK', flags })}>
-            {flags.hasSkatteverket ? t('to_skv') : t('to_done')}
-          </button>
-        ) : null}
-        {alreadyConnected ? (
+      {/* One column: the primary alone, Hoppa över quietly under it. Tillbaka lives at the top of the act. */}
+      <div className="jny-qactions is-stack">
+        {(phase === 'connected' && landed) || alreadyConnected ? (
           <button type="button" className="jny-btn" onClick={() => dispatch({ type: 'AFTER_BANK', flags })}>
             {flags.hasSkatteverket ? t('to_skv') : t('to_done')}
           </button>
@@ -557,12 +563,9 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
           </button>
         ) : null}
         {(phase === 'pick' && !alreadyConnected) || phase === 'authed' ? (
-          <>
-            <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'GO_BACK' })}>‹ {t('back')}</button>
-            <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
-              {t('bank_skip')}
-            </button>
-          </>
+          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
+            {t('bank_skip')}
+          </button>
         ) : null}
       </div>
     </div>

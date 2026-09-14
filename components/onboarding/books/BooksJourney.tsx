@@ -141,6 +141,15 @@ export default function BooksJourney(props: BooksJourneyProps) {
 
   const ctx: BooksCtx = { state, dispatch, flags, findings, loadingFindings, loadFindings, landedError: props.landedError }
 
+  // One Tillbaka for the whole act, top left under the rail: every step after
+  // the source can be undone from the same place. Hidden while something is
+  // in flight (an import, a bank round trip, the Skatteverket handshake).
+  const canGoBack =
+    state.step !== 'source' &&
+    !state.working &&
+    !(state.step === 'bank' && (state.bankPhase === 'connecting' || state.bankPhase === 'fetching')) &&
+    !(state.step === 'skv' && state.skvPhase === 'back')
+
   function renderStep() {
     switch (state.step) {
       case 'source':
@@ -167,6 +176,13 @@ export default function BooksJourney(props: BooksJourneyProps) {
         <JourneyTrack stations={stations} active={station} orbLabel={t(`orb_${orbState}`)}>
           <JourneyOrb state={orbState} targetX={STATION_FRACS[station]} />
         </JourneyTrack>
+        <div className="bks-backrow">
+          {canGoBack ? (
+            <button type="button" className="jny-btn-quiet bks-back" onClick={() => dispatch({ type: 'GO_BACK' })}>
+              ‹ {t('back')}
+            </button>
+          ) : null}
+        </div>
         <div className="bks-qarea" ref={areaRef} key={state.step}>
           {renderStep()}
         </div>

@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { resolveMissingUnderlagEntries } from '@/lib/bookkeeping/missing-underlag'
+import { loadConnectedAiClients, type AiClient } from '@/lib/onboarding/ai-clients'
 
 /**
  * Genomlysning: what the books act (issue #2438) can say about a company
@@ -34,6 +36,8 @@ export interface BooksFindings {
     uncategorizedTransactions: number
     /** ISO date of the latest posted verifikat: where the bank history should take over. */
     lastEntryDate: string | null
+    /** Posted verifikat still without underlag (the journal list's own predicate). */
+    missingUnderlag: number
   }
   bank: {
     connected: boolean
@@ -46,6 +50,10 @@ export interface BooksFindings {
     /** Balance on 1630 (skattekonto) in the ledger, positive = asset. */
     ledger1630: number | null
     nextDeadlines: { type: string; dueDate: string }[]
+  }
+  ai: {
+    /** Clients whose MCP OAuth sign-in this user has completed (a live key with that client). */
+    connected: AiClient[]
   }
 }
 
@@ -93,6 +101,7 @@ export async function loadBooksFindings(
   supabase: SupabaseClient,
   companyId: string,
   today: string,
+  userId: string,
 ): Promise<BooksFindings> {
   const [
     { count: entryCount },
@@ -104,6 +113,7 @@ export async function loadBooksFindings(
     { data: skvRows },
     { data: deadlineRows },
     { data: lastEntryRows },
+    connectedAi,
   ] = await Promise.all([
     supabase
       .from('journal_entries')
@@ -158,6 +168,7 @@ export async function loadBooksFindings(
       .in('status', ['posted', 'reversed'])
       .order('entry_date', { ascending: false })
       .limit(1),
+    loadConnectedAiClients(supabase, userId),
   ])
 
   const periods = ((periodRows ?? []) as {
@@ -230,6 +241,15 @@ export async function loadBooksFindings(
     ledger1630 = assetBalance(skvLines)
   }
 
+  let missingUnderlag = 0
+  if ((entryCount ?? 0) > 0) {
+    try {
+      missingUnderlag = (await resolveMissingUnderlagEntries(supabase, companyId, {}, { idOnly: true })).length
+    } catch {
+      // The count only feeds a suggestion; a failed query must not fail the findings.
+    }
+  }
+
   const bank = (bankRows ?? [])[0] as
     | { bank_name: string | null; status: string; last_sie_sweep: { auto_linked?: number; suggested?: number; unmatched?: number } | null }
     | undefined
@@ -246,6 +266,7 @@ export async function loadBooksFindings(
       vatBalance,
       uncategorizedTransactions: uncategorizedCount ?? 0,
       lastEntryDate: ((lastEntryRows ?? []) as { entry_date: string }[])[0]?.entry_date ?? null,
+      missingUnderlag,
     },
     bank: {
       connected: !!bank,
@@ -267,5 +288,6 @@ export async function loadBooksFindings(
         dueDate: d.due_date,
       })),
     },
+    ai: { connected: connectedAi },
   }
 }

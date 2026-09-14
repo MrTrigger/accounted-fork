@@ -439,12 +439,10 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
           ) : null}
           <div className="jny-qactions">
             {files.length > 0 ? (
-              <button type="button" className="jny-btn-quiet" onClick={() => { setFiles([]); setOptsOpen(false) }}>{t('sie_other_file')}</button>
-            ) : (
-              <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BACK_TO_SOURCE' })}>‹ {t('back')}</button>
-            )}
-            {files.length > 0 ? (
-              <button type="button" className="jny-btn-quiet" onClick={() => inputRef.current?.click()}>{t('sie_add_file')}</button>
+              <>
+                <button type="button" className="jny-btn-quiet" onClick={() => { setFiles([]); setOptsOpen(false) }}>{t('sie_other_file')}</button>
+                <button type="button" className="jny-btn-quiet" onClick={() => inputRef.current?.click()}>{t('sie_add_file')}</button>
+              </>
             ) : null}
             {ready.length > 0 && !parsing ? (
               <button type="button" className="jny-btn" onClick={() => void runImport()}>{t('sie_import', { count: nYears })}</button>

@@ -112,26 +112,36 @@ describe('journeyReducer: EF found via lookup', () => {
     registration: { fTax: true, vat: false },
   })
 
-  it('still asks the verksamhetsnamn question (name is a choice for EF)', () => {
+  it('takes the name from the lookup and goes straight to the fiscal year: Enter is the whole step', () => {
     const s = run(
       initJourney(),
       { type: 'ORG_SUBMITTED', orgNumber: '19850420-1234' },
       { type: 'LOOKUP_RESULT', outcome: { status: 'found', result: efLookup } },
     )
-    expect(s.step).toBe('name')
+    expect(s.step).toBe('fy')
     expect(s.settings.entity_type).toBe('enskild_firma')
     expect(s.settings.company_name).toBe('Alice Nordin')
   })
 
-  it('skips address and F-skatt after the name (lookup facts), then asks moms: never defaults a negative VAT', () => {
+  it('still names the verksamhet when no lookup answered', () => {
+    const s = run(
+      initJourney(),
+      { type: 'ORG_SUBMITTED', orgNumber: '19850420-1234' },
+      { type: 'LOOKUP_RESULT', outcome: { status: 'not_found' } },
+      { type: 'NOTFOUND_CONTINUE' },
+      { type: 'ENTITY_PICKED', entityType: 'enskild_firma' },
+    )
+    expect(s.step).toBe('name')
+  })
+
+  it('skips address and F-skatt (lookup facts), then asks moms: never defaults a negative VAT', () => {
     const s = run(
       initJourney(),
       { type: 'ORG_SUBMITTED', orgNumber: '19850420-1234' },
       { type: 'LOOKUP_RESULT', outcome: { status: 'found', result: efLookup } },
-      { type: 'NAME_SUBMITTED', name: 'Alice Nordin Design' },
       { type: 'FY_CALENDAR_CONFIRMED' },
     )
-    expect(s.settings.company_name).toBe('Alice Nordin Design')
+    expect(s.settings.company_name).toBe('Alice Nordin')
     expect(s.settings.f_skatt).toBe(true)
     expect(s.step).toBe('momsyn')
     expect(s.settings.vat_registered).toBeUndefined()
@@ -142,7 +152,6 @@ describe('journeyReducer: EF found via lookup', () => {
       initJourney(),
       { type: 'ORG_SUBMITTED', orgNumber: '19850420-1234' },
       { type: 'LOOKUP_RESULT', outcome: { status: 'found', result: efLookup } },
-      { type: 'NAME_SUBMITTED', name: 'Alice Nordin' },
       { type: 'FY_CALENDAR_CONFIRMED' },
       { type: 'VAT_ANSWERED', registered: false },
     )
