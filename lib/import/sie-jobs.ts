@@ -245,6 +245,7 @@ export async function submitSIEJob(supabase: SupabaseClient, companyId: string, 
   return data as SIEJob
 }
 
+/** Reject untracked legacy attempts before forwarding durable actions to guarded RPCs. */
 export async function requestSIEJobAction(supabase: SupabaseClient, companyId: string, userId: string,
   importId: string, action: 'resume' | 'undo',
 ): Promise<SIEJob> {

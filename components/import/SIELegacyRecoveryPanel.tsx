@@ -11,6 +11,7 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { SIELegacyRecoveryAssessment } from '@/lib/import/sie-legacy-recovery'
 import { formatDate } from '@/lib/utils'
 
+/** Show advisory legacy-year evidence without enabling any bookkeeping action. */
 export default function SIELegacyRecoveryPanel({ importId, filename, onClose, onCloseAutoFocus }: {
   importId: string
   filename: string

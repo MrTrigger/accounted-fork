@@ -40,6 +40,10 @@ export const SIE_IMPORT_STATUS_SCHEMA = {
     },
   },
   required: ['import_id', 'kind', 'state', 'chunks_done', 'chunks_total', 'vouchers_written', 'error_message', 'result'],
+  oneOf: [
+    { type: 'object', properties: { kind: { const: 'durable' }, recovery: false }, required: ['kind'] },
+    { type: 'object', properties: { kind: { const: 'legacy' }, recovery: { type: 'object' } }, required: ['kind', 'recovery'] },
+  ],
 }
 
 /** Keep the durable progress contract, and label legacy observations without inventing job progress. */
