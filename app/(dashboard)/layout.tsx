@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { cookies, headers } from 'next/headers'
 import DashboardNav from '@/components/dashboard/DashboardNav'
+import { DashboardRouteShell } from '@/components/dashboard/DashboardRouteShell'
 import { MainContainer } from '@/components/dashboard/MainContainer'
 import CompanyTabSync from '@/components/dashboard/CompanyTabSync'
 import AnalyticsIdentify from '@/components/AnalyticsIdentify'
@@ -20,6 +21,7 @@ import { resolveDormantCompanyIds } from '@/lib/company/active-company'
 import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider, type ByraTeamRef } from '@/contexts/CompanyContext'
 import { ReferenceDataSeed } from '@/components/providers/ReferenceDataSeed'
+import OnboardingBackdrop from '@/components/onboarding/OnboardingBackdrop'
 import { getCompanyEntitlements } from '@/lib/entitlements/has-capability'
 import { getAiStatus } from '@/lib/ai'
 import { getDashboardNavFlags } from '@/lib/dashboard/nav-flags'
@@ -534,6 +536,22 @@ export default async function DashboardLayout({
         settings={settingsError ? undefined : settings}
       >
       <SessionTimeoutController />
+      <DashboardRouteShell
+        onboarding={
+          <div className="relative min-h-dvh bg-background">
+            <OnboardingBackdrop />
+            <main id="main-content" className="relative z-10">
+              {showSignpost ? (
+                <HomeDomainSignpost
+                  activeCompanyName={displayName}
+                  homedCompanies={homePartition.visible.map((entry) => ({ id: entry.company.id, name: entry.company.name }))}
+                  foreignCompanies={foreignCompanies}
+                />
+              ) : children}
+            </main>
+          </div>
+        }
+      >
       <AgentSheetProvider
         identity={{
           displayName: agentProfileIdentity?.display_name ?? null,
@@ -631,6 +649,7 @@ export default async function DashboardLayout({
           />
         )}
       </AgentSheetProvider>
+      </DashboardRouteShell>
       </ReferenceDataSeed>
     </CompanyProvider>
   )
