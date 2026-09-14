@@ -276,6 +276,17 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
       description: 'Use the correction (storno) flow to change a posted entry instead of editing it.',
     },
   },
+  CANNOT_CANCEL_NON_DRAFT: {
+    httpStatus: 409,
+    message_sv:
+      'Endast utkast kan makuleras. En bokförd verifikation måste stornas i stället.',
+    message_en:
+      'Only draft entries can be cancelled; a posted entry must be reversed (storno) instead.',
+    remediation: {
+      description:
+        'Storno the posted entry with POST /api/v1/companies/{companyId}/journal-entries/{id}/reverse. Cancelling a draft that is already cancelled succeeds: the endpoint is idempotent.',
+    },
+  },
   ENTRY_ALREADY_REVERSED: {
     httpStatus: 409,
     message_sv:
