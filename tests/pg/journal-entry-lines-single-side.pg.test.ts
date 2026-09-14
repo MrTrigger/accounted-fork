@@ -107,11 +107,24 @@ async function insertLegacyBothSidesLine(entryId: string): Promise<string> {
     // DROP CONSTRAINT takes the comment with it. Put it back, so this seed
     // leaves the catalog exactly as it found it and the shape test above
     // still passes on a re-run against the same database.
+    //
+    // COMMENT ON is a utility statement: like the ALTER TABLE above it takes
+    // no bind parameters ($1 there is a 42601 syntax error). The text is
+    // therefore handed over in a transaction-local GUC and turned into a
+    // literal by format(%L), which quotes it correctly without this file
+    // splicing catalog text into SQL by hand.
     const comment = def.rows[0]?.comment
     if (comment) {
+      await client.query(`SELECT set_config('pgtest.single_side_comment', $1, true)`, [comment])
       await client.query(
-        `COMMENT ON CONSTRAINT ${CONSTRAINT} ON public.journal_entry_lines IS $1`,
-        [comment],
+        `DO $do$
+         BEGIN
+           EXECUTE format(
+             'COMMENT ON CONSTRAINT ${CONSTRAINT} ON public.journal_entry_lines IS %L',
+             current_setting('pgtest.single_side_comment')
+           );
+         END
+         $do$`,
       )
     }
     await client.query('COMMIT')
