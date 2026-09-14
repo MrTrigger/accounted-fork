@@ -69,6 +69,7 @@ export default function SIEImportHistory() {
   const [offset, setOffset] = useState(0)
   const [total, setTotal] = useState(0)
   const requestVersion = useRef(0)
+  const reviewTrigger = useRef<HTMLButtonElement | null>(null)
 
   const fetchImports = useCallback(async (signal?: AbortSignal) => {
     const version = ++requestVersion.current
@@ -160,7 +161,7 @@ export default function SIEImportHistory() {
     )
   }
 
-  if (loadFailed) {
+  if (loadFailed && rows === null) {
     return <p className="px-1 text-xs leading-5 text-muted-foreground">{t('sie_history_load_error')}</p>
   }
 
@@ -182,6 +183,7 @@ export default function SIEImportHistory() {
 
   return (
     <div>
+      {loadFailed && <p role="status" className="mb-3 text-xs leading-5 text-muted-foreground">{t('sie_history_load_error')}</p>}
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-[13px]">
           <thead>
@@ -224,7 +226,10 @@ export default function SIEImportHistory() {
                     </Button>
                   )}
                   {!row.job_state && (
-                    <Button variant="outline" size="sm" className="min-h-10" onClick={() => setReviewImport(row)}>
+                    <Button variant="outline" size="sm" className="min-h-10" onClick={event => {
+                      reviewTrigger.current = event.currentTarget
+                      setReviewImport(row)
+                    }}>
                       {t('sie_recovery.review')}
                     </Button>
                   )}
@@ -250,7 +255,8 @@ export default function SIEImportHistory() {
       )}
 
       {reviewImport && (
-        <SIELegacyRecoveryPanel key={reviewImport.id} importId={reviewImport.id} filename={reviewImport.filename} onClose={() => setReviewImport(null)} />
+        <SIELegacyRecoveryPanel key={reviewImport.id} importId={reviewImport.id} filename={reviewImport.filename}
+          onClose={() => setReviewImport(null)} onCloseAutoFocus={() => reviewTrigger.current?.focus()} />
       )}
 
       <DestructiveConfirmDialog

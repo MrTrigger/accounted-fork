@@ -1,5 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
+export class SIELegacyReviewRequiredError extends Error {
+  readonly code = 'SIE_IMPORT_LEGACY_REVIEW_REQUIRED'
+  constructor() {
+    super('Äldre SIE-importer behöver granskas. Öppna importhistoriken och välj Granska för importen.')
+  }
+}
+
 export type SIELegacyPeriodResolution = 'linked' | 'exact_dates' | 'missing' | 'ambiguous' | 'conflicting'
 
 interface RecoveryPeriod {

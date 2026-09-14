@@ -11,10 +11,11 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { SIELegacyRecoveryAssessment } from '@/lib/import/sie-legacy-recovery'
 import { formatDate } from '@/lib/utils'
 
-export default function SIELegacyRecoveryPanel({ importId, filename, onClose }: {
+export default function SIELegacyRecoveryPanel({ importId, filename, onClose, onCloseAutoFocus }: {
   importId: string
   filename: string
   onClose: () => void
+  onCloseAutoFocus: () => void
 }) {
   const t = useTranslations('import.sie_recovery')
   const userLocale = useLocale()
@@ -34,6 +35,7 @@ export default function SIELegacyRecoveryPanel({ importId, filename, onClose }: 
           setError(getErrorMessage(payload, { locale }))
           return
         }
+        setError(null)
         setAssessment(payload.data)
       } catch (err) {
         if (!controller.signal.aborted) setError(getErrorMessage(err, { locale }))
@@ -45,10 +47,13 @@ export default function SIELegacyRecoveryPanel({ importId, filename, onClose }: 
   const period = assessment?.period
   return (
     <SlideOver open onOpenChange={open => { if (!open) onClose() }}>
-      <SlideOverContent>
-        <div className="border-b border-border px-6 py-4">
+      <SlideOverContent onCloseAutoFocus={event => {
+        event.preventDefault()
+        onCloseAutoFocus()
+      }}>
+        <div className="shrink-0 border-b border-border px-6 py-4">
           <DialogTitle className="font-display text-lg leading-6">{t('title')}</DialogTitle>
-          <DialogDescription className="mt-2 break-words">{filename}</DialogDescription>
+          <DialogDescription data-ph-mask="" className="mt-2 break-words">{filename}</DialogDescription>
         </div>
         <SlideOverBody className="space-y-6">
           {error ? (
