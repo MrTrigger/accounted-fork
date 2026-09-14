@@ -213,19 +213,20 @@ export interface AccountMapping {
   vatTreatmentReviewed?: boolean
   requiresVatTreatmentReview?: boolean
   /**
-   * 'provider' when defaultVatTreatment was translated from the momskod the
-   * source system has on this account (Fortnox VATCode), rather than guessed
-   * from the label. The mapping-step enrichment keeps such a value instead of
-   * overwriting it with a label suggestion.
-   */
-  vatTreatmentSource?: 'provider'
-  /**
    * The source system's own momskod for this account, verbatim (e.g. "MP1"),
    * shown in the mapping step so the user can check the translation against
    * the chart they know. Set whenever the provider reported one, translated
    * or not.
    */
   providerVatCode?: string | null
+  /**
+   * providerVatCode translated to a treatment, or null when the code has no
+   * equivalent. A fact about the source account, not the row's current
+   * value: enrichAccountMappingsWithVat derives the suggestion from it every
+   * time the row returns to an identity mapping, so a remap and back does
+   * not lose it.
+   */
+  providerVatTreatment?: import('@/lib/vat/account-vat-treatment').AccountVatTreatment | null
 }
 
 /**

@@ -1266,7 +1266,7 @@ export const arcimMigrationExtension: Extension = {
             }
             if (codesByAccount.size > 0) {
               mappings = applySourceVatCodes(mappings, codesByAccount, fortnoxVatCodeToTreatment)
-              const translated = mappings.filter((m) => m.vatTreatmentSource === 'provider').length
+              const translated = mappings.filter((m) => m.providerVatTreatment).length
               log.info(`Account mapping: ${codesByAccount.size} ${provider} VAT codes fetched, ${translated} translated to a treatment`)
             }
           } catch (err) {

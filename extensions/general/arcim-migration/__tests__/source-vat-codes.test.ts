@@ -140,25 +140,26 @@ describe('GET /sie-data: momskod from the source system (#2585)', () => {
     const mappings = await mappingsFrom(await sieData(request(), buildCtx()))
 
     expect(fetchAccountingAccountsDirect).toHaveBeenCalledWith('fortnox', 'tok')
+    // A suggestion, not a reviewed value: the row still needs its confirm.
     expect(mappings.get('3041')).toMatchObject({
       providerVatCode: 'MP1',
-      vatTreatmentSource: 'provider',
+      providerVatTreatment: 'standard_25',
       defaultVatTreatment: 'standard_25',
       defaultVatRate: 0.25,
-      vatTreatmentReviewed: true,
-      requiresVatTreatmentReview: false,
+      vatTreatmentSuggested: true,
+      vatTreatmentReviewed: false,
+      requiresVatTreatmentReview: true,
     })
     expect(mappings.get('4056')).toMatchObject({
       providerVatCode: 'IVEU',
-      vatTreatmentSource: 'provider',
+      providerVatTreatment: 'reverse_charge_eu_goods',
       defaultVatTreatment: 'reverse_charge_eu_goods',
       defaultVatRate: 0.25,
-      vatTreatmentReviewed: true,
+      vatTreatmentReviewed: false,
     })
     // No treatment exists for uttag (ruta 06): the code is shown, the row
     // is left to the label suggestion.
-    expect(mappings.get('3001')).toMatchObject({ providerVatCode: 'UT' })
-    expect(mappings.get('3001')?.vatTreatmentSource).toBeUndefined()
+    expect(mappings.get('3001')).toMatchObject({ providerVatCode: 'UT', providerVatTreatment: null })
     expect(mappings.get('3001')?.defaultVatTreatment).toBeUndefined()
     // Moms and bank accounts carry no treatment, whatever Fortnox says.
     expect(mappings.get('2611')?.providerVatCode).toBeUndefined()
@@ -173,7 +174,7 @@ describe('GET /sie-data: momskod from the source system (#2585)', () => {
     expect(mappings.size).toBe(5)
     for (const mapping of mappings.values()) {
       expect(mapping.providerVatCode).toBeUndefined()
-      expect(mapping.vatTreatmentSource).toBeUndefined()
+      expect(mapping.providerVatTreatment).toBeUndefined()
     }
   })
 
