@@ -113,6 +113,8 @@ export interface JourneyInit {
 }
 
 export type JourneyAction =
+  | { type: 'RESTORE'; state: JourneyState }
+  | { type: 'DRAFT_SETTINGS'; settings: Partial<CompanySettings> }
   | { type: 'ORG_SUBMITTED'; orgNumber: string }
   | { type: 'LOOKUP_RESULT'; outcome: CompanyLookupOutcome }
   | { type: 'SEARCH_SUBMITTED'; query: string }
@@ -213,7 +215,7 @@ function stay(state: JourneyState, patch: Partial<JourneyState>): JourneyState {
 function nextCompanyStep(state: JourneyState): JourneyStep {
   const s = state.settings
   const nameKnown =
-    s.entity_type === 'aktiebolag' || state.lookupRan
+    s.entity_type === 'aktiebolag' || state.lookupRan || state.viaPrefill
       ? Boolean(s.company_name)
       : Boolean(s.company_name) && state.nameConfirmedForEf === true
   if (!nameKnown) return 'name'
@@ -286,6 +288,17 @@ function applyLookupFound(state: JourneyState, lookup: CompanyLookupResult): Jou
 
 export function journeyReducer(state: JourneyState, action: JourneyAction): JourneyState {
   switch (action.type) {
+    case 'RESTORE':
+      // Restoring a draft must never re-submit company creation or a lookup.
+      return {
+        ...action.state,
+        settings: state.settings.org_number && state.settings.org_number === action.state.settings.org_number
+          ? { ...action.state.settings, ...state.settings }
+          : action.state.settings,
+        submitting: false, lookupPending: false, searchHits: [], serverError: null,
+      }
+    case 'DRAFT_SETTINGS':
+      return { ...state, settings: { ...state.settings, ...action.settings } }
     case 'ORG_SUBMITTED': {
       if (state.submitting) return state
       // Fresh orgnr invalidates any previous lookup facts.

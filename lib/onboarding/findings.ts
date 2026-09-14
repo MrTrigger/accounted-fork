@@ -104,18 +104,7 @@ export async function loadBooksFindings(
   today: string,
   userId: string,
 ): Promise<BooksFindings> {
-  const [
-    { count: entryCount },
-    { data: periodRows },
-    { count: overdueCount },
-    { count: uncategorizedCount },
-    { data: bankRows },
-    { count: txCount },
-    { data: skvRows },
-    { data: deadlineRows },
-    { data: lastEntryRows },
-    connectedAi,
-  ] = await Promise.all([
+  const results = await Promise.all([
     supabase
       .from('journal_entries')
       .select('*', { count: 'exact', head: true })
@@ -171,6 +160,14 @@ export async function loadBooksFindings(
       .limit(1),
     loadConnectedAiClients(supabase, userId),
   ])
+  for (const result of results.slice(0, 9)) {
+    if ('error' in result && result.error) throw result.error
+  }
+  const [
+    { count: entryCount }, { data: periodRows }, { count: overdueCount },
+    { count: uncategorizedCount }, { data: bankRows }, { count: txCount },
+    { data: skvRows }, { data: deadlineRows }, { data: lastEntryRows }, connectedAi,
+  ] = results
 
   const periods = ((periodRows ?? []) as {
     id: string
@@ -203,6 +200,7 @@ export async function loadBooksFindings(
           .in('journal_entries.status', ['posted', 'reversed'])
           .gte('journal_entries.entry_date', p.start)
           .lte('journal_entries.entry_date', p.end)
+          .order('id')
           .range(range.from, range.to),
       )
       if (lines.length === 0) continue
@@ -226,6 +224,7 @@ export async function loadBooksFindings(
           .in('journal_entries.status', ['posted', 'reversed'])
           .gte('account_number', '2600')
           .lte('account_number', '2699')
+          .order('id')
           .range(range.from, range.to),
       ),
       fetchAllRows<LineRow>((range) =>
@@ -235,6 +234,7 @@ export async function loadBooksFindings(
           .eq('journal_entries.company_id', companyId)
           .in('journal_entries.status', ['posted', 'reversed'])
           .eq('account_number', '1630')
+          .order('id')
           .range(range.from, range.to),
       ),
     ])
@@ -244,17 +244,13 @@ export async function loadBooksFindings(
 
   let missingUnderlag = 0
   if ((entryCount ?? 0) > 0) {
-    try {
-      missingUnderlag = (await resolveMissingUnderlagEntries(supabase, companyId, {}, { idOnly: true })).length
-    } catch {
-      // The count only feeds a suggestion; a failed query must not fail the findings.
-    }
+    missingUnderlag = (await resolveMissingUnderlagEntries(supabase, companyId, {}, { idOnly: true })).length
   }
 
   const bank = (bankRows ?? [])[0] as
     | { bank_name: string | null; status: string; last_sie_sweep: { auto_linked?: number; suggested?: number; unmatched?: number } | null }
     | undefined
-  const skvActive = ((skvRows ?? []) as { status: string | null }[]).some((r) => r.status !== 'needs_reconsent')
+  const skvActive = ((skvRows ?? []) as { status: string | null }[]).some((r) => r.status === 'active')
 
   return {
     books: {

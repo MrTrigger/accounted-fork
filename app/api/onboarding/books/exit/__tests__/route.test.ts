@@ -52,6 +52,14 @@ describe('POST /api/onboarding/books/exit', () => {
     expect(response.status).toBe(400)
   })
 
+  it('rejects read-only members without updating settings or clearing the gate', async () => {
+    requireWriteMock.mockResolvedValue({ ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) })
+    const response = await POST(createMockRequest('/api/onboarding/books/exit', { method: 'POST', body: { outcome: 'done' } }), CTX)
+    expect(response.status).toBe(403)
+    expect(response.headers.get('set-cookie')).toBeNull()
+    expect(findCall('company_settings', 'update')).toBeUndefined()
+  })
+
   it('returns 404 when the company has no settings row', async () => {
     enqueue({ data: null })
     const response = await POST(

@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import { createClient, createServiceClient } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import {
   acceptPendingInviteByToken,
   hasPendingInviteForEmail,
@@ -145,28 +145,8 @@ export default async function SelectCompanyPage({
     (r) => !memberOrgNumbers.has(r.companyRegistrationNumber.replace(/[\s-]/g, '')),
   )
 
-  // Drop roles for companies that exist in Accounted under someone else: the
-  // journey would only refuse them as duplicates, so they are not a choice.
-  // Service client on purpose: RLS hides companies the user is not a member
-  // of, which is exactly the set we need. Scoped to these org numbers.
-  let candidates = rolesNotAlreadyMine
-  if (rolesNotAlreadyMine.length > 0) {
-    const service = createServiceClient()
-    const orgNumbers = rolesNotAlreadyMine.map((r) =>
-      r.companyRegistrationNumber.replace(/[\s-]/g, ''),
-    )
-    const { data: rows } = await service
-      .from('companies')
-      .select('org_number')
-      .in('org_number', orgNumbers)
-      .is('archived_at', null)
-    const externallyOwned = new Set(
-      (rows ?? []).map((r: { org_number: string | null }) => r.org_number ?? '').filter(Boolean),
-    )
-    candidates = rolesNotAlreadyMine.filter(
-      (r) => !externallyOwned.has(r.companyRegistrationNumber.replace(/[\s-]/g, '')),
-    )
-  }
+  // Other accounts can independently use the same organisation number.
+  const candidates = rolesNotAlreadyMine
 
   const enrichmentTimestamp = enrichmentRow?.updated_at ?? enrichmentRow?.created_at ?? null
   const enrichmentStale = enrichmentTimestamp

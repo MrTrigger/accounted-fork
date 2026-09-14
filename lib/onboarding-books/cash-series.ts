@@ -32,6 +32,7 @@ export interface CashSeriesInput {
   today: string
   /** How many outflows to name (the biggest ones). */
   nameOutflows?: number
+  outflowFallbackLabel?: string
 }
 
 const DAY_MS = 86_400_000
@@ -44,9 +45,9 @@ function dayKey(iso: string): string {
   return iso.slice(0, 10)
 }
 
-export function shortLabel(text: string | null, max = 16): string {
+export function shortLabel(text: string | null, max = 16, fallback = ''): string {
   const clean = (text ?? '').replace(/\s+/g, ' ').trim()
-  if (!clean) return 'Utbetalning'
+  if (!clean) return fallback
   const first = clean.split(/[,/|]/)[0].trim()
   const s = first.length ? first : clean
   return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`
@@ -98,15 +99,15 @@ export function buildCashSeries(input: CashSeriesInput): CashPoint[] {
   for (const r of ranked) {
     const iso = points[r.i].d.toISOString().slice(0, 10)
     const row = perDay.get(iso)
-    points[r.i].ev = shortLabel(row?.big && row.big.amount === r.out ? row.big.text : null)
+    points[r.i].ev = shortLabel(row?.big && row.big.amount === r.out ? row.big.text : null, 16, input.outflowFallbackLabel)
     points[r.i].evAmount = -r.out
   }
   return points
 }
 
 /** The biggest inflow's label and amount, for the sage mark above the line. */
-export function biggestInflow(transactions: CashTx[]): { label: string; amount: number } | null {
+export function biggestInflow(transactions: CashTx[], fallback = ''): { label: string; amount: number } | null {
   let best: CashTx | null = null
   for (const tx of transactions) if (tx.amount > 0 && (!best || tx.amount > best.amount)) best = tx
-  return best ? { label: shortLabel(best.description, 20), amount: best.amount } : null
+  return best ? { label: shortLabel(best.description, 20, fallback), amount: best.amount } : null
 }

@@ -8,6 +8,7 @@ import { useFormat } from '@/lib/hooks/use-format'
 import { AI_CLIENTS, aiConnectAction, type AiClient } from '@/lib/onboarding/ai-clients'
 import { pickAiPrompts, type AiPromptKey } from '@/lib/onboarding-books/ai-prompts'
 import type { BooksFindings } from '@/lib/onboarding/findings'
+import { AiConnectorDialog } from '@/components/onboarding/AiConnectorDialog'
 
 /**
  * The last card: one header, up to three prompts built from this company's
@@ -29,6 +30,9 @@ export function AiCard({ findings, onConnect, showPrompts = true }: {
   const { locale, formatDateLong } = useFormat()
   const prompts = useMemo(() => pickAiPrompts(findings), [findings])
   const [copied, setCopied] = useState<AiPromptKey | null>(null)
+  const [connectClient, setConnectClient] = useState<AiClient | null>(null)
+  const [connectAction, setConnectAction] = useState<ReturnType<typeof aiConnectAction> | null>(null)
+  const [copyFailed, setCopyFailed] = useState(false)
   const copiedTimer = useRef<number | null>(null)
   useEffect(() => () => { if (copiedTimer.current) window.clearTimeout(copiedTimer.current) }, [])
 
@@ -38,18 +42,28 @@ export function AiCard({ findings, onConnect, showPrompts = true }: {
     return t(`prompt_${key}`, values)
   }
 
-  function copyPrompt(key: AiPromptKey, text: string) {
-    void navigator.clipboard?.writeText(text).catch(() => {})
-    setCopied(key)
-    if (copiedTimer.current) window.clearTimeout(copiedTimer.current)
-    copiedTimer.current = window.setTimeout(() => setCopied(null), 1800)
+  async function copyPrompt(key: AiPromptKey, text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(key)
+      setCopyFailed(false)
+      if (copiedTimer.current) window.clearTimeout(copiedTimer.current)
+      copiedTimer.current = window.setTimeout(() => setCopied(null), 1800)
+    } catch {
+      setCopied(null)
+      setCopyFailed(true)
+    }
   }
 
   function connect(client: AiClient) {
-    onConnect?.(client)
     const action = aiConnectAction(client, { origin: window.location.origin, appName })
-    if (action.copy) void navigator.clipboard?.writeText(action.copy).catch(() => {})
-    window.open(action.open, '_blank', 'noopener')
+    if (action.copy) {
+      setConnectClient(client)
+      setConnectAction(action)
+    } else {
+      onConnect?.(client)
+      window.open(action.open, '_blank', 'noopener')
+    }
   }
   const connected = findings?.ai.connected ?? []
 
@@ -59,6 +73,8 @@ export function AiCard({ findings, onConnect, showPrompts = true }: {
 
   return (
     <div className="aiwrap">
+      <AiConnectorDialog action={connectAction} onClose={() => setConnectAction(null)} onOpen={() => { if (connectClient) onConnect?.(connectClient) }} />
+      {copyFailed ? <p role="status" className="text-sm text-muted-foreground">{t('ai_prompt_copy_failed')}</p> : null}
       <p className="aihead">{t('ai_head')}</p>
       {/* The card speaks: one bubble above it, one out of each side, each a prompt in quotes. */}
       <div className="aistage">
@@ -70,7 +86,7 @@ export function AiCard({ findings, onConnect, showPrompts = true }: {
                 type="button"
                 className={`aiprompt${copied === p.key ? ' is-copied' : ''}`}
                 style={{ animationDelay: `${1500 + i * 380}ms` }}
-                onClick={() => copyPrompt(p.key, text)}
+                onClick={() => void copyPrompt(p.key, text)}
               >
                 {qOpen}{text}{qClose}
                 {copied === p.key ? <small>{t('ai_copied')}</small> : null}

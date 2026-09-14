@@ -15,7 +15,7 @@ export const GET = withRouteContext(
   'onboarding-findings.get',
   async (_request, { supabase, companyId, user, log, requestId }) => {
     try {
-      const today = new Date().toISOString().slice(0, 10)
+      const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
       const data = await loadBooksFindings(supabase, companyId, today, user.id)
       return NextResponse.json({ data })
     } catch (error) {

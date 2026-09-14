@@ -16,11 +16,15 @@ describe('connectedAiClients', () => {
 })
 
 describe('aiChatLink', () => {
-  it('opens a new chat with the prompt in the query, URL-encoded', () => {
-    const prompt = 'Bokför 3 rader & moms'
-    expect(aiChatLink('claude', prompt)).toBe(`https://claude.ai/new?q=${encodeURIComponent(prompt)}`)
-    expect(aiChatLink('chatgpt', prompt)).toBe(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`)
-    expect(aiChatLink('grok', prompt)).toBe(`https://grok.com/?q=${encodeURIComponent(prompt)}`)
+  it.each([
+    ['claude', 'https://claude.ai/new'],
+    ['chatgpt', 'https://chatgpt.com/'],
+    ['grok', 'https://grok.com/'],
+  ] as const)('opens %s without putting task or company data in the URL', (client, expected) => {
+    const link = aiChatLink(client)
+    expect(link).toBe(expected)
+    expect(new URL(link).search).toBe('')
+    expect(new URL(link).hash).toBe('')
   })
 })
 

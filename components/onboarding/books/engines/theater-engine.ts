@@ -703,10 +703,12 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
             let accT = 0
             for (let ti = 0; ti < B.targets.length; ti++) { accT += B.targets[ti].n; if (idx < accT) { target = B.targets[ti].node; break } }
             if (!target) target = B.targets[B.targets.length - 1].node
-          } else if (liveB.length) {
+          } else if (liveB.length && totalCount > 0) {
             let pw = Math.random() * totalCount
             target = liveB[0]
             for (let li = 0; li < liveB.length; li++) { pw -= liveB[li].count ?? 0; if (pw <= 0) { target = liveB[li]; break } }
+          } else if (liveB.length) {
+            target = liveB[Math.floor(Math.random() * liveB.length)]
           }
         }
         B.flow.push({ m: isMatch && !!target, target, p: 0, v: 0.9 + Math.random() * 0.4, jit: (Math.random() - 0.5) * 34, rx: (Math.random() - 0.5) * 80, ry: (Math.random() - 0.5) * 18 })

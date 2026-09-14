@@ -42,19 +42,18 @@ export function pickConnectedAiClient(clients: AiClient[], preferred?: AiClient)
 }
 
 /**
- * A new chat in the client with the prompt already typed. Each of the three
- * web apps reads `q` from its home or /new URL; the user still presses send,
- * and the connector has to be enabled in that chat for the tools to answer.
+ * Open an empty chat. Company identifiers and task details must never enter
+ * third-party URLs, browser history or URL logs. The user reviews and copies
+ * the prompt inside Accounted, then pastes it into their chosen client.
  */
-export function aiChatLink(client: AiClient, prompt: string): string {
-  const q = encodeURIComponent(prompt)
+export function aiChatLink(client: AiClient): string {
   switch (client) {
     case 'claude':
-      return `https://claude.ai/new?q=${q}`
+      return 'https://claude.ai/new'
     case 'chatgpt':
-      return `https://chatgpt.com/?q=${q}`
+      return 'https://chatgpt.com/'
     case 'grok':
-      return `https://grok.com/?q=${q}`
+      return 'https://grok.com/'
   }
 }
 

@@ -77,7 +77,7 @@ export function SkvStep({ ctx }: { ctx: BooksCtx }) {
     if (url.searchParams.has('skv_connected') || url.searchParams.has('skv_error')) {
       url.searchParams.delete('skv_connected')
       url.searchParams.delete('skv_error')
-      window.history.replaceState({}, '', url.pathname + (url.search ? url.search : ''))
+      window.history.replaceState(window.history.state, '', url.pathname + (url.search ? url.search : ''))
     }
     arrive()
   }, [arrive])

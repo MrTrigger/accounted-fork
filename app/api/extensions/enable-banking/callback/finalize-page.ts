@@ -178,7 +178,7 @@ export function renderFinalizeRedirect(url: string, cspNonce: string): string {
     var url = ${jsUrl};
     try {
       if (window.opener && !window.opener.closed) {
-        window.opener.postMessage({ type: 'enable-banking-connected', url: url }, new URL(url).origin);
+        window.opener.postMessage({ type: 'enable-banking-connected', url: url }, new URL(url, window.location.origin).origin);
         window.close();
         return;
       }

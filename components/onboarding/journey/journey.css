@@ -40,6 +40,8 @@
    collapses first when a tall step needs the room */
 .jny-balance { flex: 0 20 180px; min-height: 0; }
 .jny-backrow { flex: none; margin: 8px 0 12px; min-height: 20px; }
+.jny-backrow button { min-height: 44px; }
+.jny-backrow button:disabled { opacity: 0.5; cursor: wait; }
 
 /* ── journey band ────────────────────────────────────────────────── */
 .jny-journey { flex: none; position: relative; width: min(680px, 94vw); margin: 6px auto 0; height: 112px; }
@@ -344,8 +346,8 @@
 .bks-vmark { flex: none; width: 16px; height: 20px; display: inline-flex; align-items: center; justify-content: center; }
 .bks-v.is-ok .bks-vmark { color: hsl(var(--success)); }
 .bks-v.is-ok .bks-vmark path { stroke-dasharray: 30; stroke-dashoffset: 30; }
-.bks-v.is-ok.is-on .bks-vmark path { animation: bksCheck 380ms var(--ease-out) 120ms forwards; }
-@keyframes bksCheck { to { stroke-dashoffset: 0; } }
+.bks-v.is-ok.is-on .bks-vmark path { animation: bks-check 380ms var(--ease-out) 120ms forwards; }
+@keyframes bks-check { to { stroke-dashoffset: 0; } }
 .bks-vdot { display: block; width: 7px; height: 7px; border-radius: 99px; background: hsl(var(--muted-foreground)); }
 .bks-v.is-warn .bks-vdot { background: hsl(var(--warning)); }
 .bks-vlink { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }

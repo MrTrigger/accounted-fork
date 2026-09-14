@@ -236,6 +236,15 @@ describe('journeyReducer: ceased company', () => {
 })
 
 describe('journeyReducer: BankID prefill', () => {
+  it.each(['disabled', 'error'] as const)('keeps a sole trader BankID name when lookup is %s', (status) => {
+    const s = run(
+      initJourney({ initialOrgNumber: '900101-0017', initialEntityType: 'enskild_firma', initialLegalName: 'Jane Doe' }),
+      { type: 'ORG_SUBMITTED', orgNumber: '900101-0017' },
+      { type: 'LOOKUP_RESULT', outcome: { status } },
+    )
+    expect(s.step).toBe('address')
+    expect(s.settings.company_name).toBe('Jane Doe')
+  })
   const init = () =>
     initJourney({
       initialOrgNumber: '556677-8899',
@@ -333,6 +342,20 @@ describe('journeyReducer: fiscal-year branches', () => {
 })
 
 describe('journeyReducer: Back and station jumps', () => {
+  it('restores draft answers without repeating company creation or lookup requests', () => {
+    const saved = { ...initJourney(), step: 'name' as const, settings: { company_name: 'Acme AB' }, submitting: true, lookupPending: true }
+    const restored = journeyReducer(initJourney(), { type: 'RESTORE', state: saved })
+    expect(restored).toMatchObject({ step: 'name', settings: { company_name: 'Acme AB' }, submitting: false, lookupPending: false })
+    expect(journeyReducer(restored, { type: 'DRAFT_SETTINGS', settings: { company_name: 'Acme Holdings AB' } }).settings.company_name).toBe('Acme Holdings AB')
+  })
+
+  it('keeps later answers when reviewing an earlier question for the same company', () => {
+    const earlier = { ...initJourney(), step: 'name' as const, settings: { org_number: '556677-8899', company_name: 'Acme AB' } }
+    const current = { ...earlier, step: 'fskatt' as const, settings: { ...earlier.settings, address_line1: 'Example Street 1', city: 'Stockholm' } }
+    const restored = journeyReducer(current, { type: 'RESTORE', state: earlier })
+    expect(restored.settings.address_line1).toBe('Example Street 1')
+    expect(restored.step).toBe('name')
+  })
   it('Back restores each step to its ENTRY state (answers roll back)', () => {
     const atFy = manualAbAtFy()
     let s = journeyReducer(atFy, { type: 'BACK' })

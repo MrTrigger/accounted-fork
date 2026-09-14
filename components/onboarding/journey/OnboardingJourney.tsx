@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import { createCompanyFromOnboarding } from '@/lib/company/actions'
 import { computeFiscalPeriod } from '@/lib/company/compute-fiscal-period'
@@ -26,6 +25,7 @@ import { formatOrgNumber } from '@/lib/utils'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import { useBranding } from '@/lib/branding/brand-context'
 import { BOOKS_PATH } from '@/lib/onboarding/books-gate'
+import { useOnboardingNavigation } from '@/lib/hooks/use-onboarding-navigation'
 import {
   initJourney,
   journeyReducer,
@@ -97,6 +97,7 @@ function logError(message: string, extra?: Record<string, unknown>) {
 
 interface OnboardingJourneyProps {
   teamId: string
+  userId: string
   mode?: 'first' | 'add'
   initialOrgNumber?: string
   initialEntityType?: EntityType
@@ -112,6 +113,7 @@ interface OnboardingJourneyProps {
 
 export default function OnboardingJourney({
   teamId,
+  userId,
   mode = 'first',
   initialOrgNumber,
   initialEntityType,
@@ -133,6 +135,19 @@ export default function OnboardingJourney({
 
   const bandRef = useRef<HTMLDivElement | null>(null)
   const [orgInput, setOrgInput] = useState(initialOrgNumber ?? '')
+  const draftState = useMemo(() => ({ journey: state, orgInput }), [state, orgInput])
+  const navigation = useOnboardingNavigation({
+    scope: `company:${userId}:${teamId}:${mode}:${initialOrgNumber ?? ''}`,
+    step: state.step,
+    state: draftState,
+    restore: (saved) => {
+      dispatch({ type: 'RESTORE', state: saved.journey })
+      setOrgInput(saved.orgInput)
+    },
+    beforeStep: preserveQuestionAnswers,
+    blocked: state.submitting || state.lookupPending,
+    complete: state.step === 'done',
+  })
   const [orgShake, setOrgShake] = useState(false)
   const [thinking, setThinking] = useState(false)
   const [narration, setNarration] = useState<string | null>(null)
@@ -202,7 +217,8 @@ export default function OnboardingJourney({
       const cached = lookupCache.current.get(key)
       if (cached) return cached
       const p = fetchCompanyLookup(orgNumber, { ticEnabled }).then((outcome) => {
-        if (outcome.status === 'error' || outcome.status === 'aborted') lookupCache.current.delete(key)
+        // Only a successful lookup is reusable. A miss may succeed on retry.
+        if (outcome.status !== 'found') lookupCache.current.delete(key)
         return outcome
       })
       lookupCache.current.set(key, p)
@@ -384,11 +400,10 @@ export default function OnboardingJourney({
   // addendum). Guarded against strict-mode double-invoke.
   const autoRan = useRef(false)
   useEffect(() => {
-    if (autoRan.current) return
+    if (!navigation.ready || autoRan.current) return
     autoRan.current = true
-    // At mount the reducer is always on the orgnr step.
-    if (initialOrgNumber) submitOrg(initialOrgNumber)
-  }, [initialOrgNumber, submitOrg])
+    if (initialOrgNumber && state.step === 'orgnr' && state.history.length === 0) submitOrg(initialOrgNumber)
+  }, [navigation.ready, initialOrgNumber, state.step, state.history.length, submitOrg])
 
   // A short thinking beat between questions.
   const prevStep = useRef(state.step)
@@ -711,7 +726,7 @@ export default function OnboardingJourney({
             sub={isEf ? t('journey_name_ef_sub') : t('journey_name_ab_sub')}
           >
             <NameInput
-              key={state.step + suggested}
+              key={state.step}
               initial={suggested}
               placeholder={isEf ? t('journey_name_ef_placeholder') : t('journey_name_ab_placeholder')}
               hint={
@@ -720,6 +735,7 @@ export default function OnboardingJourney({
                 </>
               }
               onSubmit={(name) => dispatch({ type: 'NAME_SUBMITTED', name })}
+              onChange={(name) => dispatch({ type: 'DRAFT_SETTINGS', settings: { company_name: name } })}
             />
           </Question>
         )
@@ -729,6 +745,8 @@ export default function OnboardingJourney({
         return (
           <Question title={isEf ? t('journey_addr_ef_title') : t('journey_addr_ab_title')}>
             <AddressFields
+              initial={{ street: s.address_line1 ?? '', postalCode: s.postal_code ?? '', city: s.city ?? '' }}
+              onChange={(v) => dispatch({ type: 'DRAFT_SETTINGS', settings: { address_line1: v.street, postal_code: v.postalCode, city: v.city } })}
               placeholders={{
                 street: t('step2_street_address'),
                 postalCode: t('step2_postal_code'),
@@ -975,20 +993,15 @@ export default function OnboardingJourney({
   return (
     <div className="jny jny-fixed" style={{ ['--jny-dawn' as string]: String(station / 4) }}>
       <div className="jny-dawn" aria-hidden="true" />
-      {mode === 'add' && state.step !== 'done' ? (
-        <Link href="/" className="jny-btn-quiet jny-escape">
-          &lsaquo; {t('journey_cancel_add', { appName })}
-        </Link>
-      ) : null}
       <div className="jny-center">
         <div ref={bandRef} style={{ width: '100%' }}>
           <JourneyTrack
             stations={stations}
             active={station}
             onJump={
-              state.submitting
+              state.submitting || state.step === 'done'
                 ? undefined
-                : (i) => dispatch({ type: 'STATION_JUMP', station: i as 0 | 1 | 2 | 3 })
+                : (i) => navigation.backTo((saved) => stationOfStep(saved.journey.step) === i, () => dispatch({ type: 'STATION_JUMP', station: i as 0 | 1 | 2 | 3 }))
             }
             orbLabel={t(`journey_orb_${orbState}`)}
           >
@@ -1030,21 +1043,22 @@ export default function OnboardingJourney({
           )}
         </div>
 
-        <div className="jny-qarea">{renderStep()}</div>
+        <div className="jny-qarea" key={state.step}>{navigation.ready ? renderStep() : null}</div>
 
         <div className="jny-balance" aria-hidden="true" />
         <div className="jny-backrow">
-          {state.history.length > 0 &&
-          state.step !== 'done' &&
-          !state.submitting ? (
-            <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BACK' })}>
+            <button type="button" className="jny-btn-quiet" disabled={!navigation.ready || state.submitting || state.lookupPending} onClick={() => state.step === 'done' ? router.push('/') : navigation.back(() => state.history.length > 0 ? dispatch({ type: 'BACK' }) : mode === 'add' ? router.push('/') : router.back())}>
               &lsaquo; {t('back')}
             </button>
-          ) : null}
         </div>
       </div>
     </div>
   )
+}
+
+/** Keep the answer just entered when returning to its question. */
+function preserveQuestionAnswers(previous: { journey: JourneyState; orgInput: string }, current: { journey: JourneyState; orgInput: string }) {
+  return { ...previous, journey: { ...previous.journey, settings: current.journey.settings, submitting: false } }
 }
 
 /* ── small step components ─────────────────────────────────────── */
@@ -1056,11 +1070,13 @@ function NameInput({
   placeholder,
   hint,
   onSubmit,
+  onChange,
 }: {
   initial: string
   placeholder: string
   hint: React.ReactNode
   onSubmit: (name: string) => void
+  onChange: (name: string) => void
 }) {
   const [value, setValue] = useState(initial)
   return (
@@ -1072,7 +1088,7 @@ function NameInput({
           aria-label={placeholder}
           autoComplete="off"
           autoFocus
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => { setValue(e.target.value); onChange(e.target.value) }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && value.trim()) onSubmit(value)
           }}
@@ -1317,7 +1333,6 @@ function DoneStep({
     notes.push(t('journey_note_first_year', { start: s.first_year_start, end: s.first_year_end }))
   }
   if (s.f_skatt === false) notes.push(t('journey_note_fskatt'))
-  if (s.vat_registered === false) notes.push(t('journey_note_vat_watch'))
   if (state.ticLookup?.isCeased) notes.push(t('journey_note_ceased'))
 
   return (

@@ -8,6 +8,7 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { useAccounts, useCashAccounts, useFiscalPeriods } from '@/lib/reference-data/hooks'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { notifyBankSyncUpdated } from '@/lib/transactions/bank-sync-signal'
+import type { CashAccount } from '@/types'
 import { allocateLedgers, ledgerName, ledgerOptions } from '@/lib/onboarding-books/ledger'
 import { LOOKBACK_SAFE_DAYS, resolveLookback, type LookbackMode } from '@/lib/onboarding-books/lookback'
 import { biggestInflow, buildCashSeries, type CashPoint, type CashTx } from '@/lib/onboarding-books/cash-series'
@@ -61,10 +62,10 @@ function isoToday(): string {
 export function BankStep({ ctx }: { ctx: BooksCtx }) {
   const t = useTranslations('books')
   const { locale, formatDateLong } = useFormat()
-  const { state, dispatch, flags, findings, loadFindings, landedError } = ctx
+  const { state, dispatch, flags, findings, loadingFindings, loadFindings, landedError } = ctx
   const phase = state.bankPhase
   const isMig = state.path === 'migration' || (findings?.books.entries ?? 0) > 0
-  const { cashAccounts } = useCashAccounts()
+  const { cashAccounts, refresh: refreshCashAccounts } = useCashAccounts()
   const { accounts: chart } = useAccounts(true)
   const { periods } = useFiscalPeriods()
   const supabase = useMemo(() => createClient(), [])
@@ -76,11 +77,15 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
   const [query, setQuery] = useState('')
 
   const [accts, setAccts] = useState<ConnAccount[] | null>(null)
-  const [ticked, setTicked] = useState<Record<string, boolean>>({})
-  const [picks, setPicks] = useState<Record<string, string>>({})
+  const [ticked, setTicked] = useState<Record<string, boolean>>(state.bankDraft?.ticked ?? {})
+  const [picks, setPicks] = useState<Record<string, string>>(state.bankDraft?.picks ?? {})
   const [open, setOpen] = useState(false)
-  const [mode, setMode] = useState<LookbackMode>('auto')
-  const [customDate, setCustomDate] = useState('')
+  const [mode, setMode] = useState<LookbackMode>(state.bankDraft?.mode ?? 'auto')
+  const [customDate, setCustomDate] = useState(state.bankDraft?.customDate ?? '')
+
+  useEffect(() => {
+    dispatch({ type: 'BANK_DRAFT', draft: { ticked, picks, mode, customDate } })
+  }, [ticked, picks, mode, customDate, dispatch])
 
   const [showCash, setShowCash] = useState(false)
   const [pillsGone, setPillsGone] = useState(false)
@@ -126,9 +131,9 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
     return [...banks].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'sv'))
   }, [banks])
   const shownBanks = useMemo(() => {
-    if (!more) return orderedBanks.slice(0, PICK_COUNT)
     const q = query.trim().toLowerCase()
-    return q ? orderedBanks.filter((b) => b.name.toLowerCase().includes(q)) : orderedBanks
+    if (q) return orderedBanks.filter((b) => b.name.toLowerCase().includes(q))
+    return more ? orderedBanks : orderedBanks.slice(0, PICK_COUNT)
   }, [orderedBanks, more, query])
 
   // The bank's login runs in a popup, like the provider logins: the callback
@@ -187,22 +192,29 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
       }
       const json = (await res.json().catch(() => ({}))) as { authorization_url?: string; error?: unknown }
       if (!res.ok || !json.authorization_url) throw new Error(getErrorMessage(json, { locale: locale as 'sv' | 'en' }))
+      // A deliberately closed popup cancels this attempt; only a blocked
+      // popup should fall back to navigating the entire onboarding page.
+      if (popup?.closed) {
+        stopPopupWatch()
+        dispatch({ type: 'BANK_PICK_FAILED' })
+        return
+      }
       if (popup && !popup.closed) {
         popup.location.href = json.authorization_url
         // Closed without an outcome: back to the pick, quietly.
         popupWatch.current = window.setInterval(() => {
           if (popupRef.current && popupRef.current.closed) {
             stopPopupWatch()
-            window.setTimeout(() => { if (!outcomeRef.current) dispatch({ type: 'BANK_PICK_FAILED' }) }, 500)
+            at(500, () => { if (!outcomeRef.current) dispatch({ type: 'BANK_PICK_FAILED' }) })
           }
         }, 800)
       } else {
-        window.location.href = json.authorization_url
+        window.location.assign(json.authorization_url)
       }
     } catch (err) {
       popup?.close()
       stopPopupWatch()
-      setAttn(err instanceof Error ? err.message : t('bank_connect_failed'))
+      setAttn(getErrorMessage(err, { locale: locale as 'sv' | 'en' }))
       dispatch({ type: 'BANK_PICK_FAILED' })
     }
   }
@@ -215,7 +227,7 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
     if (url.searchParams.has('select_accounts') || url.searchParams.has('station')) {
       url.searchParams.delete('select_accounts')
       url.searchParams.delete('station')
-      window.history.replaceState({}, '', url.pathname + (url.search ? url.search : ''))
+      window.history.replaceState(window.history.state, '', url.pathname + (url.search ? url.search : ''))
     }
     void (async () => {
       const { data } = await supabase
@@ -318,27 +330,27 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
       const json = (await res.json().catch(() => ({}))) as { initial_sync?: SyncSummary; initial_sync_error?: string; error?: unknown }
       if (!res.ok) throw new Error(getErrorMessage(json, { locale: locale as 'sv' | 'en' }))
       notifyBankSyncUpdated()
-      void invalidateReferenceData(['ref:cash-accounts', 'ref:accounts'])
+      void invalidateReferenceData('ref:accounts')
       void loadFindings()
       const sum = json.initial_sync ?? { imported: 0, duplicates: 0, auto_matched: 0, requested_from: lookback.fromDate, returned_min_date: null, returned_max_date: null }
       setSummary(sum)
       if (json.initial_sync_error) setAttn(json.initial_sync_error)
 
       // Today's balance from the mirrored cash accounts, then the rows of the window.
-      const [balRes, txRes] = await Promise.all([
-        fetch('/api/cash-accounts').then((r) => r.json()).catch(() => null) as Promise<{ data?: { bank_connection_id: string | null; external_uid: string | null; balance: number | null; enabled: boolean }[] } | null>,
+      const [refreshedCashAccounts, txRes] = await Promise.all([
+        refreshCashAccounts() as Promise<CashAccount[] | undefined>,
         fetch(`/api/transactions?date_from=${lookback.fromDate}&date_to=${today}`).then((r) => r.json()).catch(() => null) as Promise<{ data?: { date: string; amount: number; amount_sek?: number | null; description: string | null }[] } | null>,
       ])
-      const mine = (balRes?.data ?? []).filter((c) => c.bank_connection_id === state.bankConnectionId && c.external_uid && enabledUids.includes(c.external_uid))
+      const mine = (refreshedCashAccounts ?? cashAccounts).filter((c) => c.bank_connection_id === state.bankConnectionId && c.external_uid && enabledUids.includes(c.external_uid))
       const balanceToday = mine.reduce((s, c) => s + (c.balance ?? 0), 0)
       const rows: CashTx[] = (txRes?.data ?? []).map((r) => ({ date: r.date, amount: typeof r.amount_sek === 'number' ? r.amount_sek : r.amount, description: r.description }))
-      const series = buildCashSeries({ transactions: rows, balanceToday, fromDate: sum.returned_min_date && sum.returned_min_date > lookback.fromDate ? sum.returned_min_date : lookback.fromDate, today })
-      setInflow(biggestInflow(rows))
-      setPoints(series.length >= 2 ? series : buildCashSeries({ transactions: [], balanceToday, fromDate: lookback.fromDate, today }))
+      const series = buildCashSeries({ outflowFallbackLabel: t('bank_outflow'), transactions: rows, balanceToday, fromDate: sum.returned_min_date && sum.returned_min_date > lookback.fromDate ? sum.returned_min_date : lookback.fromDate, today })
+      setInflow(biggestInflow(rows, t('bank_inflow')))
+      setPoints(series.length >= 2 ? series : buildCashSeries({ outflowFallbackLabel: t('bank_outflow'), transactions: [], balanceToday, fromDate: lookback.fromDate, today }))
       dispatch({ type: 'BANK_CONNECTED' })
     } catch (err) {
       fetchingRef.current = false
-      setAttn(err instanceof Error ? err.message : t('bank_fetch_failed'))
+      setAttn(getErrorMessage(err, { locale: locale as 'sv' | 'en' }))
       setShowCash(false)
       setPillsGone(false)
       if (state.bankConnectionId) dispatch({ type: 'BANK_AUTHED', name: state.bankName ?? '', connectionId: state.bankConnectionId })
@@ -387,7 +399,12 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
       {alreadyConnected ? <VerdictList verdicts={bankVerdicts} /> : null}
 
       {phase === 'pick' && !alreadyConnected ? (
-        !flags.hasBanking ? (
+        !findings ? (
+          <div className="jny-qactions is-stack">
+            {loadingFindings ? <Wait text={t('bank_loading')} height={96} /> : <button type="button" className="jny-btn-quiet" onClick={() => void loadFindings()}>{t('findings_retry')}</button>}
+            <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>{t('bank_manual')}</button>
+          </div>
+        ) : !flags.hasBanking ? (
           <p className="jny-qsub" style={{ textAlign: 'center' }}>{t('bank_unavailable')}</p>
         ) : banks === null ? (
           <Wait text={t('bank_loading')} height={96} />
@@ -395,18 +412,26 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
           <>
             <div className="bank-search">
               <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M16.5 16.5L21 21" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
-              <input type="search" value={query} onChange={(e) => { setQuery(e.target.value); if (e.target.value) setMore(true) }} placeholder={t('bank_search')} aria-label={t('bank_search')} />
+              <input type="search" value={query} onChange={(e) => { setQuery(e.target.value); setMore(false) }} placeholder={t('bank_search')} aria-label={t('bank_search')} />
             </div>
-            <div className="bankgrid">
+            <div className="bank-picker-actions">
+              {orderedBanks.length > PICK_COUNT || query ? (
+                <button type="button" className="jny-btn-quiet" aria-expanded={more || !!query.trim()} aria-controls="onboarding-bank-list" onClick={() => { setMore(!more && !query.trim()); setQuery('') }}>
+                  {more || query.trim() ? t('bank_less') : t('bank_more')}
+                </button>
+              ) : null}
+              <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
+                {t('bank_manual')}
+              </button>
+            </div>
+            <div id="onboarding-bank-list" className="bankgrid bank-list">
               {shownBanks.map((b, i) => (
                 <Pill key={b.name} index={i} logo={b.logo} mark={b.logo ? undefined : initials(b.name)} onClick={() => void pickBank(b)} ariaLabel={b.name}>
                   <span className="lbl">{b.name}</span>
                 </Pill>
               ))}
-              {!more && orderedBanks.length > PICK_COUNT ? (
-                <Pill index={shownBanks.length} text onClick={() => setMore(true)}>{t('bank_more')}</Pill>
-              ) : null}
             </div>
+            {shownBanks.length === 0 ? <p className="jny-qsub">{t('bank_no_matches')}</p> : null}
           </>
         )
       ) : null}
@@ -562,7 +587,7 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
             {t('bank_fetch')}
           </button>
         ) : null}
-        {(phase === 'pick' && !alreadyConnected) || phase === 'authed' ? (
+        {(phase === 'pick' && !alreadyConnected && (!flags.hasBanking || banks === null)) || phase === 'authed' ? (
           <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
             {t('bank_skip')}
           </button>

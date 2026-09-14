@@ -31,7 +31,7 @@ describe('initialState from the server', () => {
   })
 
   it('back from the resume step returns to the source list', () => {
-    const s = booksReducer(initialState(entry({ resumeImportId: 'job-1' })), { type: 'GO_BACK' })
+    const s = booksReducer(initialState(entry({ resumeImportId: 'job-1' })), { type: 'GO_BACK', flags: ALL })
     expect(s.step).toBe('source')
   })
 })
@@ -127,29 +127,49 @@ describe('booksReducer', () => {
 
   it('GO_BACK walks one step back along the rail', () => {
     let s = initialState(entry({ station: 'bank', selectAccounts: 'c1' }))
-    s = booksReducer(s, { type: 'GO_BACK' })
+    s = booksReducer(s, { type: 'GO_BACK', flags: ALL })
     expect(s.bankPhase).toBe('pick')
     expect(s.bankConnectionId).toBeNull()
-    s = booksReducer(s, { type: 'GO_BACK' })
+    s = booksReducer(s, { type: 'GO_BACK', flags: ALL })
     expect(s.step).toBe('source')
-    s = booksReducer(initialState(entry({ station: 'skv' })), { type: 'GO_BACK' })
+    s = booksReducer(initialState(entry({ station: 'skv' })), { type: 'GO_BACK', flags: ALL })
     expect(s.step).toBe('bank')
-    s = booksReducer({ ...initialState(entry()), step: 'done' }, { type: 'GO_BACK' })
+    s = booksReducer({ ...initialState(entry()), step: 'done' }, { type: 'GO_BACK', flags: ALL })
     expect(s.step).toBe('skv')
-    s = booksReducer({ ...initialState(entry()), step: 'bank', imported: true }, { type: 'GO_BACK' })
+    s = booksReducer({ ...initialState(entry()), step: 'bank', imported: true }, { type: 'GO_BACK', flags: ALL })
     expect(s.step).toBe('insight')
     // A fetched bank re-enters on its verdict: the pour never replays.
-    s = booksReducer({ ...initialState(entry()), step: 'skv', bankPhase: 'connected', bankConnectionId: 'c1' }, { type: 'GO_BACK' })
+    s = booksReducer({ ...initialState(entry()), step: 'skv', bankPhase: 'connected', bankConnectionId: 'c1' }, { type: 'GO_BACK', flags: ALL })
     expect(s.step).toBe('bank')
     expect(s.bankPhase).toBe('pick')
-    expect(s.bankConnectionId).toBeNull()
+    expect(s.bankConnectionId).toBe('c1')
     const src = initialState(entry())
-    expect(booksReducer(src, { type: 'GO_BACK' })).toBe(src)
+    expect(booksReducer(src, { type: 'GO_BACK', flags: ALL })).toBe(src)
   })
 
   it('SET_WORKING returns the same state when nothing changes', () => {
     const s = initialState(entry())
     expect(booksReducer(s, { type: 'SET_WORKING', working: false })).toBe(s)
     expect(booksReducer(s, { type: 'SET_WORKING', working: true }).working).toBe(true)
+  })
+
+  it('restores navigation without forgetting committed books or replaying bank sync', () => {
+    const imported = { ...initialState(entry()), imported: true, importedAccounts: ['1930'] }
+    const saved = { ...initialState(entry()), step: 'bank' as const, bankPhase: 'fetching' as const, working: true }
+    const restored = booksReducer(imported, { type: 'RESTORE', state: saved })
+    expect(restored).toMatchObject({ step: 'bank', imported: true, importedAccounts: ['1930'], bankPhase: 'pick', working: false })
+  })
+
+  it('keeps bank account selections on restore and clears them for a different connection', () => {
+    const saved = { ...initialState(entry()), bankConnectionId: 'connection-1', bankPhase: 'authed' as const, bankDraft: { ticked: { account: true }, picks: { account: '1930' }, mode: 'date' as const, customDate: '2026-01-01' } }
+    const restored = booksReducer(initialState(entry()), { type: 'RESTORE', state: saved })
+    expect(restored.bankDraft).toEqual(saved.bankDraft)
+    expect(booksReducer(restored, { type: 'BANK_AUTHED', connectionId: 'connection-2', name: 'Acme Bank' }).bankDraft).toBeUndefined()
+  })
+
+  it('skips unavailable stations when going back from a redirect entry', () => {
+    const flags = { hasMigration: true, hasBanking: false, hasSkatteverket: false }
+    expect(booksReducer({ ...initialState(entry()), step: 'done' }, { type: 'GO_BACK', flags }).step).toBe('source')
+    expect(booksReducer({ ...initialState(entry()), step: 'skv', imported: true }, { type: 'GO_BACK', flags }).step).toBe('insight')
   })
 })

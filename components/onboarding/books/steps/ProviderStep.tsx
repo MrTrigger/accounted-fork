@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { jobProgress, type JobPhase } from '../lib/job-progress'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
@@ -43,6 +43,7 @@ const BRAND: Record<string, { color: string; dark?: boolean }> = {
  */
 export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const t = useTranslations('books')
+  const locale = useLocale() === 'en' ? 'en' : 'sv'
   const { state, dispatch, flags, loadFindings } = ctx
   const { settings } = useCompanySettings()
   const providerId = state.provider
@@ -85,10 +86,10 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
       setYears((p.sourceYears ?? []).filter((y) => y.inDefaultSelection).map((y) => y.year))
       setPhase('preview')
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('provider_failed'))
+      setError(getErrorMessage(err, { locale }))
       setPhase('connect')
     }
-  }, [t])
+  }, [locale])
 
   // A full-page round trip brought a consentId in the URL.
   const returned = useRef(false)
@@ -101,7 +102,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
 
   useProviderMessage(
     (cId) => void loadPreview(cId),
-    (reason) => { setError(reason); setPhase('connect') },
+    (reason) => { setError(getErrorMessage(reason, { locale })); setPhase('connect') },
   )
 
   async function connect() {
@@ -118,7 +119,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
       setPhase('token')
     } catch (err) {
       popup?.close()
-      setError(err instanceof Error ? err.message : t('provider_failed'))
+      setError(getErrorMessage(err, { locale }))
       setPhase('connect')
     }
   }
@@ -130,7 +131,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
       await providerSubmitToken(consentId, providerId, tokenA, tokenB)
       void loadPreview(consentId)
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('provider_failed'))
+      setError(getErrorMessage(err, { locale }))
       setPhase('token')
     }
   }
@@ -260,7 +261,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
           api.registerStage({ source: provName, ms: Math.min(6000, Math.max(2200, invoices * 25)), invoices: [['1510', results.salesInvoices?.imported ?? 0], ['2440', results.supplierInvoices?.imported ?? 0]], onProgress: (r) => { if (r.done) resolve() } })
           at(8000, () => resolve())
         })
-        if (results.stepErrors?.length) setRegText(results.stepErrors.map((e) => e.message).join(' '))
+        if (results.stepErrors?.length) setRegText(results.stepErrors.map((e) => getErrorMessage(e, { locale })).join(' '))
       } else {
         setRegText(t('reg_skipped'))
       }
@@ -271,7 +272,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
       await new Promise((r) => at(900, () => r(null)))
       setPhase('imported')
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : t('provider_failed'))
+      setImportError(getErrorMessage(err, { locale }))
       setJobPhase(null)
       setShown(5)
       apiRef.current?.settle()
@@ -433,7 +434,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
           <button type="button" className="jny-btn" onClick={() => { setShown(0); setTick(0); void runImport() }}>
             {t('provider_retry')}
           </button>
-          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'GO_BACK' })}>
+          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'GO_BACK', flags })}>
             {t('provider_change_source')}
           </button>
         </div>

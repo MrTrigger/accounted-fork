@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextResponse } from 'next/server'
 import { createMockRequest, createQueuedMockSupabase, parseJsonResponse } from '@/tests/helpers'
 
@@ -20,6 +20,7 @@ const CTX = { params: Promise.resolve({}) }
 import { GET } from '../route'
 
 describe('GET /api/onboarding/findings', () => {
+  afterEach(() => vi.useRealTimers())
   beforeEach(() => {
     vi.clearAllMocks()
     reset()
@@ -51,5 +52,13 @@ describe('GET /api/onboarding/findings', () => {
     loadMock.mockRejectedValue(new Error('boom'))
     const response = await GET(createMockRequest('/api/onboarding/findings'), CTX)
     expect(response.status).toBe(500)
+  })
+
+  it.each(['2026-09-14T22:30:00Z', '2026-12-14T23:30:00Z'])('uses the Stockholm calendar date at %s', async (now) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(now))
+    loadMock.mockResolvedValue({})
+    await GET(createMockRequest('/api/onboarding/findings'), CTX)
+    expect(loadMock.mock.calls[0][2]).toBe(now.startsWith('2026-09') ? '2026-09-15' : '2026-12-15')
   })
 })

@@ -368,50 +368,6 @@ export const skatteverketExtension: Extension = {
         // opener tab lives and where the session cookies are.
         const origin = await resolveOAuthOrigin(request)
 
-        // Local development without SKV test credentials: approve the consent
-        // on the spot with a placeholder token so the flow can be walked end
-        // to end. Never in production; the placeholder cannot call SKV, so
-        // every sync simply reports nothing.
-        if (
-          process.env.NODE_ENV !== 'production' &&
-          process.env.SKATTEVERKET_DEV_AUTOAPPROVE === 'true'
-        ) {
-          await storeTokens(
-            ctx.supabase,
-            ctx.userId,
-            {
-              access_token: 'dev-autoapprove',
-              refresh_token: null,
-              expires_at: Date.now() + 30 * 24 * 3600 * 1000,
-              refresh_count: 0,
-              scope: 'momsdeklaration',
-            },
-            ctx.companyId,
-          )
-          const fallback = returnTo
-            ? `${returnTo}${returnTo.includes('?') ? '&' : '?'}skv_connected=true`
-            : '/reports?tab=vat-declaration&skv_connected=true'
-          const nonce = crypto.randomUUID()
-          const lit = (value: unknown) => JSON.stringify(value ?? '').replace(/</g, '\\u003c')
-          const html = `<!DOCTYPE html><html><body><script nonce="${nonce}">
-            if (window.opener) {
-              window.opener.postMessage({ type: 'skatteverket-oauth-success' }, ${lit(origin)});
-              window.close();
-            } else {
-              window.location.replace(${lit(`${origin}${fallback}`)});
-            }
-          </script><p>Utvecklingsläge: anslutningen godkändes automatiskt.</p></body></html>`
-          return new Response(html, {
-            status: 200,
-            headers: {
-              'Content-Type': 'text/html; charset=utf-8',
-              'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'`,
-              'Cache-Control': 'no-store',
-              'Referrer-Policy': 'no-referrer',
-            },
-          })
-        }
-
         // Generate PKCE pair: verifier persisted server-side, challenge sent
         // to SKV. Some SKV per-flow client configurations issue revoked-on-use
         // tokens unless PKCE is present, so we always send it.

@@ -540,7 +540,15 @@ export default async function DashboardLayout({
         onboarding={
           <div className="relative min-h-dvh bg-background">
             <OnboardingBackdrop />
-            <main id="main-content" className="relative z-10">{children}</main>
+            <main id="main-content" className="relative z-10">
+              {showSignpost ? (
+                <HomeDomainSignpost
+                  activeCompanyName={displayName}
+                  homedCompanies={homePartition.visible.map((entry) => ({ id: entry.company.id, name: entry.company.name }))}
+                  foreignCompanies={foreignCompanies}
+                />
+              ) : children}
+            </main>
           </div>
         }
       >

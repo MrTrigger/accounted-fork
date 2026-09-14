@@ -39,7 +39,7 @@ export default async function BooksPage({
   }
 
   const companyId = await getActiveCompanyId(supabase, user.id)
-  const [{ data: latestJob }, { count: postedEntries }] = await Promise.all([
+  const [{ data: latestJob, error: jobError }, { count: postedEntries, error: entriesError }] = await Promise.all([
     supabase
       .from('sie_imports')
       .select('id, job_state, job_kind')
@@ -54,13 +54,14 @@ export default async function BooksPage({
       .eq('company_id', companyId)
       .in('status', ['posted', 'reversed']),
   ])
-  // A failed read answers "fresh company": the act then asks, which is the
-  // safe direction (it never hides a running import behind a wrong answer
-  // for long: the next load asks again).
+  // An unavailable read is not an empty company. Let the route boundary retry.
+  if (jobError || entriesError) throw new Error('Unable to load onboarding progress')
   const resume = resolveBooksResume((latestJob as LatestImportJob | null) ?? null, postedEntries ?? 0)
 
   return (
     <BooksJourney
+      key={`${user.id}:${companyId}`}
+      draftScope={`books:${user.id}:${companyId}`}
       resumeImportId={resume.kind === 'active' ? resume.importId : null}
       hasBooks={resume.kind === 'books'}
       initialStation={first('station') ?? null}

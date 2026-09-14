@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { waitForSIEJob } from '@/lib/import/sie-job-client'
 import { jobProgress, type JobPhase } from '../lib/job-progress'
@@ -33,6 +33,7 @@ interface ParsedFile {
 }
 
 interface FileEntry {
+  id: string
   file: File
   status: 'parsing' | 'ready' | 'dup' | 'error'
   parsed?: ParsedFile
@@ -59,6 +60,7 @@ function yearsOf(files: FileEntry[]): string[] {
  */
 export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const t = useTranslations('books')
+  const locale = useLocale() === 'en' ? 'en' : 'sv'
   const { state, dispatch, flags, loadFindings } = ctx
   const { settings } = useCompanySettings()
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -98,7 +100,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const sieFirst = SIE_FIRST_PROVIDERS.has(state.provider ?? '')
 
   /* ── parse ───────────────────────────────────────────────────────── */
-  const parseOne = useCallback(async (file: File, index: number) => {
+  const parseOne = useCallback(async (file: File, id: string) => {
     const fd = new FormData()
     fd.append('file', file)
     try {
@@ -108,37 +110,34 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
         const code = data?.error?.code as string | undefined
         const message = getErrorMessage(data)
         const importId = data?.error?.details?.importId as string | undefined
-        setFiles((prev) => prev.map((f, i) => (i === index ? { ...f, status: code === 'SIE_DUPLICATE_FILE' || code === 'SIE_DUPLICATE_PERIOD' ? 'dup' : 'error', error: message, dupImportId: importId } : f)))
+        setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: code === 'SIE_DUPLICATE_FILE' || code === 'SIE_DUPLICATE_PERIOD' ? 'dup' : 'error', error: message, dupImportId: importId } : f)))
         return
       }
       const parsed: ParsedFile = { header: data.parsed.header, stats: data.parsed.stats, accounts: data.parsed.accounts, mappings: data.mappings, preview: data.preview }
-      setFiles((prev) => prev.map((f, i) => (i === index ? { ...f, status: 'ready', parsed } : f)))
+      setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: 'ready', parsed } : f)))
     } catch {
-      setFiles((prev) => prev.map((f, i) => (i === index ? { ...f, status: 'error', error: t('sie_network') } : f)))
+      setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, status: 'error', error: t('sie_network') } : f)))
     }
   }, [t])
 
   function addFiles(list: FileList | File[]) {
     const incoming = Array.from(list).filter((f) => /\.(se|sie)$/i.test(f.name) || f.size > 0)
     if (incoming.length === 0) return
-    setFiles((prev) => {
-      const start = prev.length
-      const next = [...prev, ...incoming.map((file) => ({ file, status: 'parsing' as const }))]
-      incoming.forEach((file, i) => void parseOne(file, start + i))
-      return next
-    })
+    const entries = incoming.map((file) => ({ id: crypto.randomUUID(), file, status: 'parsing' as const }))
+    setFiles((prev) => [...prev, ...entries])
+    entries.forEach(({ file, id }) => void parseOne(file, id))
   }
 
-  async function replaceDup(index: number) {
-    const f = files[index]
-    if (!f.dupImportId) return
-    setFiles((prev) => prev.map((x, i) => (i === index ? { ...x, status: 'parsing', error: undefined } : x)))
+  async function replaceDup(id: string) {
+    const f = files.find((entry) => entry.id === id)
+    if (!f?.dupImportId) return
+    setFiles((prev) => prev.map((x) => (x.id === id ? { ...x, status: 'parsing', error: undefined } : x)))
     try {
       const res = await fetch(`/api/import/sie/${f.dupImportId}/replace`, { method: 'POST' })
       if (!res.ok) throw new Error(getErrorMessage(await res.json().catch(() => ({}))))
-      await parseOne(f.file, index)
+      await parseOne(f.file, id)
     } catch (err) {
-      setFiles((prev) => prev.map((x, i) => (i === index ? { ...x, status: 'error', error: err instanceof Error ? err.message : t('sie_network') } : x)))
+      setFiles((prev) => prev.map((x) => (x.id === id ? { ...x, status: 'error', error: getErrorMessage(err, { locale }) } : x)))
     }
   }
 
@@ -298,7 +297,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       dispatch({ type: 'SET_WORKING', working: false })
       setReg(sieFirst ? 'card' : 'skipped')
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : t('sie_failed'))
+      setImportError(getErrorMessage(err, { locale }))
       setJobPhase(null)
       setShown(5)
       apiRef.current?.settle()
@@ -345,22 +344,22 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
         at(8000, () => resolve())
       })
       setRegShown(5)
-      if (results.stepErrors?.length) setRegError(results.stepErrors.map((e) => e.message).join(' '))
+      if (results.stepErrors?.length) setRegError(results.stepErrors.map((e) => getErrorMessage(e, { locale })).join(' '))
       await providerAccept(cId)
       setReg('done')
       void loadFindings()
     } catch (err) {
-      setRegError(err instanceof Error ? err.message : t('reg_failed'))
+      setRegError(getErrorMessage(err, { locale }))
       setRegShown(5)
       setReg('done')
     } finally {
       dispatch({ type: 'SET_WORKING', working: false })
     }
-  }, [at, dispatch, loadFindings, provName, t])
+  }, [at, dispatch, loadFindings, locale, provName, t])
 
   useProviderMessage(
     (cId) => { setConsentId(cId); void runRegisters(cId) },
-    (reason) => { setRegError(reason); setReg('card') },
+    (reason) => { setRegError(getErrorMessage(reason, { locale })); setReg('card') },
   )
 
   async function connectRegisters(providerId: string) {
@@ -376,7 +375,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       setReg('token')
     } catch (err) {
       popup?.close()
-      setRegError(err instanceof Error ? err.message : t('reg_failed'))
+      setRegError(getErrorMessage(err, { locale }))
       setReg('card')
     }
   }
@@ -388,7 +387,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       await providerSubmitToken(consentId, regProvider, tokenA, tokenB)
       void runRegisters(consentId)
     } catch (err) {
-      setRegError(err instanceof Error ? err.message : t('reg_failed'))
+      setRegError(getErrorMessage(err, { locale }))
       setReg('token')
     }
   }
@@ -428,14 +427,14 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
             </button>
           ) : (
             <div className="drop1 is-file" onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={onDrop}>
-              {files.map((f, i) => (
-                <p key={`${f.file.name}-${i}`} className="file">
+              {files.map((f) => (
+                <p key={f.id} className="file">
                   {f.file.name}
                   {f.status === 'parsing' ? <span className="bks-f" style={{ marginLeft: 8, color: 'hsl(var(--muted-foreground))' }}>{t('sie_reading')}</span> : null}
                   {f.status === 'dup' ? (
                     <span className="bks-f is-warn" style={{ marginLeft: 8 }}>
                       {f.error}{' '}
-                      {f.dupImportId ? <button type="button" className="imp-change" onClick={() => void replaceDup(i)}>{t('sie_replace')}</button> : null}
+                      {f.dupImportId ? <button type="button" className="imp-change" onClick={() => void replaceDup(f.id)}>{t('sie_replace')}</button> : null}
                     </span>
                   ) : null}
                   {f.status === 'error' ? <span className="bks-f is-warn" style={{ marginLeft: 8 }}>{f.error}</span> : null}

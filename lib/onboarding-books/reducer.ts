@@ -37,9 +37,17 @@ export interface BooksState {
   bankSkipped: boolean
   skvPhase: SkvPhase
   skvSkipped: boolean
+  bankDraft?: {
+    ticked: Record<string, boolean>
+    picks: Record<string, string>
+    mode: 'auto' | '90' | 'fy' | 'date'
+    customDate: string
+  }
 }
 
 export type BooksAction =
+  | { type: 'RESTORE'; state: BooksState }
+  | { type: 'BANK_DRAFT'; draft: NonNullable<BooksState['bankDraft']> }
   | { type: 'PICK_PROVIDER'; provider: string }
   | { type: 'PICK_SIE' }
   | { type: 'PICK_FRESH'; flags: BooksFlags }
@@ -58,7 +66,7 @@ export type BooksAction =
   | { type: 'SKV_PHASE'; phase: SkvPhase }
   | { type: 'SKV_SKIP' }
   | { type: 'TO_DONE' }
-  | { type: 'GO_BACK' }
+  | { type: 'GO_BACK'; flags: BooksFlags }
 
 const STATION_OF: Record<BooksStep, BooksStation> = {
   source: 0,
@@ -137,6 +145,20 @@ export function initialState(entry: BooksEntry): BooksState {
 
 export function booksReducer(state: BooksState, action: BooksAction): BooksState {
   switch (action.type) {
+    case 'RESTORE': {
+      const restored = action.state
+      return {
+        ...restored,
+        imported: state.imported || restored.imported,
+        importedAccounts: Array.from(new Set([...state.importedAccounts, ...restored.importedAccounts])),
+        working: false,
+        // Completed work is read from findings; never replay a fetch animation.
+        bankPhase: restored.bankPhase === 'authed' ? 'authed' : 'pick',
+        skvPhase: 'open',
+      }
+    }
+    case 'BANK_DRAFT':
+      return { ...state, bankDraft: action.draft }
     case 'PICK_PROVIDER':
       return {
         ...state,
@@ -176,6 +198,7 @@ export function booksReducer(state: BooksState, action: BooksAction): BooksState
         bankPhase: 'authed',
         bankName: action.name,
         bankConnectionId: action.connectionId,
+        bankDraft: action.connectionId === state.bankConnectionId ? state.bankDraft : undefined,
         working: false,
       }
     case 'BANK_FETCH':
@@ -210,9 +233,9 @@ export function booksReducer(state: BooksState, action: BooksAction): BooksState
           // Past the fetch the connection is real: the step re-enters on its verdict, never on the pour.
           return { ...state, step: state.imported ? 'insight' : 'source', bankPhase: 'pick', bankConnectionId: null, bankSkipped: false, working: false }
         case 'skv':
-          return { ...state, step: 'bank', bankPhase: 'pick', bankConnectionId: null, skvSkipped: false, skvPhase: 'open', working: false }
+          return { ...state, step: !action.flags.hasBanking ? state.imported ? 'insight' : 'source' : 'bank', bankPhase: 'pick', skvSkipped: false, skvPhase: 'open', working: false }
         case 'done':
-          return { ...state, step: 'skv', working: false }
+          return { ...state, step: !action.flags.hasSkatteverket ? action.flags.hasBanking ? 'bank' : state.imported ? 'insight' : 'source' : 'skv', working: false }
         default:
           return state
       }

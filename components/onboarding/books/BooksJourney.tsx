@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import type { BooksFindings } from '@/lib/onboarding/findings'
+import { useOnboardingNavigation } from '@/lib/hooks/use-onboarding-navigation'
 import { booksReducer, initialState, stationOf, type BooksEntry, type BooksFlags } from '@/lib/onboarding-books/reducer'
 import JourneyOrb, { type OrbState } from '@/components/onboarding/journey/JourneyOrb'
 import JourneyTrack from '@/components/onboarding/journey/JourneyTrack'
@@ -22,6 +23,7 @@ import { DoneStep } from './steps/DoneStep'
 const STATION_FRACS = [0.07, 0.36, 0.64, 0.93]
 
 interface BooksJourneyProps {
+  draftScope: string
   initialStation: string | null
   initialProvider: string | null
   /** The provider OAuth round trip landed here (the gate rewrote /import). */
@@ -73,6 +75,15 @@ export default function BooksJourney(props: BooksJourneyProps) {
   const [leaving, setLeaving] = useState(false)
   const [leaveError, setLeaveError] = useState(false)
   const station = stationOf(state.step)
+  const navigation = useOnboardingNavigation({
+    scope: props.draftScope,
+    step: state.step === 'bank' && state.bankPhase === 'authed' ? 'bank-accounts' : state.step,
+    state,
+    restore: (saved) => dispatch({ type: 'RESTORE', state: saved }),
+    blocked: state.working || leaving,
+    resetOnMount: !!(props.initialStation || props.landedFromProvider || props.selectAccounts || props.skvConnected || props.resumeImportId),
+  })
+  const clearDraft = navigation.clear
 
   /* ── findings: the verdict every station ends on ─────────────────── */
   const loadFindings = useCallback(async () => {
@@ -91,8 +102,8 @@ export default function BooksJourney(props: BooksJourneyProps) {
   }, [])
 
   useEffect(() => {
-    if (state.step !== 'sie' && state.step !== 'provider') void loadFindings()
-  }, [state.step, loadFindings])
+    if (navigation.ready && state.step !== 'sie' && state.step !== 'provider') void loadFindings()
+  }, [navigation.ready, state.step, loadFindings])
 
   /* ── leaving the act ─────────────────────────────────────────────── */
   const leave = useCallback(
@@ -112,10 +123,11 @@ export default function BooksJourney(props: BooksJourneyProps) {
         setLeaving(false)
         return
       }
+      clearDraft()
       router.push('/')
       router.refresh()
     },
-    [leaving, router, state.path],
+    [leaving, router, state.path, clearDraft],
   )
 
   /* ── focus follows the step: the new title is announced and reachable ─ */
@@ -152,12 +164,10 @@ export default function BooksJourney(props: BooksJourneyProps) {
 
   const ctx: BooksCtx = { state, dispatch, flags, findings, loadingFindings, loadFindings, landedError: props.landedError }
 
-  // One Tillbaka for the whole act, top left under the rail: every step after
-  // the source can be undone from the same place. Hidden while something is
-  // in flight (an import, a bank round trip, the Skatteverket handshake).
+  // Keep navigation in view, including during work when leaving is disabled.
   const canGoBack =
-    state.step !== 'source' &&
     !state.working &&
+    !leaving &&
     !(state.step === 'bank' && (state.bankPhase === 'connecting' || state.bankPhase === 'fetching')) &&
     !(state.step === 'skv' && state.skvPhase === 'back')
 
@@ -190,14 +200,12 @@ export default function BooksJourney(props: BooksJourneyProps) {
           <JourneyOrb state={orbState} targetX={STATION_FRACS[station]} />
         </JourneyTrack>
         <div className="bks-backrow">
-          {canGoBack ? (
-            <button type="button" className="jny-btn-quiet bks-back" onClick={() => dispatch({ type: 'GO_BACK' })}>
+            <button type="button" className="jny-btn-quiet bks-back" disabled={!canGoBack || !navigation.ready} onClick={() => navigation.back(() => state.step === 'source' ? void leave('skipped') : dispatch({ type: 'GO_BACK', flags }))}>
               ‹ {t('back')}
             </button>
-          ) : null}
         </div>
         <div className="bks-qarea" ref={areaRef} key={state.step}>
-          {renderStep()}
+          {navigation.ready ? renderStep() : null}
           {leaveError && <p className="mt-4 text-center text-sm text-destructive" role="alert">{t('exit_failed')}</p>}
         </div>
       </div>

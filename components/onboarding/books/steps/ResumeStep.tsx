@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { useCompany } from '@/contexts/CompanyContext'
 import { useAccounts } from '@/lib/reference-data/hooks'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { waitForSIEJob } from '@/lib/import/sie-job-client'
 import { Theater, type TheaterLine, type TheaterModelInput } from '../ui/Theater'
 import type { TheaterApi } from '../engines/theater-engine'
@@ -21,6 +22,7 @@ import type { BooksCtx } from '../context'
  */
 export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string }) {
   const t = useTranslations('books')
+  const locale = useLocale() === 'en' ? 'en' : 'sv'
   const { company } = useCompany()
   const { accounts } = useAccounts(true)
   const { dispatch, loadFindings } = ctx
@@ -84,7 +86,7 @@ export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string 
       } catch (err) {
         if (controller.signal.aborted) return
         setJobPhase(null)
-        setError(err instanceof Error ? err.message : t('resume_failed'))
+        setError(getErrorMessage(err, { locale }))
         api.settle()
       } finally {
         if (!controller.signal.aborted) dispatch({ type: 'SET_WORKING', working: false })
@@ -129,7 +131,7 @@ export function ResumeStep({ ctx, importId }: { ctx: BooksCtx; importId: string 
       ) : null}
       {error ? (
         <div className="jny-qactions">
-          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'GO_BACK' })}>
+          <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'GO_BACK', flags: ctx.flags })}>
             {t('provider_change_source')}
           </button>
         </div>

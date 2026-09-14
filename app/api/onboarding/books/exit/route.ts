@@ -76,4 +76,5 @@ export const POST = withRouteContext(
     })
     return response
   },
+  { requireWrite: true },
 )

@@ -18,7 +18,7 @@
   border: 1px solid hsl(var(--border)); border-radius: 99px; padding: 6px 16px 6px 6px;
   font-family: inherit; font-size: 13.5px; color: inherit; background: hsl(var(--background)); cursor: pointer;
   transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out), border-color 150ms var(--ease-out);
-  opacity: 0; animation: bksFadeIn 400ms var(--ease-out) forwards;
+  opacity: 0; animation: bks-fade-in 400ms var(--ease-out) forwards;
 }
 .pill:hover { background: hsl(var(--secondary) / 0.6); }
 .pill:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
@@ -29,7 +29,7 @@
   color: hsl(var(--muted-foreground)); font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
 }
 .pmark img { width: 16px; height: 16px; object-fit: contain; }
-@keyframes bksFadeIn { to { opacity: 1; } }
+@keyframes bks-fade-in { to { opacity: 1; } }
 
 /* toggle pills: years, bank accounts */
 .ypill { padding: 5px 14px 5px 5px; gap: 8px; }
@@ -58,7 +58,7 @@
 .drop1 .s { font-size: 12.5px; color: hsl(var(--muted-foreground)); margin: 6px 0 0; }
 .drop1 .file { font-size: 14px; margin: 0; }
 .bks-facts { font-size: 12.5px; color: hsl(var(--muted-foreground)); margin-top: 5px; line-height: 1.7; }
-.bks-f { display: inline-block; opacity: 0; animation: bksFadeIn 600ms var(--ease-out) forwards; }
+.bks-f { display: inline-block; opacity: 0; animation: bks-fade-in 600ms var(--ease-out) forwards; }
 .bks-f.is-warn { color: hsl(var(--attn)); }
 
 /* ── the sentence, Ändra and the rows behind it ───────────────────── */
@@ -103,7 +103,7 @@
 
 /* momskoder in Genomlysning */
 .vatwrap { max-width: 520px; margin: 8px auto 0; text-align: left; padding-left: 26px; font-size: 12.5px; color: hsl(var(--muted-foreground)); }
-.insight-summary { max-width: 560px; margin: 0 auto; text-align: center; opacity: 0; animation: bksFadeIn 400ms var(--ease-out) 200ms forwards; }
+.insight-summary { max-width: 560px; margin: 0 auto; text-align: center; opacity: 0; animation: bks-fade-in 400ms var(--ease-out) 200ms forwards; }
 .insight-headline { margin: 0; font-size: 14px; line-height: 1.5; color: hsl(var(--foreground) / 0.85); }
 .insight-meta { margin: 6px 0 0; display: flex; justify-content: center; align-items: center; gap: 14px; font-size: 12.5px; }
 .insight-attn { color: hsl(var(--warning, 38 80% 45%)); }
@@ -119,12 +119,12 @@
 .th-progress { display: grid; gap: 8px; padding: 8px 0 12px; font-size: 13px; }
 .th-progress-heading, .th-progress-detail { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .th-progress-label { display: flex; align-items: center; gap: 8px; }
-.th-progress-activity { width: 8px; height: 8px; flex-shrink: 0; border-radius: 99px; background: currentColor; animation: thProgressPulse 1.6s ease-in-out infinite; }
+.th-progress-activity { width: 8px; height: 8px; flex-shrink: 0; border-radius: 99px; background: currentColor; animation: th-progress-pulse 1.6s ease-in-out infinite; }
 .th-progress-detail { flex-wrap: wrap; font-size: 12px; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
-.th-progress-track[data-state="indeterminate"] > div { width: 30%; animation: thProgressTravel 1.8s ease-in-out infinite; }
+.th-progress-track[data-state="indeterminate"] > div { width: 30%; animation: th-progress-travel 1.8s ease-in-out infinite; }
 .th-progress[data-phase="failed"] .th-progress-track > div { animation: none; }
-@keyframes thProgressPulse { 50% { opacity: 0.3; } }
-@keyframes thProgressTravel { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@keyframes th-progress-pulse { 50% { opacity: 0.3; } }
+@keyframes th-progress-travel { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 @media (prefers-reduced-motion: reduce) {
   .th-progress-activity, .th-progress-track > div { animation: none !important; transition: none !important; }
   .th-progress-track[data-state="indeterminate"] > div { transform: translateX(115%) !important; }
@@ -141,24 +141,24 @@
 
 /* ── waiting ──────────────────────────────────────────────────────── */
 .bank-wait { display: flex; height: 128px; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-size: 14px; color: hsl(var(--muted-foreground)); }
-.spin { width: 16px; height: 16px; border: 1.5px solid hsl(var(--border)); border-top-color: hsl(var(--foreground)); border-radius: 99px; animation: bksSpin 800ms linear infinite; }
-@keyframes bksSpin { to { transform: rotate(360deg); } }
+.spin { width: 16px; height: 16px; border: 1.5px solid hsl(var(--border)); border-top-color: hsl(var(--foreground)); border-radius: 99px; animation: bks-spin 800ms linear infinite; }
+@keyframes bks-spin { to { transform: rotate(360deg); } }
 .bank-search { position: relative; max-width: 360px; margin: 0 auto 14px; }
 .bank-search input { width: 100%; height: 36px; padding: 0 12px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); font: inherit; font-size: 14px; color: inherit; outline: 0; text-align: center; }
 .bank-search input:focus { border-color: hsl(var(--foreground) / 0.55); }
 
 /* ── the accounts pour into the cash line ─────────────────────────── */
-.pills.is-col.is-gather { animation: acctCollapse 520ms var(--ease-out) 380ms both; overflow: hidden; pointer-events: none; }
-@keyframes acctCollapse { from { max-height: 320px; opacity: 1; margin-bottom: 0; } to { max-height: 0; opacity: 0; margin-bottom: -10px; } }
-.is-gather .pill:not(.is-on) { animation: acctFade 260ms var(--ease-out) both; }
-@keyframes acctFade { to { opacity: 0; transform: translateX(-10px); } }
-.is-gather .pill.is-on { transform-origin: left center; animation: acctPour 640ms cubic-bezier(0.5, 0, 0.2, 1) both; }
+.pills.is-col.is-gather { animation: acct-collapse 520ms var(--ease-out) 380ms both; overflow: hidden; pointer-events: none; }
+@keyframes acct-collapse { from { max-height: 320px; opacity: 1; margin-bottom: 0; } to { max-height: 0; opacity: 0; margin-bottom: -10px; } }
+.is-gather .pill:not(.is-on) { animation: acct-fade 260ms var(--ease-out) both; }
+@keyframes acct-fade { to { opacity: 0; transform: translateX(-10px); } }
+.is-gather .pill.is-on { transform-origin: left center; animation: acct-pour 640ms cubic-bezier(0.5, 0, 0.2, 1) both; }
 .is-gather .pill.is-on .nr, .is-gather .pill.is-on .cur { opacity: 0; transition: opacity 180ms var(--ease-out); }
-@keyframes acctPour { 0% { transform: none; opacity: 1; } 45% { transform: translate(-26px, 6px) scale(0.55); opacity: 0.95; } 100% { transform: translate(-150px, 120px) scale(0.12); opacity: 0; } }
+@keyframes acct-pour { 0% { transform: none; opacity: 1; } 45% { transform: translate(-26px, 6px) scale(0.55); opacity: 0.95; } 100% { transform: translate(-150px, 120px) scale(0.12); opacity: 0; } }
 .cash { position: relative; height: 270px; max-width: 700px; margin: 0 auto; }
 .cash canvas { position: absolute; inset: 0; width: 100%; height: 100%; color: hsl(var(--foreground)); }
-.cash.is-in { animation: cashIn 700ms var(--ease-out) both; }
-@keyframes cashIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.cash.is-in { animation: cash-in 700ms var(--ease-out) both; }
+@keyframes cash-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .saldo { text-align: center; margin: 6px 0 4px; }
 .saldo b { display: block; font-family: var(--font-display); font-weight: 400; font-size: 34px; line-height: 1.1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .saldo span { font-size: 12.5px; color: hsl(var(--muted-foreground)); }
@@ -169,9 +169,9 @@
 /* ── Skatteverket: the button folds, the thread, the handshake ────── */
 .jny-bankid { font-family: inherit; cursor: pointer; }
 .jny-bankid-txt { display: inline-block; max-width: 160px; overflow: hidden; white-space: nowrap; transition: max-width 340ms var(--ease-expo), opacity 200ms var(--ease-out); }
-.jny-bankid.is-fold { gap: 0; padding: 6px; border-color: transparent; background: transparent; transition: gap 340ms var(--ease-expo), padding 340ms var(--ease-expo), border-color 200ms var(--ease-out), background-color 200ms var(--ease-out); animation: skvGo 620ms cubic-bezier(0.55, 0, 0.6, 1) 300ms both; pointer-events: none; }
+.jny-bankid.is-fold { gap: 0; padding: 6px; border-color: transparent; background: transparent; transition: gap 340ms var(--ease-expo), padding 340ms var(--ease-expo), border-color 200ms var(--ease-out), background-color 200ms var(--ease-out); animation: skv-go 620ms cubic-bezier(0.55, 0, 0.6, 1) 300ms both; pointer-events: none; }
 .jny-bankid.is-fold .jny-bankid-txt { max-width: 0; opacity: 0; }
-@keyframes skvGo { to { opacity: 0; transform: translateX(150px); } }
+@keyframes skv-go { to { opacity: 0; transform: translateX(150px); } }
 .skv-body .jny-qsub { transition: opacity 340ms var(--ease-out); }
 .skv-body.is-away .jny-qsub { opacity: 0; }
 .jny-btn-quiet.is-away { opacity: 0; transition: opacity 320ms var(--ease-out); pointer-events: none; }
@@ -179,31 +179,31 @@
 /* stämpeln: one mark, a slow waiting ring, then the sage ring drawn around it in one stroke */
 .stamp { overflow: visible; max-width: 100%; margin: 6px 0 2px; }
 .stamp .chip { fill: hsl(var(--background)); stroke: hsl(var(--border)); stroke-width: 1; opacity: 0; transform-origin: 120px 88px; }
-.stamp.is-away .chip, .stamp.is-back .chip { animation: stampIn 600ms var(--ease-expo) both; }
-@keyframes stampIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+.stamp.is-away .chip, .stamp.is-back .chip { animation: stamp-in 600ms var(--ease-expo) both; }
+@keyframes stamp-in { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
 .stamp .mark { opacity: 0; transform-origin: 120px 88px; }
-.stamp.is-away .mark, .stamp.is-back .mark { animation: stampIn 600ms var(--ease-expo) 80ms both; }
+.stamp.is-away .mark, .stamp.is-back .mark { animation: stamp-in 600ms var(--ease-expo) 80ms both; }
 .stamp .wait { fill: none; stroke: hsl(var(--muted-foreground)); stroke-width: 1; stroke-dasharray: 2 6; stroke-linecap: round; opacity: 0; transform-origin: 120px 88px; }
-.stamp.is-away .wait { animation: stampWaitIn 500ms var(--ease-out) 300ms both, stampTurn 14s linear infinite; }
-.stamp.is-back .wait { animation: skvFadeOut 300ms var(--ease-out) both; }
-@keyframes stampWaitIn { to { opacity: 0.55; } }
-@keyframes stampTurn { to { transform: rotate(360deg); } }
+.stamp.is-away .wait { animation: stamp-wait-in 500ms var(--ease-out) 300ms both, stamp-turn 14s linear infinite; }
+.stamp.is-back .wait { animation: skv-fade-out 300ms var(--ease-out) both; }
+@keyframes stamp-wait-in { to { opacity: 0.55; } }
+@keyframes stamp-turn { to { transform: rotate(360deg); } }
 .stamp .ring { fill: none; stroke: hsl(var(--success)); stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0; }
-.stamp.is-back .ring { animation: stampRing 900ms cubic-bezier(0.4, 0, 0.2, 1) 200ms both; }
-@keyframes stampRing { from { stroke-dashoffset: 1; opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
+.stamp.is-back .ring { animation: stamp-ring 900ms cubic-bezier(0.4, 0, 0.2, 1) 200ms both; }
+@keyframes stamp-ring { from { stroke-dashoffset: 1; opacity: 1; } to { stroke-dashoffset: 0; opacity: 1; } }
 .stamp .badge { opacity: 0; transform-box: fill-box; transform-origin: center; }
 .stamp .badge circle { fill: hsl(var(--success)); stroke: hsl(var(--background)); stroke-width: 2; }
 .stamp .badge path { fill: none; stroke: hsl(var(--background)); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
-.stamp.is-back .badge { animation: stampBadge 420ms var(--ease-spring) 1000ms both; }
-.stamp.is-back .badge path { animation: skvCheck 360ms var(--ease-out) 1180ms both; }
-@keyframes stampBadge { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: scale(1); } }
-@keyframes skvCheck { to { stroke-dashoffset: 0; } }
+.stamp.is-back .badge { animation: stamp-badge 420ms var(--ease-spring) 1000ms both; }
+.stamp.is-back .badge path { animation: skv-check 360ms var(--ease-out) 1180ms both; }
+@keyframes stamp-badge { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: scale(1); } }
+@keyframes skv-check { to { stroke-dashoffset: 0; } }
 .stamp text { font-family: inherit; text-anchor: middle; fill: hsl(var(--muted-foreground)); }
 .stamp .hold { font-size: 13px; opacity: 0; }
-.stamp.is-away .hold { animation: skvFadeIn 500ms var(--ease-out) 550ms both; }
-.stamp.is-back .hold { animation: skvFadeOut 260ms var(--ease-out) both; }
-@keyframes skvFadeIn { to { opacity: 1; } }
-@keyframes skvFadeOut { from { opacity: 1; } to { opacity: 0; } }
+.stamp.is-away .hold { animation: skv-fade-in 500ms var(--ease-out) 550ms both; }
+.stamp.is-back .hold { animation: skv-fade-out 260ms var(--ease-out) both; }
+@keyframes skv-fade-in { to { opacity: 1; } }
+@keyframes skv-fade-out { from { opacity: 1; } to { opacity: 0; } }
 
 /* ── the source list: one column, equal rows ───────────────────────── */
 .srclist { max-width: 360px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
@@ -236,7 +236,7 @@
 .connline .pmark { width: 28px; height: 28px; }
 .connline .pmark img { width: 18px; height: 18px; }
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; max-width: 480px; margin: 0 auto; text-align: center; }
-.stat { border-top: 1px solid hsl(var(--border)); padding-top: 10px; opacity: 0; animation: bksFadeIn 500ms var(--ease-out) forwards; }
+.stat { border-top: 1px solid hsl(var(--border)); padding-top: 10px; opacity: 0; animation: bks-fade-in 500ms var(--ease-out) forwards; }
 .stat dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: hsl(var(--muted-foreground)); margin: 0; }
 .stat dd { margin: 4px 0 0; font-family: var(--font-display); font-size: 24px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stat dd small { font-family: var(--font-body); font-size: 12px; color: hsl(var(--muted-foreground)); margin-left: 6px; }
@@ -249,6 +249,9 @@
 .bankgrid .pmark img { width: 22px; height: 22px; }
 .bankgrid .pill span.lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bankgrid .pill.is-text { justify-content: center; }
+.bank-picker-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0 auto 12px; }
+.bank-picker-actions button { min-height: 44px; }
+.bank-list { max-height: 40dvh; overflow-y: auto; overscroll-behavior: contain; padding: 4px; }
 @media (max-width: 560px) { .bankgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .bank-search input { padding-left: 36px; text-align: left; border-radius: 99px; }
 .bank-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: hsl(var(--muted-foreground)); pointer-events: none; }
@@ -256,9 +259,9 @@
 /* one column of actions: the primary alone, the quiet choice under it */
 .jny-qactions.is-stack { flex-direction: column; gap: 14px; }
 /* Tillbaka for the whole act: the page's top left corner, level with the rail, one place on every step */
-.bks-backrow { position: absolute; top: 34px; left: 28px; z-index: 2; }
-.bks-back { padding: 4px 2px; font-size: 13px; }
-@media (max-width: 640px) { .bks-backrow { top: 8px; left: 12px; } }
+.bks-backrow { position: sticky; top: 0; z-index: 3; align-self: stretch; background: hsl(var(--background)); text-align: left; }
+.bks-back { min-height: 44px; padding: 8px 12px; font-size: 13px; }
+.bks-back:disabled { opacity: 0.5; cursor: wait; }
 .imp-info { max-width: 480px; margin: 10px auto 0; font-size: 12.5px; line-height: 1.55; color: hsl(var(--muted-foreground)); animation: jnyQIn 300ms var(--ease-out); }
 
 /* the fetch: what was on the page fades out in place, the chart fades in where it stood */
@@ -266,7 +269,7 @@
 .bank-stage.is-swap { min-height: 340px; }
 .bank-stage .stage-out { transition: opacity 360ms var(--ease-out), transform 360ms var(--ease-out); }
 .bank-stage .stage-out.is-leaving { opacity: 0; transform: translateY(-6px); pointer-events: none; }
-.bank-stage .stage-in { animation: cashIn 600ms var(--ease-out) both; }
+.bank-stage .stage-in { animation: cash-in 600ms var(--ease-out) both; }
 
 /* the theater dims the skyline so the lines read */
 body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
@@ -302,10 +305,10 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 /* ── the AI card: a header, bubbles out of the card (top, left, right), then one click per client ── */
 .bks .jny-card { max-width: 440px; }
 .aiwrap { max-width: 440px; margin: 30px auto 0; }
-.aihead { font-family: var(--font-display); font-size: 21px; line-height: 1.25; margin: 0 0 16px; text-align: center; opacity: 0; animation: bksFadeIn 500ms var(--ease-out) 800ms forwards; }
+.aihead { font-family: var(--font-display); font-size: 21px; line-height: 1.25; margin: 0 0 16px; text-align: center; opacity: 0; animation: bks-fade-in 500ms var(--ease-out) 800ms forwards; }
 .aistage { position: relative; }
-.aicard { text-align: left; border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 16px 20px; background: hsl(var(--card)); box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 16px 40px -24px hsl(0 0% 0% / 0.25); opacity: 0; animation: cardIn 500ms var(--ease-out) 900ms forwards; }
-@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.aicard { text-align: left; border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 16px 20px; background: hsl(var(--card)); box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 16px 40px -24px hsl(0 0% 0% / 0.25); opacity: 0; animation: card-in 500ms var(--ease-out) 900ms forwards; }
+@keyframes card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .aicard-title { font-family: var(--font-display); font-size: 17px; margin: 0 0 10px; }
 /* the slots hold the bubbles in place around the card; the bubble inside animates on its own */
 .aislot { display: block; }
@@ -318,25 +321,25 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
   position: relative; display: block; width: 100%; text-align: left; cursor: pointer; font: inherit; font-size: 12.5px; line-height: 1.45;
   padding: 9px 13px; border: 1px solid hsl(var(--border)); border-radius: 14px; color: hsl(var(--foreground)); background: hsl(var(--card));
   box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 10px 24px -18px hsl(0 0% 0% / 0.3);
-  transition: background-color 150ms var(--ease-out); opacity: 0; animation: bubbleIn 560ms var(--ease-spring) forwards;
+  transition: background-color 150ms var(--ease-out); opacity: 0; animation: bubble-in 560ms var(--ease-spring) forwards;
 }
 /* each bubble opens out of the card's edge, one after the other: it starts small against the card and springs outward */
-.aislot.is-top .aiprompt { text-align: center; transform-origin: 50% 100%; animation-name: bubbleUp; }
-.aislot.is-left .aiprompt { transform-origin: 100% 50%; animation-name: bubbleLeft; }
-.aislot.is-right .aiprompt { transform-origin: 0 50%; animation-name: bubbleRight; }
-@keyframes bubbleUp { from { opacity: 0; transform: translateY(28px) scale(0.35); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
-@keyframes bubbleLeft { from { opacity: 0; transform: translateX(36px) scale(0.35); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
-@keyframes bubbleRight { from { opacity: 0; transform: translateX(-36px) scale(0.35); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
+.aislot.is-top .aiprompt { text-align: center; transform-origin: 50% 100%; animation-name: bubble-up; }
+.aislot.is-left .aiprompt { transform-origin: 100% 50%; animation-name: bubble-left; }
+.aislot.is-right .aiprompt { transform-origin: 0 50%; animation-name: bubble-right; }
+@keyframes bubble-up { 0% { opacity: 0; transform: translateY(28px) scale(0.35); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+@keyframes bubble-left { 0% { opacity: 0; transform: translateX(36px) scale(0.35); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+@keyframes bubble-right { 0% { opacity: 0; transform: translateX(-36px) scale(0.35); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
 /* the tail: a rotated square on the edge that faces the card */
 .aiprompt::after { content: ''; position: absolute; width: 11px; height: 11px; background: inherit; transform: rotate(45deg); }
 .aislot.is-top .aiprompt::after { left: 50%; margin-left: -6px; bottom: -6.5px; border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
 .aislot.is-left .aiprompt::after { top: 50%; margin-top: -6px; right: -6.5px; border-top: 1px solid hsl(var(--border)); border-right: 1px solid hsl(var(--border)); }
 .aislot.is-right .aiprompt::after { top: 50%; margin-top: -6px; left: -6.5px; border-bottom: 1px solid hsl(var(--border)); border-left: 1px solid hsl(var(--border)); }
-@keyframes bubbleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+@keyframes bubble-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
 /* no room beside the card: every bubble stacks above it */
 @media (max-width: 900px) {
   .aislot.is-left, .aislot.is-right { position: static; transform: none; width: auto; max-width: 380px; margin: 0 auto 16px; }
-  .aislot.is-left .aiprompt, .aislot.is-right .aiprompt { transform-origin: 50% 100%; animation-name: bubbleUp; }
+  .aislot.is-left .aiprompt, .aislot.is-right .aiprompt { transform-origin: 50% 100%; animation-name: bubble-up; }
   .aislot.is-left .aiprompt::after, .aislot.is-right .aiprompt::after { top: auto; margin-top: 0; right: auto; left: 50%; margin-left: -6px; bottom: -6.5px; border: 0; border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
 }
 .aiprompt:hover { background: hsl(var(--secondary) / 0.5); }
@@ -348,10 +351,10 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 .airow .pmark img { width: 20px; height: 20px; }
 .airow .n { flex: 1; }
 .airow .jny-btn { padding: 6px 16px; font-size: 12.5px; }
-.aidone { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 500; color: hsl(var(--success)); background: hsl(var(--success) / 0.1); animation: bksFadeIn 300ms var(--ease-out) forwards; }
+.aidone { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 500; color: hsl(var(--success)); background: hsl(var(--success) / 0.1); animation: bks-fade-in 300ms var(--ease-out) forwards; }
 
 /* A verified connection pays off with the first live task from Att gora. */
-.aihandoff { max-width: 440px; margin: 24px auto 0; text-align: center; animation: bksFadeIn 300ms var(--ease-out) both; }
+.aihandoff { max-width: 440px; margin: 24px auto 0; text-align: center; animation: bks-fade-in 300ms var(--ease-out) both; }
 .aihandoff-lead { margin: 0 0 12px; font-family: var(--font-display); font-size: 21px; line-height: 1.3; }
 .aihandoff-task { margin: 0 0 12px; font-size: 14px; line-height: 1.5; }
 .aihandoff-note { font-size: 13px; line-height: 1.6; color: hsl(var(--muted-foreground)); }

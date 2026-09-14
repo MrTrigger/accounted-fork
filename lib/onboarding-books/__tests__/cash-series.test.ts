@@ -51,9 +51,19 @@ describe('buildCashSeries', () => {
 
 describe('labels', () => {
   it('shortens and falls back', () => {
-    expect(shortLabel(null)).toBe('Utbetalning')
-    expect(shortLabel('Telia Sverige AB, faktura 12')).toBe('Telia Sverige AB')
+    expect(shortLabel(null, 16, 'Payment')).toBe('Payment')
+    expect(shortLabel('Acme AB, invoice 12')).toBe('Acme AB')
     expect(shortLabel('En väldigt lång motpartstext', 10)).toBe('En väldig…')
+  })
+
+  it('uses the caller locale for grouped outflows and unnamed inflows', () => {
+    const transactions = [
+      { date: '2026-09-01', amount: -10, description: 'Acme AB' },
+      { date: '2026-09-01', amount: -20, description: 'Jane Doe' },
+    ]
+    const points = buildCashSeries({ transactions, balanceToday: 100, fromDate: '2026-09-01', today: '2026-09-01', outflowFallbackLabel: 'Payment' })
+    expect(points[0].ev).toBe('Payment')
+    expect(biggestInflow([{ date: '2026-09-01', amount: 100, description: null }], 'Deposit')?.label).toBe('Deposit')
   })
 
   it('biggestInflow picks the largest positive row', () => {
