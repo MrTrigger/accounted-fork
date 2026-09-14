@@ -1153,6 +1153,34 @@ describe('personal_number on the v1 customer surface', () => {
     expect(updated.notes).toBe('still here')
   })
 
+  // Judged on the row as it will END UP: a type change alone carries no
+  // org_number, so checking only the body would move a stored personnummer
+  // onto a foreign type, the one place the list surfaces do not mask it.
+  it('PATCH refuses a type change that would move a stored personnummer to a foreign type', async () => {
+    withWriteScope()
+    const supabaseMock = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      customers: { data: { ...SAMPLE_CUSTOMER, org_number: TEST_PERSONAL_NUMBER }, error: null },
+    })
+    mockServiceClient.mockReturnValue(supabaseMock)
+
+    // country moves with the type so the earlier country-vs-type rule passes
+    // and the org-number guard is the one that answers.
+    const res = await updateCustomer(
+      makePatchRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/customers/${CUSTOMER_ID}`, {
+        customer_type: 'eu_business',
+        country: 'DE',
+        vat_number: 'DE811234567',
+      }),
+      detailParams(COMPANY_ID, CUSTOMER_ID),
+    )
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('CUSTOMER_ORG_NUMBER_IS_PERSONAL')
+    expect(supabaseMock.captured.update).toHaveLength(0)
+  })
+
   it('PATCH rejects a personnummer-shaped org_number on a stored foreign business customer', async () => {
     withWriteScope()
     const supabaseMock = makeFlexibleSupabase({

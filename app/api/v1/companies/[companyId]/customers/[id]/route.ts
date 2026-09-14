@@ -30,6 +30,7 @@ interface ExistingCountryRow {
   customer_type?: string
   country?: string | null
   vat_number?: string | null
+  org_number?: string | null
 }
 import {
   encryptCustomerPersonalNumber,
@@ -335,7 +336,7 @@ export const PATCH = withApiV1<{ params: Promise<{ companyId: string; id: string
     ) {
       const { data } = await ctx.supabase
         .from('customers')
-        .select('customer_type, country, vat_number')
+        .select('customer_type, country, vat_number, org_number')
         .eq('company_id', ctx.companyId!)
         .eq('id', customerId)
         .maybeSingle()
@@ -379,7 +380,14 @@ export const PATCH = withApiV1<{ params: Promise<{ companyId: string; id: string
     // A Swedish enskild firma's org number IS its owner's personnummer, so
     // swedish_business accepts one and the lists mask it. Only the foreign
     // business types, which cannot have one, still refuse it.
-    if (isPersonalNumberOrgNumberDisallowed(effectiveType, body.org_number)) {
+    //
+    // Judged on the org number the row will END UP with, like the country
+    // rule below: a type change alone, with no org_number in the body, would
+    // otherwise move a stored personnummer onto a foreign business type,
+    // which is the one place the list surfaces do not mask it. '' is a clear
+    // and stays a clear: only `undefined` falls back to the stored value.
+    const effectiveOrgNumber = body.org_number ?? existing?.org_number
+    if (isPersonalNumberOrgNumberDisallowed(effectiveType, effectiveOrgNumber)) {
       return v1ErrorResponseFromCode('CUSTOMER_ORG_NUMBER_IS_PERSONAL', ctx.log, {
         requestId: ctx.requestId,
         details: { field: 'org_number' },

@@ -67,7 +67,7 @@ export const PATCH = withRouteContext(
 
     const { data: existing, error: existingError } = await supabase
       .from('customers')
-      .select('id, customer_type, country, vat_number')
+      .select('id, customer_type, country, vat_number, org_number')
       .eq('id', id)
       .eq('company_id', companyId)
       .single()
@@ -105,7 +105,14 @@ export const PATCH = withRouteContext(
     // A Swedish enskild firma's org number IS its owner's personnummer, so
     // swedish_business accepts one and the lists mask it. Only the foreign
     // business types, which cannot have one, still refuse it.
-    if (isPersonalNumberOrgNumberDisallowed(effectiveType, body.org_number)) {
+    //
+    // Judged on the org number the row will END UP with, like the country
+    // rule below: a type change alone, with no org_number in the body, would
+    // otherwise move a stored personnummer onto a foreign business type,
+    // which is the one place the list surfaces do not mask it. '' is a clear
+    // and stays a clear: only `undefined` falls back to the stored value.
+    const effectiveOrgNumber = body.org_number ?? existing.org_number
+    if (isPersonalNumberOrgNumberDisallowed(effectiveType, effectiveOrgNumber)) {
       return errorResponseFromCode('CUSTOMER_ORG_NUMBER_IS_PERSONAL', opLog, { requestId })
     }
 
