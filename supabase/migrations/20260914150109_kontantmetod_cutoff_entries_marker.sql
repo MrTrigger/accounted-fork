@@ -129,18 +129,47 @@ ON CONFLICT (journal_entry_id) DO NOTHING;
 -- backfill:end
 
 -- Structural guard, created AFTER the backfill so historical rows are taken as
--- they are. A marker decides what stays out of a filed momsdeklaration, so a
--- row must point at something that could plausibly be a cut-off verifikat:
--- same company, source_type 'year_end', anchored to the period it claims. An
--- ordinary sales or bank verifikat can never satisfy this, so no member can
--- mark their way out of a VAT figure.
+-- they are. A marker is what keeps a verifikat out of a filed momsdeklaration,
+-- so the row has to be provably a cut-off posting and not merely asserted to be
+-- one. Two conditions, both checked against the ledger:
+--
+--   1. the marked verifikat is a source_type 'year_end' entry in the same
+--      company, anchored to the period the marker claims. An ordinary sales or
+--      bank verifikat can never satisfy this.
+--
+--   2. for the two vändning kinds, which are the only ones the VAT functions
+--      exclude, a marker of the paired cut-off kind must already exist for the
+--      same company and period whose verifikat is this one's exact mirror,
+--      line for line, debit for credit. That is what binds the marker to the
+--      cut-off writer without any shared secret: it is the only party that
+--      posts a matching pair. It also makes the abuse it prevents pointless.
+--      Hiding an arbitrary VAT-bearing entry would first require posting and
+--      marking its exact mirror, and that mirror is INCLUDED in the figure, so
+--      the amount comes straight back with the opposite sign.
+--
+-- Enforced for the API roles only, the established pattern for guards of this
+-- shape in this schema (see guard_sie_repair_item, 20260911145105). Migrations
+-- and superuser repairs run as the table owner and are trusted by other means;
+-- the backfill above is exactly such a caller, which also keeps this file
+-- replayable in either order.
+--
+-- SECURITY INVOKER on purpose. current_user inside a SECURITY DEFINER function
+-- is the owner, which would make the role gate above always skip. Running as
+-- the caller also means a member only ever proves the marker against entries
+-- their own RLS lets them see, and service_role (the MCP commit path) bypasses
+-- RLS as it does everywhere else.
 CREATE OR REPLACE FUNCTION public.guard_kontantmetod_cutoff_entry()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY DEFINER
 SET search_path TO 'public'
 AS $$
+DECLARE
+  v_pair_kind text;
 BEGIN
+  IF current_user NOT IN ('anon', 'authenticated', 'service_role') THEN
+    RETURN NEW;
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM public.journal_entries e
     WHERE e.id = NEW.journal_entry_id
@@ -151,6 +180,37 @@ BEGIN
     RAISE EXCEPTION 'kontantmetod cut-off marker must reference a year_end journal entry in the same company, anchored to the closed period'
       USING ERRCODE = '23514';
   END IF;
+
+  v_pair_kind := CASE NEW.kind
+    WHEN 'receivable_reversal' THEN 'receivable'
+    WHEN 'payable_reversal' THEN 'payable'
+  END;
+
+  IF v_pair_kind IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM public.kontantmetod_cutoff_entries k
+    WHERE k.company_id = NEW.company_id
+      AND k.fiscal_period_id = NEW.fiscal_period_id
+      AND k.kind = v_pair_kind
+      AND NOT EXISTS (
+        (SELECT account_number, debit_amount, credit_amount
+           FROM public.journal_entry_lines WHERE journal_entry_id = NEW.journal_entry_id)
+        EXCEPT ALL
+        (SELECT account_number, credit_amount, debit_amount
+           FROM public.journal_entry_lines WHERE journal_entry_id = k.journal_entry_id)
+      )
+      AND NOT EXISTS (
+        (SELECT account_number, credit_amount, debit_amount
+           FROM public.journal_entry_lines WHERE journal_entry_id = k.journal_entry_id)
+        EXCEPT ALL
+        (SELECT account_number, debit_amount, credit_amount
+           FROM public.journal_entry_lines WHERE journal_entry_id = NEW.journal_entry_id)
+      )
+  ) THEN
+    RAISE EXCEPTION 'kontantmetod vändning marker requires an already marked cut-off for the same period whose verifikat it mirrors line for line'
+      USING ERRCODE = '23514';
+  END IF;
+
   RETURN NEW;
 END;
 $$;

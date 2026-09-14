@@ -156,20 +156,34 @@ describe('VAT ruta drill-down reconciles with the declaration figure', () => {
       ],
     })
 
-    // 4. A kontantmetod year-end vändning in its historical shape: the old
-    //    Swedish wording AND a marker row, which is what the migration's
-    //    backfill left on every legacy cut-off. Excluded through the marker.
-    const legacyReversalId = await insertEntry({
+    // 4. A kontantmetod cut-off pair in its historical shape: the old Swedish
+    //    wording plus marker rows, which is what the migration's backfill left
+    //    on every legacy cut-off. The cut-off itself is COUNTED (it is the
+    //    final-period reporting bokslutsmetoden requires); only its vändning is
+    //    excluded, and the exclusion now follows the marker.
+    const legacyCutoffId = await insertEntry({
       userId, companyId, fiscalPeriodId, voucherNumber: 4,
       sourceType: 'year_end', sourceId: fiscalPeriodId,
-      description: 'Vändning kundfordringar bokslut (kontantmetoden)',
+      description: 'Leverantörsskulder vid bokslut (kontantmetoden)',
       lines: [
-        { account: '2611', debit: 50, credit: 0 },
+        { account: '2641', debit: 50, credit: 0 },
         { account: BALANCING_ACCOUNT, debit: 0, credit: 50 },
       ],
     })
     await markCutoffEntry({
-      companyId, fiscalPeriodId, kind: 'receivable_reversal',
+      companyId, fiscalPeriodId, kind: 'payable', journalEntryId: legacyCutoffId,
+    })
+    const legacyReversalId = await insertEntry({
+      userId, companyId, fiscalPeriodId, voucherNumber: 41,
+      sourceType: 'year_end', sourceId: fiscalPeriodId,
+      description: 'Vändning leverantörsskulder bokslut (kontantmetoden)',
+      lines: [
+        { account: '2641', debit: 0, credit: 50 },
+        { account: BALANCING_ACCOUNT, debit: 50, credit: 0 },
+      ],
+    })
+    await markCutoffEntry({
+      companyId, fiscalPeriodId, kind: 'payable_reversal',
       journalEntryId: legacyReversalId,
     })
 
@@ -199,29 +213,41 @@ describe('VAT ruta drill-down reconciles with the declaration figure', () => {
       [closingId, fiscalPeriodId],
     )
 
-    // 7. A vändning whose description nobody would think to filter on, marked
-    //    as one. Excluded from both, which is the whole point of the marker.
-    const rewordedReversalId = await insertEntry({
+    // 7. A cut-off pair worded in a way nobody would think to filter on. The
+    //    vändning is excluded anyway, which is the whole point of the marker.
+    const rewordedCutoffId = await insertEntry({
       userId, companyId, fiscalPeriodId, voucherNumber: 7,
       sourceType: 'year_end', sourceId: fiscalPeriodId,
-      description: 'Omformulerad vändning 2027',
+      description: 'Omformulerad avgränsning 2026',
       lines: [
-        { account: '2641', debit: 0, credit: 20 },
+        { account: '3001', debit: 0, credit: 20 },
         { account: BALANCING_ACCOUNT, debit: 20, credit: 0 },
       ],
     })
     await markCutoffEntry({
-      companyId, fiscalPeriodId, kind: 'payable_reversal',
+      companyId, fiscalPeriodId, kind: 'receivable', journalEntryId: rewordedCutoffId,
+    })
+    const rewordedReversalId = await insertEntry({
+      userId, companyId, fiscalPeriodId, voucherNumber: 71,
+      sourceType: 'year_end', sourceId: fiscalPeriodId,
+      description: 'Omformulerad vändning 2027',
+      lines: [
+        { account: '3001', debit: 20, credit: 0 },
+        { account: BALANCING_ACCOUNT, debit: 0, credit: 20 },
+      ],
+    })
+    await markCutoffEntry({
+      companyId, fiscalPeriodId, kind: 'receivable_reversal',
       journalEntryId: rewordedReversalId,
     })
 
-    // 8. The mirror image: the old cut-off wording with NO marker. Counted,
+    // 8. The mirror image: the old vändning wording with NO marker. Counted,
     //    in both the figure and the drill-down. Text alone no longer removes
     //    anything from a filed momsdeklaration.
     await insertEntry({
       userId, companyId, fiscalPeriodId, voucherNumber: 8,
       sourceType: 'year_end',
-      description: 'Vändning leverantörsskulder bokslut (kontantmetoden)',
+      description: 'Vändning kundfordringar bokslut (kontantmetoden)',
       lines: [
         { account: '2611', debit: 30, credit: 0 },
         { account: BALANCING_ACCOUNT, debit: 0, credit: 30 },
@@ -265,17 +291,20 @@ describe('VAT ruta drill-down reconciles with the declaration figure', () => {
     const descriptions = (await drillDown(companyId, ALL_ACCOUNTS)).map((l) => l.description)
     expect(descriptions).not.toContain('Momsredovisning')
     expect(descriptions).not.toContain('Otaggad momsredovisning')
-    expect(descriptions).not.toContain('Vändning kundfordringar bokslut (kontantmetoden)')
+    expect(descriptions).not.toContain('Vändning leverantörsskulder bokslut (kontantmetoden)')
     // Marked, but worded in a way no text filter would catch.
     expect(descriptions).not.toContain('Omformulerad vändning 2027')
     expect(descriptions).not.toContain('Bokslutsverifikat')
+    // The cut-offs themselves stay in: only the vändningar are excluded.
+    expect(descriptions).toContain('Leverantörsskulder vid bokslut (kontantmetoden)')
+    expect(descriptions).toContain('Omformulerad avgränsning 2026')
   }, 30_000)
 
-  it('keeps an unmarked entry that merely carries the old cut-off wording', async () => {
+  it('keeps an unmarked entry that merely carries the old vändning wording', async () => {
     // Asserted against the ledger, not against the other function: a filter
     // keyed on text would drop this line from a figure it belongs in.
     const descriptions = (await drillDown(companyId, ['2611'])).map((l) => l.description)
-    expect(descriptions).toContain('Vändning leverantörsskulder bokslut (kontantmetoden)')
+    expect(descriptions).toContain('Vändning kundfordringar bokslut (kontantmetoden)')
   }, 30_000)
 
   it('keeps opening-balance lines, which the figure also counts', async () => {
