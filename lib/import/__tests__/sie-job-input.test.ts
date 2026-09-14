@@ -26,10 +26,10 @@ describe('SIE durable input boundaries', () => {
     expect(SIEJobMappingsSchema.parse(suggested).map(mapping => mapping.sourceAccount)).toEqual(['1930', '3001'])
   })
 
-  it('preserves a custom target account through submission and worker input validation', async () => {
+  it('preserves an unused custom target through submission and worker input validation', async () => {
     vi.stubEnv('SIE_IMPORT_JOBS', 'true')
-    const source = '#RAR 0 20260101 20261231\n' + content.replaceAll('3001', '9999')
-    const customMappings = [mappings[0], {
+    const source = '#RAR 0 20260101 20261231\n#KONTO 9999 "Unused custom account"\n' + content
+    const customMappings = [...mappings, {
       ...mappings[1], sourceAccount: '9999', targetAccount: '9999', matchType: 'manual' as const,
     }]
     const fileHash = createHash('sha256').update(source).digest('hex')
@@ -52,6 +52,80 @@ describe('SIE durable input boundaries', () => {
   it('retains an empty target for accounts the import will treat as unmapped', () => {
     const unmapped = { ...mappings[0], targetAccount: '', targetName: '' }
     expect(SIEJobMappingsSchema.parse([unmapped])).toEqual([unmapped])
+  })
+
+  it.each(['0099', '9999'])('rejects financial use of target %s before storage or admission', async targetAccount => {
+    vi.stubEnv('SIE_IMPORT_JOBS', 'true')
+    const source = '#RAR 0 20260101 20261231\n' + content
+    const database = { from: vi.fn(), rpc: vi.fn(), storage: { from: vi.fn() } }
+    await expect(submitSIEJob(database as unknown as SupabaseClient, 'company-1', 'user-1', source,
+      [mappings[0], { ...mappings[1], targetAccount }], options)).rejects.toMatchObject({
+      code: 'SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS',
+    })
+    expect(database.from).not.toHaveBeenCalled()
+    expect(database.rpc).not.toHaveBeenCalled()
+    expect(database.storage.from).not.toHaveBeenCalled()
+  })
+
+  it.each(['#IB 0', '#UB 0', '#RES 0'])('rejects amounts on a non-reportable target in %s', record => {
+    const source = '#RAR 0 20260101 20261231\n' + content + `\n${record} 9999 100`
+    const custom = [...mappings, { ...mappings[1], sourceAccount: '9999', targetAccount: '9999' }]
+    expect(() => validateSIEJobInput(source, parseSIEFile(source), custom,
+      { ...options, importOpeningBalances: true })).toThrow('1000-8999')
+  })
+
+  it('rejects a non-reportable target for opening balances derived from prior-year UB', () => {
+    const source = '#RAR 0 20260101 20261231\n#UB -1 1930 100\n#UB -1 2091 -100'
+    expect(() => validateSIEJobInput(source, parseSIEFile(source),
+      [{ ...mappings[0], targetAccount: '9999' }, { ...mappings[1], sourceAccount: '2091', targetAccount: '2091' }],
+      { ...options, importTransactions: false, importOpeningBalances: true })).toThrow('1000-8999')
+  })
+
+  it('accepts a non-BAS source explicitly mapped into a supported report class', () => {
+    const source = '#RAR 0 20260101 20261231\n' + content.replaceAll('3001', '9999')
+    expect(() => validateSIEJobInput(source, parseSIEFile(source),
+      [mappings[0], { ...mappings[1], sourceAccount: '9999' }], options)).not.toThrow()
+  })
+
+  it('does not mistake offsetting postings for an unused custom definition', () => {
+    const source = '#RAR 0 20260101 20261231\n' + content +
+      '\n#VER A 2 20260202 "Internal"\n{\n#TRANS 9999 {} 100\n#TRANS 9999 {} -100\n}'
+    expect(() => validateSIEJobInput(source, parseSIEFile(source),
+      [...mappings, { ...mappings[1], sourceAccount: '9999', targetAccount: '9999' }], options)).toThrow('1000-8999')
+  })
+
+  it('allows zero balances and deselected vouchers on a custom definition', () => {
+    const source = '#RAR 0 20260101 20261231\n' + content.replaceAll('3001', '9999') +
+      '\n#IB 0 9999 0\n#UB 0 9999 0\n#RES 0 9999 0'
+    expect(() => validateSIEJobInput(source, parseSIEFile(source),
+      [mappings[0], { ...mappings[1], sourceAccount: '9999', targetAccount: '9999' }],
+      { ...options, importTransactions: false, importOpeningBalances: true })).not.toThrow()
+  })
+
+  it.each(['new', 'snapshot', 'prepared'] as const)('rejects unsupported targets in %s worker preparation before any write', async stage => {
+    const source = '#RAR 0 20260101 20261231\n' + content.replaceAll('3001', '9999')
+    const parsed = parseSIEFile(source)
+    const fileHash = createHash('sha256').update(source).digest('hex')
+    const custom = [mappings[0], { ...mappings[1], sourceAccount: '9999', targetAccount: '9999' }]
+    const job = { company_id: 'company-1', file_hash: fileHash, file_storage_path: `company-1/sie-jobs/${fileHash}.se`,
+      prepared_through: stage === 'prepared' ? 1 : 0,
+      manifest: { input: { version: 1, sourceHash: fileHash, mappings: custom, options },
+        snapshotComplete: stage !== 'new', metadataComplete: true, effectiveOpeningBalances: [],
+        preparedGroups: stage === 'prepared' ? 1 : 0,
+        preparationTotals: { entries: 1, movements: stage === 'prepared' ? [['9999', -100]] : [], skippedSample: [],
+          skippedCounts: { empty: 0, unbalanced: 0, unmapped: 0, singleLine: 0, total: 0 } },
+      } } as unknown as SIEJob
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    if (stage !== 'new') enqueueMany([
+      { data: { payload: [{ parsed: { ...parsed, vouchers: [] }, voucherGroups: 1, metadataGroups: 0,
+        hasCurrentYearIb: false, sourceSeries: ['A'], openingBalanceVoucherCandidate: false }] } },
+      { data: [] }, { data: [] }, { data: { payload: [parsed.vouchers] } },
+    ])
+    supabase.storage.from('sie-files').download.mockResolvedValue({ data: new Blob([source]), error: null })
+    await expect(prepareSIEJob(supabase as unknown as SupabaseClient, job, Infinity)).rejects.toMatchObject({
+      code: 'SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS',
+    })
+    expect(supabase.rpc).not.toHaveBeenCalled()
   })
 
   it('preserves accepted mapping checkpoint positions when resuming older duplicate input', () => {

@@ -1,4 +1,4 @@
-import { beforeEach,describe,expect,it,vi } from 'vitest'
+import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { NextResponse } from 'next/server'
 import { createQueuedMockSupabase } from '@/tests/helpers'
 
@@ -35,6 +35,7 @@ beforeEach(()=>{
   sign.mockResolvedValue({data:{token:'upload-token'},error:null})
   submit.mockResolvedValue(job);action.mockResolvedValue(job)
 })
+afterEach(() => vi.unstubAllEnvs())
 
 describe('durable SIE HTTP boundaries',()=>{
   for(const [name,route] of Object.entries(routes)) it(`${name} requires authentication`,async()=>{
@@ -107,6 +108,27 @@ describe('durable SIE HTTP boundaries',()=>{
       code: 'VALIDATION_ERROR', details: { issues: [expect.objectContaining({ field: '0.targetAccount' })] },
     })
     expect(submit).not.toHaveBeenCalled()
+  })
+  it('returns actionable bilingual 400 for financial use of class 9 through the real submission validator', async () => {
+    vi.stubEnv('SIE_IMPORT_JOBS', 'true')
+    const actual = await vi.importActual<typeof import('@/lib/import/sie-jobs')>('@/lib/import/sie-jobs')
+    submit.mockImplementationOnce(actual.submitSIEJob)
+    const form = new FormData()
+    form.set('file', new File(['#SIETYP 4\n#RAR 0 20260101 20261231\n' +
+      '#VER A 1 20260201 "Sale"\n{\n#TRANS 1930 {} 100\n#TRANS 9999 {} -100\n}'], 'custom.se'))
+    form.set('mappings', JSON.stringify(['1930', '9999'].map(number => ({
+      sourceAccount: number, targetAccount: number, sourceName: 'Account', targetName: 'Account',
+      confidence: 1, matchType: 'manual', isOverride: true,
+    }))))
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toMatchObject({
+      code: 'SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS',
+      message: expect.stringContaining('1000-8999'), message_en: expect.stringContaining('1000-8999'),
+    })
+    expect(supabase.from).not.toHaveBeenCalled()
+    expect(supabase.storage.from).not.toHaveBeenCalled()
+    expect(supabase.rpc).not.toHaveBeenCalled()
   })
   it('refuses malformed action input before ownership RPCs',async()=>{
     expect((await act(request({action:'delete'}),params)).status).toBe(400)

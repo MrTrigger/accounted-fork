@@ -181,6 +181,46 @@ describe('generateFullArchive', () => {
   })
 
   describe('scope: period', () => {
+    it('retains custom-account classification beyond the first chart page in system documentation', async () => {
+      enqueueMany([{ data: COMPANY_ROW }, { data: PERIOD_2024 }])
+      const chart = createQueuedMockSupabase()
+      const custom = { account_number: '9999', account_name: 'Unused custom account', account_class: 9,
+        account_type: 'expense', sru_code: null, description: 'Retained source definition', is_active: true }
+      chart.enqueueMany([
+        { data: Array.from({ length: 1000 }, (_, index) => ({ account_number: String(1000 + index) })) },
+        { data: [custom] },
+      ])
+      const from = supabase.from.getMockImplementation()!
+      supabase.from.mockImplementation((table: string) => table === 'chart_of_accounts' ? chart.supabase.from(table) : from(table))
+
+      const buffer = await generateFullArchive(supabase as any, 'company-1', {
+        scope: 'period', period_id: PERIOD_2024.id, include_documents: false,
+      })
+      const zip = await JSZip.loadAsync(buffer)
+      const documentation = JSON.parse(await zip.file('revision/systemdokumentation.json')!.async('text'))
+      expect(documentation.kontoplan.accounts).toHaveLength(1001)
+      expect(documentation.kontoplan.accounts.at(-1)).toEqual(custom)
+      expect(documentation.kontoplan.sie_import_regler).toContain('1000-8999')
+      expect(chart.findCalls('chart_of_accounts', 'range')).toEqual([[0, 999], [1000, 1999]])
+      expect(chart.findCalls('chart_of_accounts', 'eq')).toEqual([['company_id', 'company-1'], ['company_id', 'company-1']])
+      expect(chart.findCall('chart_of_accounts', 'select')?.[0]).toContain('account_class')
+      expect(chart.findCall('chart_of_accounts', 'select')?.[0]).toContain('sru_code')
+    })
+
+    it('refuses incomplete system documentation when a later chart page cannot be read', async () => {
+      enqueueMany([{ data: COMPANY_ROW }, { data: PERIOD_2024 }])
+      const chart = createQueuedMockSupabase()
+      chart.enqueueMany([
+        { data: Array.from({ length: 1000 }, (_, index) => ({ account_number: String(1000 + index) })) },
+        { error: { code: '57014', message: 'statement timeout' } },
+      ])
+      const from = supabase.from.getMockImplementation()!
+      supabase.from.mockImplementation((table: string) => table === 'chart_of_accounts' ? chart.supabase.from(table) : from(table))
+      await expect(generateFullArchive(supabase as any, 'company-1', {
+        scope: 'period', period_id: PERIOD_2024.id, include_documents: false,
+      })).rejects.toThrow('statement timeout')
+    })
+
     it('generates a ZIP with expected file structure', async () => {
       enqueueMany([
         { data: COMPANY_ROW }, // company_settings

@@ -9,7 +9,7 @@ import { buildSIEMigrationAdjustmentEntry, buildSIEOpeningBalanceEntry, importVo
 import { getEffectiveOpeningBalances, hasOpeningBalanceVoucherCandidate, parseSIEFile } from './sie-parser'
 import { defaultOpeningBalanceSeries } from './opening-balance-defaults'
 import { chunkSIEEntries, hashSIEPayload, SIE_JOB_VERSION, SIE_LIMITS, type SIEJob, type SIEPreparedEntry } from './sie-job-contract'
-import { applySIEFiscalYear, readSIEJobSource, SIEJobValidationError, validateSIEAccountingAmounts, validateSIEJobInput, type SIEJobInput } from './sie-jobs'
+import { applySIEFiscalYear, assertSIEReportingAccounts, readSIEJobSource, SIEJobValidationError, validateSIEAccountingAmounts, validateSIEJobInput, validateSIEReportingMappings, type SIEJobInput } from './sie-jobs'
 import type { ParsedSIEFile, SIEVoucher } from './types'
 import { scanSieForCp1252Artifacts, formatSieArtifactWarning } from './sie-artifact-scan'
 import { SIEJobMappingsSchema, SIEJobOptionsSchema } from '@/lib/api/schemas'
@@ -215,9 +215,10 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
   const input = jobInput(job)
   const snapshot = await snapshotSource(supabase,job,deadline)
   if (!snapshot) return false
+  const accountMap = mappingsToMap(input.mappings)
+  validateSIEReportingMappings(snapshot.parsed,accountMap,input.options)
   if (!job.manifest.metadataComplete && !await createMetadata(supabase,job,snapshot,deadline)) return false
   const accountIds = await jobAccountIds(supabase,job)
-  const accountMap = mappingsToMap(input.mappings)
   const totals: PreparationTotals = job.manifest.preparationTotals as PreparationTotals ?? {
     entries:0,movements:[],skippedSample:[],skippedCounts:{empty:0,unbalanced:0,unmapped:0,singleLine:0,total:0},
   }
@@ -227,6 +228,7 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
     if (Date.now() > deadline) return false
     const raw = await readCheckpoint<SIEVoucher[]>(supabase,job,SIE_CHECKPOINTS.snapshot+1+group)
     if (!raw) throw new Error('SIE source group missing')
+    validateSIEReportingMappings({...snapshot.parsed,vouchers:raw},accountMap,input.options)
     const prepared = input.options.importTransactions ? await importVouchers(supabase,job.company_id,
       job.execution_actor_id ?? job.user_id,job.fiscal_period_id,{...snapshot.parsed,vouchers:raw.map(reviveVoucher)},
       accountMap,input.options.voucherSeries ?? 'B',job.id,{startOrdinal:sourceOrdinal,only:true,
@@ -275,6 +277,8 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
       migrationAdjustment:true,openingBalanceVoucherCandidate:snapshot.openingBalanceVoucherCandidate})
   }
   const movements = new Map(totals.movements)
+  // Resumed preparation may already have checkpointed earlier voucher groups.
+  assertSIEReportingAccounts(movements.keys())
   // Use the globally resolved IB set from the sealed parse, including the
   // explicit absence of IB when a source voucher represents it instead.
   const parsed = {...snapshot.parsed,openingBalances:job.manifest.effectiveOpeningBalances as ParsedSIEFile['openingBalances']}
@@ -294,6 +298,7 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
   }
   const adjustment = adjustmentCount ? buildSIEMigrationAdjustmentEntry(job.fiscal_period_id,parsed,accountMap,movements,totals.skippedSample,adjustmentCount) : null
   if (adjustment?.input) finalEntries.push(toPrepared(adjustment.input,job,50_001,accountIds))
+  assertSIEReportingAccounts(finalEntries.flatMap(entry => entry.lines.map(line => line.account_number)))
   if (input.options.importTransactions && snapshot.parsed.stats.totalVouchers > 0 && totals.entries === 0 && !finalEntries.length) {
     throw new SIEJobValidationError('Importen skulle skapa 0 verifikationer. Granska kontomappningen och filen.')
   }

@@ -2310,6 +2310,12 @@ const TAX_DECL: Record<string, StructuredErrorEntry> = {
 // ─────────────────────────────────────────────────────────────────
 
 const SIE_IMPORT: Record<string, StructuredErrorEntry> = {
+  SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS: {
+    httpStatus: 400,
+    message_sv: 'Konton med belopp måste mappas till konton 1000-8999 före import. Målkonton i klass 0 och 9 stöds inte i balans- och resultatrapporterna. Oanvända kontodefinitioner kan behållas.',
+    message_en: 'Map accounts carrying amounts to accounts 1000-8999 before importing. Target classes 0 and 9 are not supported by the balance sheet and income statement. Unused account definitions may be retained.',
+    retryable: false,
+  },
   SIE_PARSE_NO_FILE: {
     httpStatus: 400,
     message_sv: 'Ingen fil bifogad i förfrågan.',

@@ -6,6 +6,7 @@ import { ensureFiscalPeriod } from './sie-import'
 import { SIE_JOB_VERSION, SIE_LIMITS, type SIEJob } from './sie-job-contract'
 import { SIEJobMappingsSchema, SIEJobOptionsSchema } from '@/lib/api/schemas'
 import { isAccountNumber } from '@/lib/invariants/account-number'
+import { isValidBASRange } from './account-mapper'
 
 export interface SIEJobOptions {
   filename: string
@@ -28,7 +29,42 @@ export interface SIEJobInput {
   fiscalYear?: {start:string;end:string}
 }
 
-export class SIEJobValidationError extends Error {readonly code = 'VALIDATION_ERROR'}
+export class SIEJobValidationError extends Error {
+  constructor(message: string, readonly code: string = 'VALIDATION_ERROR') { super(message) }
+}
+
+/** Accounted's financial reports classify targets by BAS classes 1-8. */
+export function assertSIEReportingAccounts(accounts: Iterable<string>): void {
+  const unsupported = [...new Set(accounts)].filter(account => !isValidBASRange(account))
+  if (unsupported.length) {
+    throw new SIEJobValidationError(
+      `Målkonton ${unsupported.slice(0, 5).join(', ')} stöds inte i balans- och resultatrapporterna. ` +
+      'Mappa konton med belopp till konton 1000-8999 innan importen startas. Oanvända kontodefinitioner kan behållas.',
+      'SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS',
+    )
+  }
+}
+
+/** Format validation admits chart-only definitions; financial use needs a reportable target. */
+export function validateSIEReportingMappings(parsed: ParsedSIEFile, accountMap: ReadonlyMap<string, string>,
+  selection: { importTransactions: boolean; importOpeningBalances: boolean },
+): void {
+  const used = new Set<string>()
+  if (selection.importTransactions) for (const voucher of parsed.vouchers) {
+    for (const line of voucher.lines) if (line.amount !== 0) used.add(line.account)
+  }
+  // Current-year report balances can drive a migration adjustment even when
+  // opening-balance import is deselected. Do not call such definitions unused.
+  if (selection.importTransactions || selection.importOpeningBalances) {
+    for (const balance of [...getEffectiveOpeningBalances(parsed).balances,
+      ...parsed.closingBalances.filter(balance => balance.yearIndex === 0),
+      ...parsed.resultBalances.filter(balance => balance.yearIndex === 0)]) {
+      if (balance.amount !== 0) used.add(balance.account)
+    }
+  }
+  const targets = [...used].map(account => accountMap.get(account)).filter((target): target is string => Boolean(target))
+  assertSIEReportingAccounts(targets)
+}
 
 function jobDatabaseError(error:{code?:string;message:string}):Error {
   const codes:Record<string,string> = {P0002:'NOT_FOUND','42501':'DB_PERMISSION_DENIED','22P02':'VALIDATION_ERROR',
@@ -87,6 +123,7 @@ export function validateSIEJobInput(content: string, parsed: ParsedSIEFile, mapp
     throw new SIEJobValidationError(`SIE-filen innehåller ${parseErrors.length} tolkningsfel. ${details}`)
   }
   validateSIEAccountingAmounts(parsed, new Map(mappings.map(mapping => [mapping.sourceAccount, mapping.targetAccount])), options)
+  validateSIEReportingMappings(parsed, new Map(mappings.map(mapping => [mapping.sourceAccount, mapping.targetAccount])), options)
   if (parsed.vouchers.length > SIE_LIMITS.fileVouchers) throw new SIEJobValidationError('SIE-filen har fler än 50 000 verifikationer.')
   if (!parsed.stats.fiscalYearStart || !parsed.stats.fiscalYearEnd) throw new SIEJobValidationError('SIE-filen saknar räkenskapsår.')
   if (!options.importOpeningBalances && !options.importTransactions) throw new SIEJobValidationError('Välj vad som ska importeras.')
