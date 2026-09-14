@@ -111,6 +111,31 @@ const accountNumber = accountNumberSchema
 const nonNegativeAmount = z.number().nonnegative()
 
 /**
+ * A journal line carries exactly one side (issue #2551).
+ *
+ * A line with both debit_amount and credit_amount above zero cancels itself,
+ * and the balance check sums the two columns, so it cannot see that: the
+ * entry "balances" and posts as a nollverifikat. Storno then reverses the
+ * line on its net, lands on {0, 0} and dies on the voucher trigger's "has
+ * zero total", which leaves the entry uncorrectable.
+ *
+ * The same rule is enforced by the engine (`assertLinesWellFormed`) and by
+ * the DB CHECK `journal_entry_lines_single_side`; this refinement is the
+ * layer that turns it into a 400 naming the offending line, identically for
+ * the dashboard, /api/v1 and the MCP tools that post through v1. Apply it to
+ * every line schema whose rows reach the engine:
+ *
+ *   .refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)
+ */
+function isSingleSidedLine(line: { debit_amount?: number; credit_amount?: number }): boolean {
+  return !((line.debit_amount ?? 0) > 0 && (line.credit_amount ?? 0) > 0)
+}
+
+const SINGLE_SIDED_LINE_ISSUE = {
+  message: 'En verifikationsrad kan inte ha både debet och kredit nollskilda.',
+}
+
+/**
  * SEK per one unit of a foreign currency.
  *
  * Mirrors the database CHECK that every table storing a rate carries:
@@ -974,7 +999,7 @@ export const MarkInvoicePaidSchema = z.object({
     // Dimensions PR7: user-edited payment lines keep their tags (the
     // no-override path re-propagates the invoice's default_dimensions).
     dimensions: DimensionsBagSchema.optional(),
-  })).min(2).optional(),
+  }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)).min(2).optional(),
   // Bypass the duplicate-payment guard. Set after the user reviews the
   // candidate list returned by INVOICE_PAID_LIKELY_DUPLICATE and confirms
   // none of them are this payment. v1 callers must use a fresh
@@ -989,6 +1014,14 @@ export const MarkInvoiceSentSchema = z.object({
   // are NOT created (what the user reviewed is what books). Only honored on
   // the accrual book-at-issue path; ignored for credit notes, cash-method
   // and deferred-booking companies, which don't book at mark-sent.
+  //
+  // The single-side rule (#2551) is the one place it is NOT declared as a
+  // refinement here: both consumers of this schema (mark-sent and send) run
+  // every line through parseCustomIssuanceLines, whose own both-sides check
+  // predates it and returns the targeted INVOICE_MARK_SENT_LINES_INVALID
+  // instead of a generic "Ogiltig förfrågan". A refinement here would fire
+  // first and downgrade that message. The rule still holds on this path:
+  // parseCustomIssuanceLines, then the engine, then the DB CHECK.
   lines: z.array(z.object({
     account_number: accountNumber,
     debit_amount: nonNegativeAmount.default(0),
@@ -1458,7 +1491,7 @@ export const MarkSupplierInvoicePaidSchema = z.object({
     // Dimensions PR7: user-edited payment lines keep their tags (the
     // no-override path re-propagates the invoice's default_dimensions).
     dimensions: DimensionsBagSchema.optional(),
-  })).min(2).optional(),
+  }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)).min(2).optional(),
 })
 
 /**
@@ -1545,7 +1578,7 @@ export const CreateJournalEntryLineSchema = z.object({
   // for API/MCP compatibility.
   cost_center: z.string().optional(),
   project: z.string().optional(),
-})
+}).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)
 
 export const CreateJournalEntrySchema = z.object({
   fiscal_period_id: uuid,
@@ -1598,7 +1631,7 @@ export const InlineRattelseLineSchema = z.object({
   credit_amount: nonNegativeAmount.default(0),
   line_description: z.string().max(500).optional(),
   dimensions: DimensionsBagSchema.optional(),
-})
+}).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)
 
 /** POST /api/bookkeeping/journal-entries/[id]/strike-lines */
 export const StrikeLinesSchema = z
@@ -2037,7 +2070,7 @@ export const MatchInvoiceSchema = z
       debit_amount: nonNegativeAmount.default(0),
       credit_amount: nonNegativeAmount.default(0),
       line_description: z.string().optional(),
-    })).min(2).optional(),
+    }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)).min(2).optional(),
     // Optional caller-supplied SEK-per-invoice-currency rate for cross-currency
     // settlement. Used when the Riksbanken lookup returns nothing (rate not
     // published for that date): the dialog surfaces an input so the user can
@@ -2120,7 +2153,7 @@ export const BulkBookSchema = z
           line_description: z.string().max(200).optional(),
           // Dimensions PR7: per-line bag, wins over default_dimensions.
           dimensions: DimensionsBagSchema.optional(),
-        })
+        }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)
       )
       .min(2, 'A verifikat needs at least two lines')
       .max(200)
@@ -2958,7 +2991,7 @@ export const OpeningBalanceExecuteSchema = z.object({
     account_number: accountNumber,
     debit_amount: nonNegativeAmount,
     credit_amount: nonNegativeAmount,
-  })).min(2, 'At least two lines are required for double-entry'),
+  }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)).min(2, 'At least two lines are required for double-entry'),
 })
 
 export const OpeningBalanceCorrectSchema = OpeningBalanceExecuteSchema.extend({
@@ -3926,7 +3959,7 @@ export const CreateExpenseClaimSchema = z
           debit_amount: z.number().nonnegative().default(0),
           credit_amount: z.number().nonnegative().default(0),
           line_description: z.string().trim().max(300).optional().nullable(),
-        }),
+        }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE),
       )
       .min(2)
       .max(20)

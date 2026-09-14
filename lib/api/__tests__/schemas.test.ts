@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { HouseworkTypeSchema } from '../schemas'
 import { STANDARD_VOUCHER_SERIES_MAP } from '@/lib/bookkeeping/voucher-series-resolver'
+import { parseCustomIssuanceLines } from '@/lib/invoices/issuance-custom-lines'
 import {
   // Enums
   EntityTypeSchema,
@@ -39,6 +40,12 @@ import {
   // Journal entry schemas
   CreateJournalEntryLineSchema,
   CreateJournalEntrySchema,
+  InlineRattelseLineSchema,
+  // Single-side line rule (#2551): the other schemas it is applied to
+  MarkInvoiceSentSchema,
+  BulkBookSchema,
+  OpeningBalanceExecuteSchema,
+  CreateExpenseClaimSchema,
   // Transaction schemas
   CategorizeTransactionSchema,
   BookTransactionSchema,
@@ -1158,6 +1165,185 @@ describe('MarkSupplierInvoicePaidSchema', () => {
 // ============================================================
 // Journal entry schemas
 // ============================================================
+
+// Issue #2551: a journal line carries one side. Both sides above zero
+// self-cancels, the totals still balance, the entry posts as a nollverifikat
+// and storno can never undo it. Every line schema whose rows reach the engine
+// carries the shared `isSingleSidedLine` refinement, so the dashboard, the v1
+// API and the MCP tools that post through v1 all refuse the shape with the
+// same Swedish message.
+describe('single-side line rule (#2551)', () => {
+  const BOTH_SIDES_MESSAGE = 'En verifikationsrad kan inte ha både debet och kredit nollskilda.'
+
+  function bothSidesIssue(result: { success: boolean; error?: { issues: Array<{ message: string }> } }) {
+    expect(result.success).toBe(false)
+    return result.error!.issues.find((i) => i.message === BOTH_SIDES_MESSAGE)
+  }
+
+  it('CreateJournalEntryLineSchema rejects a line with both sides above zero', () => {
+    const result = CreateJournalEntryLineSchema.safeParse({
+      account_number: '1930',
+      debit_amount: 100,
+      credit_amount: 100,
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('CreateJournalEntryLineSchema still accepts either single side, and a zero line', () => {
+    expect(
+      CreateJournalEntryLineSchema.safeParse({ account_number: '1930', debit_amount: 100, credit_amount: 0 }).success
+    ).toBe(true)
+    expect(
+      CreateJournalEntryLineSchema.safeParse({ account_number: '3001', debit_amount: 0, credit_amount: 100 }).success
+    ).toBe(true)
+    // A zero line is the balance check's business, not this rule's.
+    expect(
+      CreateJournalEntryLineSchema.safeParse({ account_number: '1930', debit_amount: 0, credit_amount: 0 }).success
+    ).toBe(true)
+  })
+
+  it('CreateJournalEntrySchema rejects the reported nollverifikat, which balances on totals', () => {
+    const entry = validJournalEntry({
+      lines: [
+        { account_number: '1930', debit_amount: 100, credit_amount: 100 },
+        { account_number: '1930', debit_amount: 50, credit_amount: 0 },
+        { account_number: '3001', debit_amount: 0, credit_amount: 50 },
+      ],
+    })
+    const result = CreateJournalEntrySchema.safeParse(entry)
+    const issue = bothSidesIssue(result)
+    expect(issue).toBeDefined()
+    // The issue names the offending line, not the whole entry.
+    const paths = result.success ? [] : result.error.issues.map((i) => i.path.join('.'))
+    expect(paths).toContain('lines.0')
+  })
+
+  it('CreateJournalEntrySchema rejects both sides even when they do not cancel', () => {
+    const result = CreateJournalEntrySchema.safeParse(
+      validJournalEntry({
+        lines: [
+          { account_number: '1930', debit_amount: 100, credit_amount: 40 },
+          { account_number: '3001', debit_amount: 0, credit_amount: 60 },
+        ],
+      })
+    )
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('CreateJournalEntrySchema still accepts a normal two-sided entry', () => {
+    expect(CreateJournalEntrySchema.safeParse(validJournalEntry()).success).toBe(true)
+  })
+
+  it('InlineRattelseLineSchema rejects a both-sides replacement line', () => {
+    const result = InlineRattelseLineSchema.safeParse({
+      account_number: '1930',
+      debit_amount: 100,
+      credit_amount: 100,
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('MarkInvoicePaidSchema rejects a both-sides payment line', () => {
+    const result = MarkInvoicePaidSchema.safeParse({
+      lines: [
+        { account_number: '1930', debit_amount: 100, credit_amount: 100 },
+        { account_number: '1510', debit_amount: 0, credit_amount: 0 },
+      ],
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  // The documented exception. parseCustomIssuanceLines owns the rule on this
+  // path and returns the targeted INVOICE_MARK_SENT_LINES_INVALID; a
+  // refinement here would fire first and downgrade that to a generic 400.
+  it('MarkInvoiceSentSchema leaves the rule to parseCustomIssuanceLines', () => {
+    const result = MarkInvoiceSentSchema.safeParse({
+      lines: [
+        { account_number: '1510', debit_amount: 125, credit_amount: 125 },
+        { account_number: '3001', debit_amount: 0, credit_amount: 100 },
+      ],
+    })
+    expect(result.success).toBe(true)
+    expect(
+      parseCustomIssuanceLines({
+        lines: [
+          { account_number: '1510', debit_amount: 125, credit_amount: 125 },
+          { account_number: '3001', debit_amount: 0, credit_amount: 100 },
+        ],
+      })
+    ).toMatchObject({ ok: false, error: 'invalid_lines', details: { reason: 'both_sides', index: 0 } })
+  })
+
+  it('MarkSupplierInvoicePaidSchema rejects a both-sides payment line', () => {
+    const result = MarkSupplierInvoicePaidSchema.safeParse({
+      lines: [
+        { account_number: '2440', debit_amount: 100, credit_amount: 100 },
+        { account_number: '1930', debit_amount: 0, credit_amount: 0 },
+      ],
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('MatchInvoiceSchema rejects a both-sides override line', () => {
+    const result = MatchInvoiceSchema.safeParse({
+      invoice_id: validUuid,
+      lines: [
+        { account_number: '1930', debit_amount: 100, credit_amount: 100 },
+        { account_number: '1510', debit_amount: 0, credit_amount: 0 },
+      ],
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('BulkBookSchema rejects a both-sides manual line', () => {
+    const result = BulkBookSchema.safeParse({
+      tx_ids: [validUuid],
+      entry_description: 'Samlingsverifikation',
+      manual_lines: [
+        { account_number: '1930', debit_amount: 100, credit_amount: 100 },
+        { account_number: '3001', debit_amount: 0, credit_amount: 100 },
+      ],
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('BulkBookSchema still accepts one-sided manual lines', () => {
+    const result = BulkBookSchema.safeParse({
+      tx_ids: [validUuid],
+      entry_description: 'Samlingsverifikation',
+      manual_lines: [
+        { account_number: '1930', debit_amount: 100, credit_amount: 0 },
+        { account_number: '3001', debit_amount: 0, credit_amount: 100 },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('OpeningBalanceExecuteSchema rejects a both-sides IB line', () => {
+    const result = OpeningBalanceExecuteSchema.safeParse({
+      fiscal_period_id: validUuid,
+      lines: [
+        { account_number: '1930', debit_amount: 100, credit_amount: 100 },
+        { account_number: '2081', debit_amount: 0, credit_amount: 0 },
+      ],
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+
+  it('CreateExpenseClaimSchema rejects a both-sides advanced line', () => {
+    const result = CreateExpenseClaimSchema.safeParse({
+      description: 'Taxi',
+      expense_date: '2026-03-15',
+      amount: 100,
+      expense_account: '5800',
+      lines: [
+        { account_number: '5800', debit_amount: 100, credit_amount: 100 },
+        { account_number: '2893', debit_amount: 0, credit_amount: 0 },
+      ],
+    })
+    expect(bothSidesIssue(result)).toBeDefined()
+  })
+})
 
 describe('CreateJournalEntrySchema', () => {
   it('accepts valid balanced entry', () => {
