@@ -217,6 +217,21 @@ export interface AccountMapping {
   vatTreatmentSuggested?: boolean
   vatTreatmentReviewed?: boolean
   requiresVatTreatmentReview?: boolean
+  /**
+   * The source system's own momskod for this account, verbatim (e.g. "MP1"),
+   * shown in the mapping step so the user can check the translation against
+   * the chart they know. Set whenever the provider reported one, translated
+   * or not.
+   */
+  providerVatCode?: string | null
+  /**
+   * providerVatCode translated to a treatment, or null when the code has no
+   * equivalent. A fact about the source account, not the row's current
+   * value: enrichAccountMappingsWithVat derives the suggestion from it every
+   * time the row returns to an identity mapping, so a remap and back does
+   * not lose it.
+   */
+  providerVatTreatment?: import('@/lib/vat/account-vat-treatment').AccountVatTreatment | null
 }
 
 /**
