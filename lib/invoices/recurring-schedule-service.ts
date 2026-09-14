@@ -49,6 +49,7 @@ import {
   exceedsInvoiceEmailRecipientLimit,
   invoiceEmailRecipientCount,
   resolveInvoiceEmailRecipients,
+  resolveInvoiceReplyTo,
 } from '@/lib/invoices/email-recipients'
 import {
   hasRequiredInvoicePaymentAccount,
@@ -571,7 +572,6 @@ async function sendInvoiceFromSchedule(
     configuredBcc: company.invoice_email_bcc_addresses,
     customerCc: invoice.customer.invoice_email_cc_addresses,
     customerBcc: invoice.customer.invoice_email_bcc_addresses,
-    legacyCc: company.email,
   })
   if (exceedsInvoiceEmailRecipientLimit(recipients)) {
     log.warn('invoice has too many email recipients; recurring schedule cannot auto-send', {
@@ -640,7 +640,9 @@ async function sendInvoiceFromSchedule(
     }),
   )
 
-  const emailData = { invoice: renderableInvoice, customer: invoice.customer, company }
+  // Cron send: no user to fall back to for Reply-To.
+  const replyTo = resolveInvoiceReplyTo(company)
+  const emailData = { invoice: renderableInvoice, customer: invoice.customer, company, replyTo }
   const filename = invoicePdfFilename({
     companyName: company.company_name,
     customerName: invoice.customer.name,
@@ -667,7 +669,7 @@ async function sendInvoiceFromSchedule(
       subject,
       html,
       text,
-      replyTo: company.email || undefined,
+      replyTo,
       fromName: company.company_name ?? undefined,
       from: await resolveInvoiceSender(supabase, companyId, company.company_name),
       filename,

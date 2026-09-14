@@ -160,6 +160,7 @@ import {
   exceedsInvoiceEmailRecipientLimit,
   invoiceEmailRecipientCount,
   resolveInvoiceEmailRecipients,
+  resolveInvoiceReplyTo,
 } from '@/lib/invoices/email-recipients'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { convertToInvoice } from '@/lib/invoices/convert-to-invoice'
@@ -3043,7 +3044,6 @@ async function commitSendInvoice(
     configuredBcc: company.invoice_email_bcc_addresses,
     customerCc: customer.invoice_email_cc_addresses,
     customerBcc: customer.invoice_email_bcc_addresses,
-    legacyCc: company.email || userEmail,
   })
   if (exceedsInvoiceEmailRecipientLimit(recipients)) {
     return {
@@ -3160,7 +3160,8 @@ async function commitSendInvoice(
     isCreditNote,
   })
 
-  const emailData = { invoice: renderableInvoice, customer, company: company as CompanySettings }
+  const replyTo = resolveInvoiceReplyTo(company as CompanySettings, userEmail)
+  const emailData = { invoice: renderableInvoice, customer, company: company as CompanySettings, replyTo }
   const subject = generateInvoiceEmailSubject(emailData)
   const html = generateInvoiceEmailHtml(emailData)
   const text = generateInvoiceEmailText(emailData)
@@ -3179,7 +3180,7 @@ async function commitSendInvoice(
       subject,
       html,
       text,
-      replyTo: company.email || undefined,
+      replyTo,
       fromName: company.company_name,
       from: await resolveInvoiceSender(supabase, companyId, company.company_name),
       filename,

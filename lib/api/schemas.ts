@@ -2624,6 +2624,9 @@ export const UpdateSettingsSchema = z.object({
   invoice_email_texts: InvoiceEmailTextsSchema.nullable().optional(),
   invoice_email_cc_addresses: invoiceEmailAddressList.nullable().optional(),
   invoice_email_bcc_addresses: invoiceEmailAddressList.nullable().optional(),
+  // Reply-To for invoice mail; null falls back to the company email, then the
+  // sending user. Owner/admin only, like the copy lists (settings route).
+  invoice_email_reply_to: invoiceEmailAddress.nullable().optional(),
   // Invoice branding: colors enforced as #RRGGBB at the DB level too
   // (see migration 20260526120200_invoice_branding.sql). The dedicated
   // /api/settings/invoicing/branding route is the primary path; these
