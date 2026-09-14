@@ -3,6 +3,7 @@
 import { usePathname } from 'next/navigation'
 import { useEffect } from 'react'
 import type { ReactNode } from 'react'
+import { SIEImportHoldBanner } from '@/components/import/SIEImportHoldBanner'
 
 /**
  * Picks the dashboard chrome container based on route. Extension workspaces
@@ -39,7 +40,12 @@ export function MainContainer({
   const isFullBleed = pathname.startsWith('/e/') || pathname.startsWith('/chat')
 
   if (isFullBleed) {
-    return <div key={companyId ?? ''} className="h-full">{children}</div>
+    return (
+      <div key={companyId ?? ''} className="h-full">
+        <SIEImportHoldBanner companyId={companyId} />
+        {children}
+      </div>
+    )
   }
 
   // The panel is the canvas (founder decision 2026-09-07, PR #2390): no
@@ -49,6 +55,7 @@ export function MainContainer({
   // the two numbers must stay in step with the CSS.
   return (
     <div key={companyId ?? ''} className="px-4 pb-8 pt-4 md:px-6">
+      <SIEImportHoldBanner companyId={companyId} />
       {children}
     </div>
   )
