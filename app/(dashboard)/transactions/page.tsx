@@ -42,6 +42,14 @@ import InboxZeroState from '@/components/transactions/InboxZeroState'
 import SkattekontoInboxCard from '@/components/transactions/SkattekontoInboxCard'
 import type { BookedDuplicateCandidate } from '@/lib/transactions/booking-duplicate-detection'
 import { mapWithConcurrency } from '@/lib/concurrency'
+import {
+  foldDeferredRetries,
+  runDeferredDuplicateRetries,
+  tallyBatchOutcomes,
+  type BatchCategorizeOutcome,
+  type DeferredDuplicateBooking,
+} from '@/lib/transactions/batch-duplicates'
+import type { BatchDuplicateRow } from '@/components/transactions/BatchDuplicateDialog'
 
 import { DialogLoadingSkeleton } from '@/components/ui/dialog-loading-skeleton'
 import type { BookingTemplate } from '@/lib/bookkeeping/booking-templates'
@@ -166,6 +174,10 @@ const SkattekontoBookDialog = dynamic(
 )
 const DuplicateBookingDialog = dynamic(
   () => import('@/components/transactions/DuplicateBookingDialog'),
+  { loading: DialogLoadingSkeleton },
+)
+const BatchDuplicateDialog = dynamic(
+  () => import('@/components/transactions/BatchDuplicateDialog'),
   { loading: DialogLoadingSkeleton },
 )
 const TemplatePicker = dynamic(() => import('@/components/transactions/TemplatePicker'), { loading: InlineDialogContentLoading })
@@ -613,6 +625,21 @@ export default function TransactionsPage() {
     candidate: BookedDuplicateCandidate
   } | null>(null)
   const [duplicateProcessing, setDuplicateProcessing] = useState(false)
+
+  // The same guard, asked once for a whole batch (#2488). The slot above holds
+  // ONE answer, so N rows booking in parallel wrote it N times: only the last
+  // writer's dialog rendered and every other flagged row landed in the batch's
+  // "misslyckades" count with nothing said about why. A batch row therefore
+  // parks its candidate and its force-bound retry in this ref instead of
+  // opening a dialog, and handleBatchCategorize asks once when the pool has
+  // settled. A ref, not state: the collector is written from inside the
+  // concurrent pool and read straight after it, and a re-render per flagged
+  // row would only reshuffle the list under the running batch.
+  const batchDuplicatesRef = useRef<DeferredDuplicateBooking[]>([])
+  const [batchDuplicateRows, setBatchDuplicateRows] = useState<BatchDuplicateRow[] | null>(null)
+  // Resolves when the user answers the batch dialog, so the batch tail can
+  // await the answer and narrate the whole thing in one toast.
+  const batchDuplicateAnswerRef = useRef<((confirmed: boolean) => void) | null>(null)
 
   // Dashboard layout already resolved the effective entity type from settings.
   const entityType = company?.entity_type ?? 'enskild_firma'
@@ -1945,8 +1972,10 @@ export default function TransactionsPage() {
     // happened". A 2xx with a null journal_entry_id is a real success (e.g. an
     // already-categorized flag flip), so the id alone cannot carry that signal:
     // the batch aggregate would count the row as failed after finishBooking
-    // already animated it out of the inbox.
-  }): Promise<{ ok: boolean; journalEntryId: string | null }> {
+    // already animated it out of the inbox. deferredDuplicate is the third
+    // state: a silent row the duplicate guard flagged, parked for the batch's
+    // single confirmation and therefore neither booked nor failed.
+  }): Promise<BatchCategorizeOutcome> {
     const { id, isBusiness, category, vatTreatment, accountOverride, templateId, counterpartyTemplateId, inboxItemId, dimensions, vatAmount, confirmNoMatch, force, expectedDuplicateJournalEntryId, silent, narration } = args
     try {
       setProcessingId(id)
@@ -2143,16 +2172,22 @@ export default function TransactionsPage() {
           // the already-booked sibling and let the user confirm. "Bokför ändå"
           // re-runs with force bound to this candidate (server re-detects it).
           const candidate = result.error.details.candidate as BookedDuplicateCandidate
-          setDuplicateWarning({
-            transactionId: id,
-            retry: () =>
-              runCategorize({
-                ...args,
-                force: true,
-                expectedDuplicateJournalEntryId: candidate.journal_entry_id,
-              }),
-            candidate,
-          })
+          const retry = () =>
+            runCategorize({
+              ...args,
+              force: true,
+              expectedDuplicateJournalEntryId: candidate.journal_entry_id,
+            })
+          if (silent) {
+            // A batch row: park it. One modal slot cannot answer N parallel
+            // questions, and the rows that lost the race were counted as
+            // failures with no explanation (#2488). handleBatchCategorize asks
+            // once, with every candidate listed, after the pool settles.
+            batchDuplicatesRef.current.push({ transactionId: id, candidate, retry })
+            setProcessingId(null)
+            return { ok: false, journalEntryId: null, deferredDuplicate: true }
+          }
+          setDuplicateWarning({ transactionId: id, retry, candidate })
           setProcessingId(null)
           return { ok: false, journalEntryId: null }
         }
@@ -3802,8 +3837,40 @@ export default function TransactionsPage() {
     exitBatchMode()
   }
 
+  /**
+   * Show the parked duplicate candidates and resolve with the user's answer,
+   * so the batch tail can await it and still narrate the outcome once.
+   */
+  function askBatchDuplicates(deferred: DeferredDuplicateBooking[]): Promise<boolean> {
+    const rows: BatchDuplicateRow[] = deferred.map((item) => {
+      const tx = transactions.find((t) => t.id === item.transactionId)
+      return {
+        transactionId: item.transactionId,
+        date: tx?.date ?? null,
+        description: tx?.description ?? null,
+        amount: tx?.amount ?? null,
+        currency: tx?.currency ?? null,
+        candidate: item.candidate,
+      }
+    })
+    return new Promise<boolean>((resolve) => {
+      batchDuplicateAnswerRef.current = resolve
+      setBatchDuplicateRows(rows)
+    })
+  }
+
+  function answerBatchDuplicates(confirmed: boolean) {
+    setBatchDuplicateRows(null)
+    const resolve = batchDuplicateAnswerRef.current
+    batchDuplicateAnswerRef.current = null
+    resolve?.(confirmed)
+  }
+
   async function handleBatchCategorize(category: TransactionCategory, vatTreatment?: VatTreatment) {
     const ids = Array.from(selectedIds)
+    // Fresh collector per batch: rows the guard flags park here instead of
+    // fighting over the single-row modal slot.
+    batchDuplicatesRef.current = []
     setBatchProgress({ done: 0, total: ids.length })
     let completed = 0
     const results = await mapWithConcurrency(ids, BATCH_CONCURRENCY, async (id) => {
@@ -3827,13 +3894,30 @@ export default function TransactionsPage() {
     // Success is the server's 2xx (outcome.ok), not a non-null journal entry
     // id: a flag-flip booking returns 200 with a null id and must not be
     // narrated as "misslyckades" after finishBooking already animated it out.
-    const successCount = results.filter((r) => r.ok).length
-    const failedCount = ids.length - successCount
+    // Rows the duplicate guard flagged are neither: they are held back for the
+    // one confirmation below.
+    let tally = tallyBatchOutcomes(ids, results)
+    const deferred = batchDuplicatesRef.current
+    batchDuplicatesRef.current = []
+    if (deferred.length > 0 && (await askBatchDuplicates(deferred))) {
+      // "Bokför alla ändå": replay every parked retry through the same bounded
+      // pool. Each carries its own force binding to the candidate the user just
+      // reviewed, so the server re-detects and a stale id cannot wave the guard
+      // away. The retry pass replaces the held-back count, never adds to it.
+      setBatchProgress({ done: 0, total: deferred.length })
+      const retried = await runDeferredDuplicateRetries(
+        deferred,
+        BATCH_CONCURRENCY,
+        (done, total) => setBatchProgress({ done, total }),
+      )
+      setBatchProgress(null)
+      tally = foldDeferredRetries(tally, retried)
+    }
     // One Ångra-alla for the whole batch: it runs the same storno endpoint as
     // the per-row toast's Ångra, which requires a posted journal entry, so
     // only rows that actually got one are undoable. A successful flag-flip
     // row (ok, null id) has no verifikat to reverse.
-    const undoableIds = ids.filter((_, i) => results[i].ok && results[i].journalEntryId)
+    const undoableIds = tally.undoableIds
     const undoAllAction =
       undoableIds.length > 0 ? (
         <ToastAction
@@ -3843,20 +3927,30 @@ export default function TransactionsPage() {
           {t('batch_undo_all')}
         </ToastAction>
       ) : undefined
-    if (failedCount === 0) {
+    if (tally.failedCount === 0 && tally.deferredCount === 0) {
       toast({
         title: t('batch_done_title'),
-        description: t('batch_categorize_done_description', { count: successCount }),
+        description: t('batch_categorize_done_description', { count: tally.successCount }),
         action: undoAllAction,
       })
     } else {
+      // Held-back rows are the user's own choice, not a failure: they get a
+      // sentence of their own and only a real failure turns the toast
+      // destructive.
+      const booked =
+        tally.failedCount > 0
+          ? t('batch_categorize_partial_description', {
+              success: tally.successCount,
+              failed: tally.failedCount,
+            })
+          : t('batch_categorize_done_description', { count: tally.successCount })
       toast({
         title: t('batch_partial_title'),
-        description: t('batch_categorize_partial_description', {
-          success: successCount,
-          failed: failedCount,
-        }),
-        variant: 'destructive',
+        description:
+          tally.deferredCount > 0
+            ? `${booked}. ${t('batch_categorize_duplicates_held_back', { count: tally.deferredCount })}`
+            : booked,
+        ...(tally.failedCount > 0 ? { variant: 'destructive' as const } : {}),
         action: undoAllAction,
       })
     }
@@ -5069,6 +5163,16 @@ export default function TransactionsPage() {
             setDuplicateProcessing(false)
           }
         }}
+      />}
+
+      {/* The batch answer to the same guard: one dialog for every flagged row
+          in the selection, instead of N dialogs fighting over one slot. Both
+          answers resolve the promise handleBatchCategorize is awaiting, so the
+          batch reports its outcome once either way. */}
+      {batchDuplicateRows && <BatchDuplicateDialog
+        rows={batchDuplicateRows}
+        onCancel={() => answerBatchDuplicates(false)}
+        onBookAll={() => answerBatchDuplicates(true)}
       />}
 
     </div>
