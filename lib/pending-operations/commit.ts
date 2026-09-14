@@ -49,6 +49,7 @@ import { resolveDefaultPaymentTerms } from '@/lib/customers/default-payment-term
 import {
   normalizeVatRateToDecimal,
   normalizeVatRateToFraction,
+  treatmentDeductsInputVat,
 } from '@/lib/vat/supplier-invoice-line-checks'
 import {
   createInvoicePaymentJournalEntry,
@@ -4877,6 +4878,11 @@ async function commitCreateSupplierInvoiceFromInbox(
   }
 
   const reverseCharge = vatTreatment === 'reverse_charge'
+  // Treatments under which no seller VAT may reach the books: reverse charge
+  // (the buyer self-assesses on 2614/2645) and exempt / export, where the
+  // supplier charged no Swedish moms at all so there is nothing deductible
+  // (issue #2553). Both take the same header and item treatment below.
+  const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
   // Omvänd skattskyldighet: the registration entry credits 2440 with the sum
   // of the line nets (the fiktiv 2614/2645 pair nets to zero), so that sum is
   // the only payable the reskontra can carry. Staging registers the net since
@@ -4885,10 +4891,13 @@ async function commitCreateSupplierInvoiceFromInbox(
   // reported invoice) and would leave remaining_amount 1149 against 919.20 in
   // the GL: never trust a staged header under reverse charge. VAT the seller
   // charged on a reverse-charge invoice is not deductible and is not booked.
+  // An exempt or export op is the same shape: the items below carry no VAT,
+  // so a staged header that still carries some would leave the reskontra
+  // above what the registration entry credits on 2440.
   const itemNetSum = rawItems.reduce((sum, item) => sum + (finite(item.line_total) ?? 0), 0)
-  const subtotalRounded = reverseCharge ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
-  const vatAmountRounded = reverseCharge ? 0 : Math.round(vatAmount * 100) / 100
-  const totalRounded = reverseCharge ? subtotalRounded : Math.round(total * 100) / 100
+  const subtotalRounded = noDeductibleSellerVat ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
+  const vatAmountRounded = noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100
+  const totalRounded = noDeductibleSellerVat ? subtotalRounded : Math.round(total * 100) / 100
   // Fed the already-rounded figures so a SEK invoice (rate 1) gets
   // total_sek === total to the öre instead of the two roundings disagreeing on
   // an exact-half value. The old `exchangeRate ? … : null` guard left all three
@@ -4991,12 +5000,18 @@ async function commitCreateSupplierInvoiceFromInbox(
   // the registration JE's 2614/2645 self-assessed leg lines up with rutor
   // 20-24 / 48 instead of double-counting input VAT into 2641. Tampered
   // params can't smuggle non-zero VAT into the items table.
+  //
+  // Exempt and export invoices take the same zeroing (issue #2553): the
+  // supplier charged no Swedish moms, so a rate that came from OCR, from a
+  // stale staged op or from the column's own 0.25 default has nothing to
+  // deduct behind it. The engine refuses to book 2641 for these treatments
+  // either way; storing 0 keeps the row honest about what the underlag says.
   const itemInserts = rawItems.map((item, idx) => {
     // Normalize percent-shaped rates (25 -> 0.25) and snap to the statutory
     // set: rows staged before the issue #310 fix (or tampered params) carry
     // percent integers, and inserting one books 2500 % VAT downstream.
-    const vatRate = reverseCharge ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
-    const vatAmt = reverseCharge ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
+    const vatRate = noDeductibleSellerVat ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
+    const vatAmt = noDeductibleSellerVat ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
     return {
       supplier_invoice_id: invoice.id,
       sort_order: idx,

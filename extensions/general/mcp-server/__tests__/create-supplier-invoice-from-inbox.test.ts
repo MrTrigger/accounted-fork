@@ -1197,6 +1197,49 @@ describe('gnubok_create_supplier_invoice_from_inbox: reverse charge registers th
     expect(result.preview.warning).toBeUndefined()
   })
 
+  // Issue #2553: exempt and export carry no Swedish moms either, so the
+  // staged op must show what the executor will write: no line VAT, the net as
+  // payable, and nothing headed for 2641.
+  for (const treatment of ['exempt', 'export'] as const) {
+    it(`vat_treatment_override ${treatment} stages vat 0 on every line and the net as payable`, async () => {
+      const inserts: Array<Record<string, unknown>> = []
+      const supabase = makeMock({
+        inbox: {
+          id: `inbox-${treatment}`,
+          status: 'received',
+          extracted_data: grossWithVat,
+          matched_supplier_id: 'supplier-1',
+          created_supplier_invoice_id: null,
+          document_id: `doc-${treatment}`,
+        },
+        inserts,
+      })
+      const tool = tools.find((t) => t.name === 'gnubok_create_supplier_invoice_from_inbox')!
+      const result = (await tool.execute(
+        { inbox_item_id: `inbox-${treatment}`, vat_treatment_override: treatment },
+        'company-1', 'user-1', supabase,
+      )) as { staged: boolean; preview: Record<string, unknown> }
+
+      expect(result.staged).toBe(true)
+      const params = inserts[0].params as {
+        vat_treatment: string
+        subtotal: number
+        vat_amount: number
+        total: number
+        items: Array<{ vat_rate: number; vat_amount: number }>
+      }
+      expect(params.vat_treatment).toBe(treatment)
+      expect(params.subtotal).toBe(919.2)
+      expect(params.vat_amount).toBe(0)
+      expect(params.total).toBe(919.2)
+      expect(params.items[0].vat_rate).toBe(0)
+      expect(params.items[0].vat_amount).toBe(0)
+      // The approver is told the underlag carried VAT that is not deductible.
+      expect((result.preview.payable_recomputed as { reason: string }).reason).toBe(treatment)
+      expect(String(result.preview.warning)).toMatch(/no Swedish moms/i)
+    })
+  }
+
   it('a domestic invoice keeps the gross as payable and no reverse-charge warning', async () => {
     const inserts: Array<Record<string, unknown>> = []
     const supabase = makeMock({
