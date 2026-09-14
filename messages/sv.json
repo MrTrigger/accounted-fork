@@ -6825,6 +6825,7 @@
     "type_eu_business": "EU-företag",
     "type_non_eu_business": "Utanför EU",
     "verified": "Verifierad",
+    "col_customer_number": "Kundnr",
     "col_name": "Namn",
     "col_type": "Typ",
     "col_identifier": "Org.nr / Personnummer",
