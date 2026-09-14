@@ -16,9 +16,10 @@
  *   5. Posts the reverse journal entry via createCreditNoteJournalEntry
  *      whenever the original sale reached the ledger: always under
  *      faktureringsmetoden, and under kontantmetoden once the original was
- *      paid (its payment verifikat booked revenue + utgående moms, so the
- *      credit must reverse them). An unpaid, never-booked kontantmetod
- *      invoice books nothing: recognition still waits for cash.
+ *      paid or otherwise booked (its payment verifikat booked revenue +
+ *      utgående moms, so the credit must reverse them). A kontantmetod
+ *      invoice carrying no booking signal at all books nothing: recognition
+ *      still waits for cash.
  *   6. Emits credit_note.created.
  *
  * Idempotent (mandatory Idempotency-Key). Dry-runnable. The credit-note row
@@ -79,7 +80,7 @@ registerEndpoint({
   path: '/api/v1/companies/:companyId/invoices/:id/credit',
   summary: 'Issue a credit note (kreditfaktura) against an invoice.',
   description:
-    'Creates a credit note referencing the original invoice. The credit note carries reversed-sign amounts (matching the original line for line) and gets invoice_number=KR-<original>. The original invoice transitions to status=credited. Posts a reversing journal entry (Debit revenue + Debit output VAT / Credit AR 1510) whenever the original sale reached the ledger: always under faktureringsmetoden, and under kontantmetoden once the original was paid. Only a still-unpaid, never-booked kontantmetod invoice is credited without an entry, because nothing has been recognised yet. The credit note is dated today (Europe/Stockholm); a locked or closed period returns 400 INVOICE_CREDIT_PERIOD_LOCKED. Idempotent and dry-runnable. Emits credit_note.created.',
+    'Creates a credit note referencing the original invoice. The credit note carries reversed-sign amounts (matching the original line for line) and gets invoice_number=KR-<original>. The original invoice transitions to status=credited. Posts a reversing journal entry (Debit revenue + Debit output VAT / Credit AR 1510) whenever the original sale reached the ledger: always under faktureringsmetoden, and under kontantmetoden once the original was paid or otherwise booked (status paid, a linked verifikat, a payment date, or a non-zero paid amount). Only a kontantmetod invoice carrying none of those signals is credited without an entry, because nothing has been recognised yet. The credit note is dated today (Europe/Stockholm); a locked or closed period returns 400 INVOICE_CREDIT_PERIOD_LOCKED. Idempotent and dry-runnable. Emits credit_note.created.',
   useWhen:
     'You need to legally cancel an issued invoice (ML 17 kap 22-23§). The original invoice cannot be edited once issued: credit it and reissue corrected.',
   doNotUseFor:
@@ -88,7 +89,7 @@ registerEndpoint({
     'Idempotency-Key is mandatory. Retried credits with the same key replay the cached response: no duplicate credit note is created.',
     'The original invoice must be in sent / paid / overdue status. Drafts, cancelled invoices, and already-credited invoices are rejected with specific error codes.',
     'Credit-note items mirror the original\'s lines with negated values. To credit only part of an invoice (line-level), credit the full invoice first then reissue with the corrected lines.',
-    'Under kontantmetoden a journal entry is posted only when the original was already booked (paid): crediting a still-unpaid invoice creates the row without an entry, and no `JOURNAL_ENTRY_NOT_POSTED` warning is emitted (the deferral is correct, not a failure). Use the dry run to read `would_create_journal_entry` before committing.',
+    'Under kontantmetoden a journal entry is posted only when the original carries a booking signal (status paid, a linked verifikat, a payment date, or a non-zero paid amount): crediting an invoice with none of those creates the row without an entry, and no `JOURNAL_ENTRY_NOT_POSTED` warning is emitted (the deferral is correct, not a failure). Use the dry run to read `would_create_journal_entry` before committing.',
   ],
   example: {
     request: { reason: 'Felaktig kund' },

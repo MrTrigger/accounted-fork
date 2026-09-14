@@ -40,12 +40,14 @@ async function stage(
 }
 
 describe('gnubok_credit_invoice: registration', () => {
-  it('stays within the 280-char description budget and names both methods', () => {
+  it('stays within the 280-char budget and says when the reversal posts', () => {
     expect(tool().description.length).toBeLessThanOrEqual(280)
     expect(tool().description).toMatch(/stage/i)
     // The old description promised a reversal under accrual only, which is
     // what made the agent tell cash-method users nothing would be booked.
     expect(tool().description).not.toMatch(/\(accrual\)/)
+    // The condition, not the method name: the reversal follows the ledger.
+    expect(tool().description).toMatch(/reached the ledger/i)
     expect(tool().description).toMatch(/kontantmetoden/i)
     expect(OPERATION_RISK_TIERS.credit_invoice).toBe('high')
   })
