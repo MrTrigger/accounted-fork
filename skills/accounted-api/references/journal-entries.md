@@ -271,14 +271,14 @@ Example response `200`:
 **Cancel an uncommitted draft verifikation.**
 `scope:bookkeeping:write · risk:low · idempotent · dry-run`
 
-Flips a draft journal entry to status=cancelled through the engine. A draft holds no voucher_number, so cancelling one leaves NO gap in the verifikationsserie (BFNAR 2013:2) and needs no gap explanation. The header row survives as cancelled evidence rather than being deleted; its lines survive with it. Posted and reversed entries are refused with 409 CANNOT_CANCEL_NON_DRAFT: they are immutable per BFL 5 kap 2 § and are undone with /reverse (storno) instead. Idempotent: cancelling an already-cancelled draft returns 200 with the same entry.
+Flips a draft journal entry to status=cancelled through the engine. A draft holds no voucher_number, so cancelling one leaves NO gap in the löpande nummerordning BFL 5 kap 7 § requires, and therefore needs no documented gap explanation. The header row survives as cancelled evidence rather than being deleted; its lines survive with it, and both stay archived for the 7 years BFL 7 kap requires. Posted and reversed entries are refused with 409 CANNOT_CANCEL_NON_DRAFT: a posted verifikation may only be undone through a rättelse that keeps the original visible and records who corrected it and when (BFL 5 kap 5 §), which is what /reverse (storno) does. Idempotent: cancelling an already-cancelled draft returns 200 with the same entry.
 
 **Use when:** A draft created via POST /journal-entries will never be committed: a duplicate, an abandoned import, a draft the agent decided against. Stranded drafts block the year-end close (DRAFT_ENTRIES blocker), so clear them here instead of leaving them for a human in the app.
 **Do not use for:** Undoing a posted verifikat (use POST /{id}/reverse for storno, or /{id}/correct to replace it). Editing a draft: there is no v1 draft-edit endpoint; cancel and create a new draft.
 
 **Pitfalls:**
 - Only status=draft can be cancelled. Anything posted returns 409 CANNOT_CANCEL_NON_DRAFT with details.currentStatus; storno it instead.
-- No voucher number is released or burned: drafts never held one, so there is nothing to explain under BFNAR 2013:2. The cancelled header stays visible via GET /{id} and via the list endpoint with status=cancelled.
+- No voucher number is released or burned: drafts never held one, so the unbroken series BFL 5 kap 7 § requires is untouched and there is no gap to document. The cancelled header stays visible via GET /{id} and via the list endpoint with status=cancelled.
 - A draft in a locked or closed period, or behind the company lock date, returns PERIOD_LOCKED: unlock the period first rather than retrying.
 - Idempotency-Key is optional here (unlike the other journal-entries writes) because the call is idempotent by construction: a second DELETE returns the same cancelled entry.
 
@@ -345,7 +345,7 @@ Example response `200`:
 
 Atomically advances the voucher series and flips the draft to posted. The voucher_number is the smallest integer not yet used in (fiscal_period_id, voucher_series); a failed commit does NOT burn the number.
 
-**Use when:** You created a draft via POST /journal-entries and now want to post it to the books. After commit the entry is immutable per BFL 5 kap 2 §; corrections require /reverse or /correct.
+**Use when:** You created a draft via POST /journal-entries and now want to post it to the books. After commit the entry can only be changed through a rättelse that keeps the original visible and records who corrected it and when (BFL 5 kap 5 §): corrections require /reverse or /correct.
 **Do not use for:** Re-committing an already-posted entry (returns 409). Committing across companies: the URL companyId must match the draft's company.
 
 **Pitfalls:**

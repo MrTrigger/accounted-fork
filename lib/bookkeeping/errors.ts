@@ -224,9 +224,11 @@ export class CannotEditNonDraftError extends Error {
  * Raised when a cancel is attempted on an entry that is not a draft.
  *
  * Only drafts can be cancelled: they hold no voucher_number, so removing one
- * leaves the verifikationsserie unbroken. A posted entry carries a number and
- * must be reversed (storno) so the series stays gap-free per BFL 5 kap 5-7
- * and BFNAR 2013:2. The DB immutability trigger cannot make this call on its
+ * leaves the verifikationsserie unbroken (BFL 5 kap 7 §). A posted entry
+ * carries a number and may only be undone through a rättelse, never
+ * overwritten: BFL 5 kap 5 § keeps the original post visible and records who
+ * corrected it and when, which is what storno does. The DB immutability
+ * trigger cannot make this call on its
  * own: it permits posted -> cancelled for the orphaned-voucher compensation
  * path, which pairs the cancel with a voucher-gap explanation.
  */

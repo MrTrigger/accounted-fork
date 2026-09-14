@@ -629,8 +629,9 @@ export async function updateDraftEntry(
  * that is not a commit.
  *
  * A draft holds no voucher_number (drafts are outside the verifikationsserie),
- * so cancelling one leaves no löpnummer gap and needs no gap explanation
- * (BFNAR 2013:2 p. 1.9). The header row is kept as `cancelled` rather than
+ * so cancelling one leaves no löpnummer gap in the sense BFL 5 kap 7 § means
+ * (verifikationsnummer in unbroken löpande nummerordning) and therefore needs
+ * no documented gap explanation. The header row is kept as `cancelled` rather than
  * deleted: the immutability trigger's own instruction ("Use cancelled status
  * instead") and the same reason reverseEntry keeps its failed reversal headers
  * around, which is that a row someone looked at should stay explainable.

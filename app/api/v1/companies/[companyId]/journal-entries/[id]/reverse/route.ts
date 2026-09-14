@@ -2,7 +2,8 @@
  * POST /api/v1/companies/{companyId}/journal-entries/{id}/reverse
  *
  * Storno: posts a reversing journal entry that nullifies the original.
- * The original stays in place (posted entries are immutable per BFL 5 kap 2 §);
+ * The original stays in place: a posted verifikation is corrected through a
+ * rättelse that keeps it visible, never overwritten (BFL 5 kap 5 §);
  * the reversal carries `reverses_id` back to it and the original is annotated
  * with `reversed_by_id`. Both entries remain visible in the verifikationsserie.
  *
