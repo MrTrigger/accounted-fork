@@ -2362,7 +2362,7 @@
     "body_label": "Body text",
     "signoff_label": "Sign-off",
     "placeholders_help": "Available placeholders (unknown ones are left as text):",
-    "firstname_note": "The first-name placeholder uses the first word of the customer's name.",
+    "firstname_note": "The förnamn placeholder uses the contact person's first name. Without a contact person it uses a private customer's first name, or a company's full name.",
     "toast_save_failed": "Could not save"
   },
   "settings_reminder_texts": {
@@ -2380,11 +2380,14 @@
     "toast_save_failed": "Could not save"
   },
   "settings_invoice_email_recipients": {
-    "heading": "Invoice email recipients",
-    "description": "These recipients are added automatically to every invoice email. You can add more recipients when sending an individual invoice.",
+    "heading": "Reply address and copies for invoice emails",
+    "description": "The reply address is where a customer's reply to an invoice email goes. The copy recipients are added automatically to every invoice email; you can add more recipients when sending an individual invoice.",
+    "reply_to_label": "Reply address (Reply-To)",
+    "reply_to_placeholder": "invoices@company.com",
+    "reply_to_hint": "A customer's reply to \"Reply directly to this email\" goes here. Leave it empty to use the company email address, or failing that the address of whoever sends the invoice.",
     "cc_label": "Fixed copy (CC)",
     "cc_placeholder": "info@company.com",
-    "cc_hint": "Enter one address per line, or separate addresses with commas or semicolons.",
+    "cc_hint": "Enter one address per line, or separate addresses with commas or semicolons. An empty list means no fixed copy is sent.",
     "bcc_label": "Fixed blind copy (BCC)",
     "bcc_placeholder": "archive@company.com",
     "bcc_hint": "BCC recipients are hidden from the customer and other recipients.",
@@ -2392,12 +2395,12 @@
     "invalid_description": "Check the address {address}.",
     "too_many_title": "Too many recipients",
     "too_many_description": "You can enter at most {count} fixed CC and BCC addresses in total.",
-    "save_failed": "Could not save the recipients",
-    "saved_title": "Recipients saved",
-    "saved_description": "The fixed CC and BCC recipients will be used for the next invoice email.",
-    "save_failed_title": "Could not save recipients",
+    "save_failed": "Could not save the settings",
+    "saved_title": "Saved",
+    "saved_description": "The reply address and fixed copy recipients will be used for the next invoice email.",
+    "save_failed_title": "Could not save",
     "saving": "Saving...",
-    "save": "Save recipients"
+    "save": "Save"
   },
   "settings_invoice_sender_domain": {
     "heading": "Invoice email sender",

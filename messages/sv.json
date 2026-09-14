@@ -2362,7 +2362,7 @@
     "body_label": "Brödtext",
     "signoff_label": "Avslutning",
     "placeholders_help": "Tillgängliga platshållare (okända lämnas kvar som text):",
-    "firstname_note": "Platshållaren förnamn använder första ordet i kundens namn.",
+    "firstname_note": "Platshållaren förnamn använder kontaktpersonens förnamn. Saknas kontaktperson används privatpersonens förnamn, för företag hela kundnamnet.",
     "toast_save_failed": "Kunde inte spara"
   },
   "settings_reminder_texts": {
@@ -2380,11 +2380,14 @@
     "toast_save_failed": "Kunde inte spara"
   },
   "settings_invoice_email_recipients": {
-    "heading": "Mottagare vid fakturautskick",
-    "description": "Dessa mottagare läggs automatiskt till på varje fakturamejl. Du kan komplettera listan när en enskild faktura skickas.",
+    "heading": "Svarsadress och kopior vid fakturautskick",
+    "description": "Svarsadressen är dit kundens svar på ett fakturamejl går. Kopiemottagarna läggs automatiskt till på varje fakturamejl; du kan komplettera listan när en enskild faktura skickas.",
+    "reply_to_label": "Svarsadress (Reply-To)",
+    "reply_to_placeholder": "faktura@foretag.se",
+    "reply_to_hint": "Kundens svar på \"Svara direkt på detta mejl\" går hit. Lämnas fältet tomt används företagets e-postadress, annars adressen för den som skickar fakturan.",
     "cc_label": "Fast kopia (CC)",
     "cc_placeholder": "info@foretag.se",
-    "cc_hint": "En adress per rad, eller separera med komma eller semikolon.",
+    "cc_hint": "En adress per rad, eller separera med komma eller semikolon. Tom lista betyder att ingen fast kopia skickas.",
     "bcc_label": "Fast dold kopia (BCC)",
     "bcc_placeholder": "arkiv@foretag.se",
     "bcc_hint": "BCC-mottagare visas inte för kunden eller övriga mottagare.",
@@ -2392,12 +2395,12 @@
     "invalid_description": "Kontrollera adressen {address}.",
     "too_many_title": "För många mottagare",
     "too_many_description": "Du kan ange högst {count} fasta CC- och BCC-adresser totalt.",
-    "save_failed": "Kunde inte spara mottagarna",
-    "saved_title": "Mottagare sparade",
-    "saved_description": "De fasta CC- och BCC-mottagarna används vid nästa fakturautskick.",
-    "save_failed_title": "Kunde inte spara mottagare",
+    "save_failed": "Kunde inte spara inställningarna",
+    "saved_title": "Sparat",
+    "saved_description": "Svarsadressen och de fasta kopiemottagarna används vid nästa fakturautskick.",
+    "save_failed_title": "Kunde inte spara",
     "saving": "Sparar...",
-    "save": "Spara mottagare"
+    "save": "Spara"
   },
   "settings_invoice_sender_domain": {
     "heading": "Avsändare vid fakturautskick",

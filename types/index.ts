@@ -536,11 +536,13 @@ export interface CompanySettings {
 
   // Editable invoice email texts. null = all defaults.
   invoice_email_texts: InvoiceEmailTexts | null
-  // Fixed invoice-email recipients. null means the company has not configured
-  // the setting yet and keeps the historical automatic CC fallback. [] is an
-  // explicit choice to send no copies.
+  // Fixed invoice-email recipients. null and [] both mean no fixed copies
+  // (the company-email fallback ended with migration 20260914110000).
   invoice_email_cc_addresses?: string[] | null
   invoice_email_bcc_addresses?: string[] | null
+  // Reply-To for customer-facing invoice mail. null falls back to the company
+  // email, then to the sending user (resolveInvoiceReplyTo).
+  invoice_email_reply_to?: string | null
 
   // Automation
   send_invoice_reminders: boolean
