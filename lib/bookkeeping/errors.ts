@@ -27,6 +27,7 @@ export const CANNOT_REVERSE_NON_POSTED = 'CANNOT_REVERSE_NON_POSTED' as const
 export const CANNOT_REVERSE_STORNO = 'CANNOT_REVERSE_STORNO' as const
 export const CANNOT_CORRECT_NON_POSTED = 'CANNOT_CORRECT_NON_POSTED' as const
 export const CANNOT_EDIT_NON_DRAFT = 'CANNOT_EDIT_NON_DRAFT' as const
+export const CANNOT_CANCEL_NON_DRAFT = 'CANNOT_CANCEL_NON_DRAFT' as const
 export const ENTRY_ALREADY_REVERSED = 'ENTRY_ALREADY_REVERSED' as const
 export const CURRENCY_REVALUATION_ALREADY_EXISTS = 'CURRENCY_REVALUATION_ALREADY_EXISTS' as const
 export const INVALID_MAPPING_RESULT = 'INVALID_MAPPING_RESULT' as const
@@ -216,6 +217,24 @@ export class CannotEditNonDraftError extends Error {
   constructor(public readonly currentStatus: string) {
     super('Only draft entries can be edited')
     this.name = 'CannotEditNonDraftError'
+  }
+}
+
+/**
+ * Raised when a cancel is attempted on an entry that is not a draft.
+ *
+ * Only drafts can be cancelled: they hold no voucher_number, so removing one
+ * leaves the verifikationsserie unbroken. A posted entry carries a number and
+ * must be reversed (storno) so the series stays gap-free per BFL 5 kap 5-7
+ * and BFNAR 2013:2. The DB immutability trigger cannot make this call on its
+ * own: it permits posted -> cancelled for the orphaned-voucher compensation
+ * path, which pairs the cancel with a voucher-gap explanation.
+ */
+export class CannotCancelNonDraftError extends Error {
+  readonly code = CANNOT_CANCEL_NON_DRAFT
+  constructor(public readonly currentStatus: string) {
+    super('Only draft entries can be cancelled')
+    this.name = 'CannotCancelNonDraftError'
   }
 }
 
@@ -432,6 +451,7 @@ export function isBookkeepingError(err: unknown): boolean {
     err instanceof CannotReverseStornoError ||
     err instanceof CannotCorrectNonPostedError ||
     err instanceof CannotEditNonDraftError ||
+    err instanceof CannotCancelNonDraftError ||
     err instanceof EntryAlreadyReversedError ||
     err instanceof CurrencyRevaluationAlreadyExistsError ||
     err instanceof InvalidMappingResultError ||
@@ -610,6 +630,19 @@ export function bookkeepingErrorResponse(err: unknown): NextResponse | null {
   }
 
   if (err instanceof CannotEditNonDraftError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: { currentStatus: err.currentStatus },
+        },
+      },
+      { status: 409 }
+    )
+  }
+
+  if (err instanceof CannotCancelNonDraftError) {
     return NextResponse.json(
       {
         error: {

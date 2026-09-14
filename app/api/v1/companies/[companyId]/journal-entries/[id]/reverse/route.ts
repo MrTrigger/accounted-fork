@@ -53,7 +53,7 @@ registerEndpoint({
   useWhen:
     'A posted entry needs to be cancelled and there is no replacement coming: e.g. a duplicate booking, an entry posted to the wrong period. Use /correct instead when you need to replace the entry with corrected lines.',
   doNotUseFor:
-    'Cancelling a draft (drafts have no voucher_number; cancel via the dashboard). Reversing an already-reversed entry (returns ENTRY_ALREADY_REVERSED).',
+    'Cancelling a draft (drafts have no voucher_number: use DELETE /journal-entries/{id}). Reversing an already-reversed entry (returns ENTRY_ALREADY_REVERSED).',
   pitfalls: [
     'Idempotency-Key is mandatory.',
     'reversal_date defaults to today; the reversal is posted in the fiscal period covering that date. If today\'s period is locked the call returns PERIOD_LOCKED.',

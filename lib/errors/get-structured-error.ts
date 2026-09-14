@@ -25,6 +25,7 @@ import {
 import {
   AccountsNotInChartError,
   BookkeepingDatabaseError,
+  CannotCancelNonDraftError,
   CannotCorrectNonPostedError,
   CannotReverseNonPostedError,
   CannotReverseStornoError,
@@ -490,6 +491,9 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
     return { code: err.code, details: { sourceType: err.sourceType } }
   }
   if (err instanceof CannotCorrectNonPostedError) {
+    return { code: err.code, details: { currentStatus: err.currentStatus } }
+  }
+  if (err instanceof CannotCancelNonDraftError) {
     return { code: err.code, details: { currentStatus: err.currentStatus } }
   }
   if (err instanceof EntryAlreadyReversedError) return { code: err.code }
