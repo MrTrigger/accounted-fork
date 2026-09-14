@@ -17,6 +17,7 @@ import {POST as execute} from '../route'
 import {POST as createAccounts} from '../../create-accounts/route'
 import {POST as upload} from '../../upload/route'
 import {POST as act} from '../../[id]/action/route'
+import {DELETE as undo} from '../../[id]/undo/route'
 import {GET as holds} from '../../holds/route'
 
 const queued=createQueuedMockSupabase()
@@ -38,6 +39,18 @@ beforeEach(()=>{
 afterEach(() => vi.unstubAllEnvs())
 
 describe('durable SIE HTTP boundaries',()=>{
+  it.each(['undo', 'resume', 'compatibility-undo'])('returns actionable legacy guidance through the real %s service', async name => {
+    const actual = await vi.importActual<typeof import('@/lib/import/sie-jobs')>('@/lib/import/sie-jobs')
+    action.mockImplementationOnce(actual.requestSIEJobAction)
+    queued.enqueue({ data: { id: job.id, job_state: null } })
+    const response = name === 'compatibility-undo' ? await undo(request({}), params) : await act(request({ action: name }), params)
+    expect(response.status).toBe(409)
+    expect((await response.json()).error).toMatchObject({ code: 'SIE_IMPORT_LEGACY_REVIEW_REQUIRED',
+      message_en: expect.stringContaining('Review'), remediation: { tool: 'gnubok_sie_import_status' } })
+    expect(supabase.rpc).not.toHaveBeenCalled()
+    const { after } = await import('next/server')
+    expect(after).not.toHaveBeenCalled()
+  })
   for(const [name,route] of Object.entries(routes)) it(`${name} requires authentication`,async()=>{
     auth.mockResolvedValue({user:null,supabase,error:NextResponse.json({error:'Unauthorized'},{status:401})})
     expect((await route(request({}))).status).toBe(401)
