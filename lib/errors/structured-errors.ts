@@ -3084,9 +3084,9 @@ const ARTICLE: Record<string, StructuredErrorEntry> = {
   CUSTOMER_ORG_NUMBER_IS_PERSONAL: {
     httpStatus: 400,
     message_sv:
-      'Organisationsnumret ser ut som ett personnummer. Spara kunden som privatperson i stället, så lagras numret skyddat och maskeras i listor.',
+      'Organisationsnumret ser ut som ett personnummer, vilket ett utländskt företag inte kan ha. Välj kundtypen Svenskt företag för en enskild firma, eller Privatperson för en privatperson.',
     message_en:
-      'The org number looks like a Swedish personal identity number. Save the customer as an individual instead, so the number is stored protected and masked in lists.',
+      'The org number looks like a Swedish personal identity number, which a foreign business cannot have. Choose the customer type Swedish business for a sole trader, or Individual for a private person.',
   },
   CUSTOMER_COUNTRY_MISMATCH: {
     httpStatus: 400,

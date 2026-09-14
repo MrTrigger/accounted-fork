@@ -39,7 +39,7 @@ import {
   normalizeCountryCode,
 } from '@/lib/vat/country-codes'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
   personalNumberDigits,
@@ -1121,21 +1121,18 @@ export const CreateCustomerSchema = z.object({
       })
     }
   }
-  // GDPR art. 5.1 c: a personnummer stored as a business org_number is shown
-  // unmasked everywhere (only customer_type='individual' rows are masked), so
-  // refuse to accept one silently.
-  if (
-    customer.org_number &&
-    customer.customer_type !== 'individual' &&
-    looksLikeSwedishPersonalNumber(customer.org_number)
-  ) {
+  // A Swedish enskild firma's org number IS its owner's personnummer, so
+  // swedish_business accepts one and the list surfaces mask it
+  // (orgNumberIsPersonalIdentifier). Only the foreign business types, where
+  // the value cannot be an org number at all, still refuse it.
+  if (isPersonalNumberOrgNumberDisallowed(customer.customer_type, customer.org_number)) {
     ctx.addIssue({
       code: 'custom',
       path: ['org_number'],
       message:
-        'org_number looks like a Swedish personal identity number (personnummer). '
-        + 'Create the customer with customer_type "individual" and pass the number as personal_number '
-        + 'instead, so it is stored encrypted and masked in list responses.',
+        'org_number looks like a Swedish personal identity number (personnummer), which a foreign '
+        + 'business cannot have. Use customer_type "swedish_business" for a Swedish enskild firma, or '
+        + '"individual" with the number passed as personal_number for a private person.',
     })
   }
   // An individual's personnummer submitted as org_number is moved into
