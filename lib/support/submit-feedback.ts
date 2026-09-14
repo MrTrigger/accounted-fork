@@ -4,7 +4,9 @@ import { isAnalyticsEnabled } from '@/lib/analytics/enabled'
 export interface SubmitFeedbackInput {
   message: string
   subject?: string
-  /** Screenshots or PDFs relayed on the support email only. */
+  /** Screenshots or PDFs. A message with files goes by email only: the
+   *  conversation API carries text, and the desk turns the mail into a
+   *  ticket with the files attached. */
   files?: File[]
 }
 
@@ -14,9 +16,11 @@ export interface SubmitFeedbackInput {
  * 'ticket' - PostHog Support conversation, linked to the person and their
  *            session replay. Since 2026-09-14 this is the inbox the founders
  *            answer in, and the reply shows up in the same dialog
- *            (components/ui/support-link.tsx), so it is the delivery.
- * 'email'  - Resend to the support address. The fallback when conversations
- *            are unavailable (self-hosted, analytics off) or the call fails.
+ *            (components/ui/support-link.tsx), so it is the delivery for a
+ *            plain message.
+ * 'email'  - Resend to the support address. The delivery for a message with
+ *            attachments, and the fallback when conversations are
+ *            unavailable (self-hosted, analytics off) or the call fails.
  *
  * Recapt used to report success on its own channel while the real delivery
  * failed. This does NOT repeat that: `ok` is true only when one of the two
@@ -71,8 +75,8 @@ async function submitViaEmail(
 /** Outcome of each channel, for the analytics breadcrumb. */
 type ChannelOutcome = 'ok' | 'failed' | 'unavailable' | 'timeout'
 
-/** How long the ticket call may run before we stop waiting on it. The user is
- *  waiting on this dialog, and the ticket is a complement, not the delivery. */
+/** How long the ticket call may run before email takes over. The user is
+ *  waiting on this dialog; a hung SDK must not hold it. */
 const TICKET_TIMEOUT_MS = 4000
 
 /**
@@ -96,7 +100,7 @@ const TICKET_TIMEOUT_MS = 4000
  */
 function noteInAnalytics(
   { subject }: SubmitFeedbackInput,
-  outcomes: { email: 'ok' | 'failed' | 'skipped'; ticket: ChannelOutcome }
+  outcomes: { email: 'ok' | 'failed' | 'skipped'; ticket: ChannelOutcome | 'skipped' }
 ): void {
   if (!isAnalyticsEnabled()) return
   try {
@@ -162,11 +166,19 @@ function withTimeout(
 }
 
 export async function submitFeedback(input: SubmitFeedbackInput): Promise<SubmitFeedbackResult> {
-  // PostHog Support is the inbox (2026-09-14): the ticket is the delivery,
-  // and the founders answer inside the app. Email is the fallback for when
-  // conversations are unavailable (self-hosted, analytics off) or the call
-  // fails, so a message is never lost. The ticket call is capped so a hung
-  // SDK cannot hold the dialog open; a timeout falls through to email.
+  // Attachments only travel by email: the conversation API is text, and the
+  // desk turns that mail into the ticket with the files on it. Opening a
+  // ticket as well would make the same message show up twice.
+  if (input.files?.length) {
+    const emailResult = await submitViaEmail(input)
+    noteInAnalytics(input, { email: emailResult.ok ? 'ok' : 'failed', ticket: 'skipped' })
+    if (emailResult.ok) return { ok: true, channels: ['email'] }
+    return { ok: false, channels: [], error: emailResult.error }
+  }
+
+  // Plain message: the ticket is the delivery, capped so a hung SDK cannot
+  // hold the dialog; anything but 'ok' falls through to email, so nothing is
+  // lost on installs without PostHog or when the call fails.
   const ticket = await withTimeout(submitViaTicket(input), TICKET_TIMEOUT_MS, 'timeout')
   if (ticket === 'ok') {
     noteInAnalytics(input, { email: 'skipped', ticket })
@@ -175,7 +187,6 @@ export async function submitFeedback(input: SubmitFeedbackInput): Promise<Submit
 
   const emailResult = await submitViaEmail(input)
   noteInAnalytics(input, { email: emailResult.ok ? 'ok' : 'failed', ticket })
-
   if (emailResult.ok) return { ok: true, channels: ['email'] }
   return { ok: false, channels: [], error: emailResult.error }
 }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { cn } from '@/lib/utils'
-import { Loader2, Mail, Send } from 'lucide-react'
+import { FileText, Loader2, Mail, Paperclip, Send, X } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -17,6 +17,16 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/components/ui/use-toast'
 import { submitFeedback } from '@/lib/support/submit-feedback'
+import { useCompanyOptional } from '@/contexts/CompanyContext'
+import {
+  SUPPORT_ATTACHMENT_ACCEPT,
+  SUPPORT_MAX_ATTACHMENTS,
+  SUPPORT_MAX_ATTACHMENT_TOTAL_BYTES,
+  SUPPORT_MAX_ATTACHMENT_TOTAL_MB,
+  isSupportedAttachmentType,
+} from '@/lib/support/attachments'
+import { shrinkImageForUpload } from '@/lib/documents/shrink-image'
+import { isShrinkableImage } from '@/lib/documents/upload-size'
 import {
   conversationsAvailable,
   currentTicketId,
@@ -32,10 +42,9 @@ import {
   type TicketStatus,
   type TicketSummary,
 } from '@/lib/support/conversations'
-import { useCompanyOptional } from '@/contexts/CompanyContext'
 
 interface SupportLinkProps {
-  /** 'hidden' renders no trigger: the dialog is controlled by `open`. */
+  /** 'hidden' renders no trigger: the dialog is controlled through `open`. */
   variant?: 'inline' | 'muted' | 'hidden'
   subject?: string
   children?: React.ReactNode
@@ -44,21 +53,28 @@ interface SupportLinkProps {
   onOpenChange?: (open: boolean) => void
 }
 
+type AttachmentError = 'unsupported' | 'too_many' | 'too_large'
+
 /**
  * loading  fetching tickets or a thread
  * thread   the conversation with support (reply box when it is the active ticket)
- * compose  no open ticket: write a new one
- * email    conversations unavailable (self-hosted, analytics off): the mail form
- * sent     the mail form delivered
+ * compose  no open ticket: write a new one, attachments allowed
+ * email    conversations unavailable (self-hosted, analytics off): same form, mail delivery
+ * sent     delivered by mail (attachments, or the fallback)
  */
 type View = 'loading' | 'thread' | 'compose' | 'email' | 'sent'
 
 const POLL_MS = 20_000
 
+function totalBytes(files: File[]): number {
+  return files.reduce((sum, file) => sum + file.size, 0)
+}
+
 /**
  * The support dialog. Since 2026-09-14 the conversation lives in PostHog
  * Support and the founders answer there, so this is a thread the user can
- * come back to, not a one-way form. The mail form remains as the fallback
+ * come back to, not a one-way form. A message with attachments still goes by
+ * mail (the conversation API is text) and the mail form remains the fallback
  * for installs without PostHog.
  */
 export function SupportLink({ variant = 'inline', subject, children, className, open: openProp, onOpenChange }: SupportLinkProps) {
@@ -75,9 +91,13 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
   const [thread, setThread] = useState<Thread | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [showEarlier, setShowEarlier] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [sending, setSending] = useState(false)
+  const [message, setMessage] = useState('')
+  const [attachments, setAttachments] = useState<File[]>([])
+  const [isPreparing, setIsPreparing] = useState(false)
+  const [isSending, setIsSending] = useState(false)
   const [unread, setUnread] = useState(0)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const attachmentGenerationRef = useRef(0)
   const listRef = useRef<HTMLDivElement>(null)
 
   const setOpen = useCallback(
@@ -162,26 +182,102 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
 
   if (companyCtx?.isSandbox) return null
 
+  function showAttachmentError(error: AttachmentError) {
+    if (error === 'unsupported') {
+      toast({ title: t('attach_unsupported'), variant: 'destructive' })
+      return
+    }
+    if (error === 'too_many') {
+      toast({
+        title: t('attach_too_many', { count: SUPPORT_MAX_ATTACHMENTS }),
+        variant: 'destructive',
+      })
+      return
+    }
+    toast({
+      title: t('attach_too_large', { limit: SUPPORT_MAX_ATTACHMENT_TOTAL_MB }),
+      variant: 'destructive',
+    })
+  }
+
+  async function addFiles(incoming: File[]) {
+    if (!incoming.length || isPreparing || isSending) return
+
+    const generation = attachmentGenerationRef.current
+    setIsPreparing(true)
+    try {
+      const next = [...attachments]
+      let firstError: AttachmentError | null = null
+
+      for (const original of incoming) {
+        if (!isSupportedAttachmentType(original.type)) {
+          firstError ??= 'unsupported'
+          continue
+        }
+        if (next.length >= SUPPORT_MAX_ATTACHMENTS) {
+          firstError ??= 'too_many'
+          break
+        }
+
+        const remaining = SUPPORT_MAX_ATTACHMENT_TOTAL_BYTES - totalBytes(next)
+        const file = original.size > remaining && isShrinkableImage(original.type)
+          ? await shrinkImageForUpload(original, remaining)
+          : original
+
+        if (file.size > remaining) {
+          firstError ??= 'too_large'
+          continue
+        }
+        next.push(file)
+      }
+
+      if (generation === attachmentGenerationRef.current) {
+        setAttachments(next)
+        if (firstError) showAttachmentError(firstError)
+      }
+    } finally {
+      setIsPreparing(false)
+    }
+  }
+
+  function resetAttachments() {
+    attachmentGenerationRef.current += 1
+    setAttachments([])
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
   function handleOpenChange(next: boolean) {
     setOpen(next)
     if (!next) {
-      setDraft('')
+      setMessage('')
+      resetAttachments()
       setView('loading')
     }
   }
 
   async function handleCompose(e: React.FormEvent) {
     e.preventDefault()
-    const message = draft.trim()
-    if (message.length < 5) return
-    setSending(true)
-    const result = await submitFeedback({ subject, message })
-    setSending(false)
+    if (message.trim().length < 5) return
+
+    setIsSending(true)
+    const result = await submitFeedback({
+      subject,
+      message: message.trim(),
+      files: attachments,
+    })
+    setIsSending(false)
+
     if (!result.ok) {
-      toast({ title: t('send_failed_title'), description: result.error || t('send_failed_fallback'), variant: 'destructive' })
+      toast({
+        title: t('send_failed_title'),
+        description: result.error || t('send_failed_fallback'),
+        variant: 'destructive',
+      })
       return
     }
-    setDraft('')
+
+    setMessage('')
+    resetAttachments()
     if (result.channels.includes('ticket')) {
       await bootstrap()
       return
@@ -192,16 +288,16 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
 
   async function handleReply(e: React.FormEvent) {
     e.preventDefault()
-    const message = draft.trim()
-    if (!message || !viewingId) return
-    setSending(true)
-    const res = await replyInThread(message)
-    setSending(false)
+    const text = message.trim()
+    if (!text || !viewingId) return
+    setIsSending(true)
+    const res = await replyInThread(text)
+    setIsSending(false)
     if (!res) {
       toast({ title: t('send_failed_title'), description: t('reply_failed'), variant: 'destructive' })
       return
     }
-    setDraft('')
+    setMessage('')
     if (res.ticketId !== viewingId) await bootstrap()
     else await showTicket(viewingId, true)
   }
@@ -250,24 +346,129 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
       </button>
     )
 
-  const composer = (onSubmit: (e: React.FormEvent) => void, placeholder: string, label: string, minLength: number) => (
-    <form onSubmit={onSubmit} className="mt-3">
+  const composeForm = (
+    <form onSubmit={handleCompose}>
       <Textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        placeholder={placeholder}
-        className="min-h-[96px] resize-none"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        placeholder={t('placeholder')}
+        className="min-h-[120px] resize-none"
         maxLength={5000}
-        disabled={sending}
+        disabled={isSending}
         autoFocus
       />
-      <DialogFooter className="mt-3">
-        <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)} disabled={sending}>
+      <p className="text-xs text-muted-foreground mt-1.5">
+        {t('char_count', { count: message.length })}
+      </p>
+
+      {attachments.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {attachments.map((file, index) => (
+            <li
+              key={`${file.name}-${file.size}-${index}`}
+              className="ph-no-capture flex min-w-0 items-center gap-2 rounded-lg border border-border px-3 py-1"
+            >
+              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate text-xs">
+                {file.name}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))}
+                disabled={isSending || isPreparing}
+                aria-label={t('remove_attachment')}
+                className="shrink-0"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={SUPPORT_ATTACHMENT_ACCEPT}
+          className="hidden"
+          disabled={isSending || isPreparing}
+          onChange={(e) => {
+            void addFiles(Array.from(e.target.files ?? []))
+            e.target.value = ''
+          }}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={isSending || isPreparing || attachments.length >= SUPPORT_MAX_ATTACHMENTS}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {isPreparing ? (
+            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Paperclip className="mr-2 h-3.5 w-3.5" />
+          )}
+          {t('attach_label')}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          {t('attach_hint', {
+            count: SUPPORT_MAX_ATTACHMENTS,
+            limit: SUPPORT_MAX_ATTACHMENT_TOTAL_MB,
+          })}
+        </span>
+      </div>
+
+      <DialogFooter className="mt-4">
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => handleOpenChange(false)}
+          disabled={isSending}
+        >
           {t('cancel')}
         </Button>
-        <Button type="submit" disabled={sending || draft.trim().length < minLength}>
-          {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-          {sending ? t('sending') : label}
+        <Button
+          type="submit"
+          disabled={isSending || isPreparing || message.trim().length < 5}
+        >
+          {isSending ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {t('sending')}
+            </>
+          ) : (
+            <>
+              <Send className="mr-2 h-4 w-4" />
+              {t('send')}
+            </>
+          )}
+        </Button>
+      </DialogFooter>
+    </form>
+  )
+
+  const replyForm = (
+    <form onSubmit={handleReply} className="mt-3">
+      <Textarea
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        placeholder={t('reply_placeholder')}
+        className="min-h-[80px] resize-none"
+        maxLength={5000}
+        disabled={isSending}
+      />
+      <DialogFooter className="mt-3">
+        <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)} disabled={isSending}>
+          {t('cancel')}
+        </Button>
+        <Button type="submit" disabled={isSending || message.trim().length === 0}>
+          {isSending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+          {isSending ? t('sending') : t('reply')}
         </Button>
       </DialogFooter>
     </form>
@@ -297,7 +498,7 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
           </div>
         )}
 
-        {(view === 'compose' || view === 'email') && composer(handleCompose, t('placeholder'), t('send'), 5)}
+        {(view === 'compose' || view === 'email') && composeForm}
 
         {view === 'thread' && (
           <div>
@@ -357,7 +558,7 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
             )}
 
             {canReply ? (
-              composer(handleReply, t('reply_placeholder'), t('reply'), 1)
+              replyForm
             ) : (
               <div className="mt-4 flex items-center justify-between gap-3">
                 <p className="text-xs text-muted-foreground">{t('resolved_hint')}</p>
@@ -366,7 +567,7 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setDraft('')
+                    setMessage('')
                     setView('compose')
                   }}
                 >
