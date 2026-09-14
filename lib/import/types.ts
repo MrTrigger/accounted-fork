@@ -131,8 +131,8 @@ export interface SIEVoucherCorrections {
  * Voucher/Journal entry from #VER tag
  */
 export interface SIEVoucher {
-  series: string                   // Voucher series (A, B, etc.)
-  number: number                   // Voucher number
+  series: string                   // Voucher series (A, B, etc.). Empty in SIE4I files.
+  number: number                   // Voucher number; placeholder 0 when numberOmitted
   numberOmitted?: boolean          // SIE4I: receiver assigns; never a source key
   date: Date
   description: string
