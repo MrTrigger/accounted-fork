@@ -6822,6 +6822,7 @@
     "type_eu_business": "EU business",
     "type_non_eu_business": "Outside EU",
     "verified": "Verified",
+    "col_customer_number": "Customer no.",
     "col_name": "Name",
     "col_type": "Type",
     "col_identifier": "Org. no. / Personal no.",
