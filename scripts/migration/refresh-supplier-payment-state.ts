@@ -46,7 +46,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { config as dotenv } from 'dotenv'
 import { resolve } from 'node:path'
-import { refreshMigratedSupplierPaymentState } from '../../extensions/general/arcim-migration/lib/refresh-migrated-payment-state'
 
 /**
  * Providers whose supplier register `fetchSupplierInvoicesDirect` can read
@@ -157,6 +156,15 @@ async function main() {
   console.log('Mode         :', APPLY ? 'APPLY (writes)' : 'DRY RUN (no writes)')
   console.log('---------------------------------------------------------\n')
 
+  // Imported here, not at the top: static imports are hoisted above the
+  // dotenv() call, and lib/supabase/server.ts captures NEXT_PUBLIC_SUPABASE_URL
+  // into a module constant when it is first evaluated. Loaded before the env,
+  // that constant is undefined and every service client built from it fails
+  // with "Your project's URL and Key are required" while the script's own
+  // client (built after dotenv) works. First run on 2026-09-14 hit exactly that.
+  const { refreshMigratedSupplierPaymentState } = await import(
+    '../../extensions/general/arcim-migration/lib/refresh-migrated-payment-state'
+  )
   const result = await refreshMigratedSupplierPaymentState({
     supabase,
     companyId: COMPANY_ID!,
