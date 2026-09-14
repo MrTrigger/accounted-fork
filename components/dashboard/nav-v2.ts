@@ -40,9 +40,9 @@ export interface NavGateFlags {
 }
 
 /**
- * Shell v2 sidebar tree (dev_docs/ui_v2_build_plan.md, PR 2). Sections are
- * the prototype's BOLAGET list; a section's sub-items render under it while
- * the section is active, so nothing the v1 rail reached becomes a dead end.
+ * Sidebar tree (UI v2 PR 2, the default since PR #2390). Sections are the
+ * prototype's BOLAGET list; a section's sub-items render under it while the
+ * section is active, so nothing the old rail reached became a dead end.
  * Every href here already has a page; PR 3 to PR 8 change what the pages
  * show, not where they live. Settings, help and the company switcher live
  * in the user menu at the bottom, so the sidebar has no bottom group.

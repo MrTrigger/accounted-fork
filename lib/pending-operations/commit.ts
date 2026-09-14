@@ -4,8 +4,9 @@
  * Used by:
  *   - The web UI commit route (app/api/pending-operations/[id]/commit/route.ts)
  *     when a human clicks "Approve"
- *   - The MCP server (extensions/general/mcp-server/server.ts) when a trusted
- *     agent stages a low-risk op that the company has opted in to auto-commit
+ *   - The bulk-approval route (app/api/pending-operations/bulk-commit/route.ts)
+ *   - The MCP server (extensions/general/mcp-server/server.ts) when an agent
+ *     relays a human approval
  *
  * Both paths converge here so the same audit trail, event emission, error
  * handling, and status transition logic apply.
@@ -36,7 +37,7 @@ import { bookResidualAndLink, ReconciliationResidualError } from '@/lib/reconcil
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { validateVatNumber } from '@/lib/vat/vies-client'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
 } from '@/lib/customers/personal-number-shape'
@@ -48,6 +49,7 @@ import { resolveDefaultPaymentTerms } from '@/lib/customers/default-payment-term
 import {
   normalizeVatRateToDecimal,
   normalizeVatRateToFraction,
+  treatmentDeductsInputVat,
 } from '@/lib/vat/supplier-invoice-line-checks'
 import {
   createInvoicePaymentJournalEntry,
@@ -58,7 +60,7 @@ import {
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
-import { booksInvoicesOnIssue, cashPartialBlockReason, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
+import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
 import { propagateLegacyPayeeWrite } from '@/lib/cash-accounts/invoice-payee'
 import { createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
@@ -122,8 +124,7 @@ import {
   resolveVoucherLinkedEntryIds,
 } from '@/lib/transactions/inbox-underlag'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
-import { parseSIEFile } from '@/lib/import/sie-parser'
-import { executeSIEImport, undoSIEImport } from '@/lib/import/sie-import'
+import { submitSIEJob, requestSIEJobAction } from '@/lib/import/sie-jobs'
 import type { AccountMapping } from '@/lib/import/types'
 import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { extensionRegistry } from '@/lib/extensions/registry'
@@ -285,7 +286,7 @@ export interface CommitOptions {
    * 'bulk_accept'. MCP approvals pass the relaying credential: 'api_key'
    * (gnubok-mcp bridge) or 'agent' (OAuth connector), so the immutable layer
    * records that the acknowledgment was agent-relayed rather than a
-   * first-party human session (agent_first_vision.md §8 P0-1). Every path is
+   * first-party human session. Every path is
    * still human-approval-gated; agent auto-commit was removed in
    * 20260505190027_drop_agent_auto_commit.
    */
@@ -534,19 +535,16 @@ async function commitCreateCustomer(
     return { error: 'customer_number must be a string of at most 32 characters', status: 400 }
   }
 
-  // Same GDPR guard as CreateCustomerSchema: identifiers are only masked on
-  // customer_type='individual' rows, so a personnummer stored as a business
-  // org_number would be shown unmasked everywhere.
+  // Same guard as CreateCustomerSchema: a Swedish enskild firma's org number
+  // IS its owner's personnummer, so swedish_business accepts one (the lists
+  // mask it); only a foreign business, which cannot have one, refuses it.
   let orgNumber = (params.org_number as string) || null
-  if (
-    orgNumber &&
-    params.customer_type !== 'individual' &&
-    looksLikeSwedishPersonalNumber(orgNumber)
-  ) {
+  if (isPersonalNumberOrgNumberDisallowed(params.customer_type as string, orgNumber)) {
     return {
       error:
-        'org_number ser ut som ett personnummer. Skapa kunden som privatperson '
-        + '(customer_type=individual) i stället, så maskeras numret i listor.',
+        'org_number ser ut som ett personnummer, vilket ett utländskt företag inte kan ha. '
+        + 'Välj kundtypen svenskt företag (customer_type=swedish_business) för en enskild firma, '
+        + 'eller privatperson (customer_type=individual) och skicka numret som personal_number.',
       status: 400,
     }
   }
@@ -4877,6 +4875,11 @@ async function commitCreateSupplierInvoiceFromInbox(
   }
 
   const reverseCharge = vatTreatment === 'reverse_charge'
+  // Treatments under which no seller VAT may reach the books: reverse charge
+  // (the buyer self-assesses on 2614/2645) and exempt / export, where the
+  // supplier charged no Swedish moms at all so there is nothing deductible
+  // (issue #2553). Both take the same header and item treatment below.
+  const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
   // Omvänd skattskyldighet: the registration entry credits 2440 with the sum
   // of the line nets (the fiktiv 2614/2645 pair nets to zero), so that sum is
   // the only payable the reskontra can carry. Staging registers the net since
@@ -4885,10 +4888,13 @@ async function commitCreateSupplierInvoiceFromInbox(
   // reported invoice) and would leave remaining_amount 1149 against 919.20 in
   // the GL: never trust a staged header under reverse charge. VAT the seller
   // charged on a reverse-charge invoice is not deductible and is not booked.
+  // An exempt or export op is the same shape: the items below carry no VAT,
+  // so a staged header that still carries some would leave the reskontra
+  // above what the registration entry credits on 2440.
   const itemNetSum = rawItems.reduce((sum, item) => sum + (finite(item.line_total) ?? 0), 0)
-  const subtotalRounded = reverseCharge ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
-  const vatAmountRounded = reverseCharge ? 0 : Math.round(vatAmount * 100) / 100
-  const totalRounded = reverseCharge ? subtotalRounded : Math.round(total * 100) / 100
+  const subtotalRounded = noDeductibleSellerVat ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
+  const vatAmountRounded = noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100
+  const totalRounded = noDeductibleSellerVat ? subtotalRounded : Math.round(total * 100) / 100
   // Fed the already-rounded figures so a SEK invoice (rate 1) gets
   // total_sek === total to the öre instead of the two roundings disagreeing on
   // an exact-half value. The old `exchangeRate ? … : null` guard left all three
@@ -4991,12 +4997,18 @@ async function commitCreateSupplierInvoiceFromInbox(
   // the registration JE's 2614/2645 self-assessed leg lines up with rutor
   // 20-24 / 48 instead of double-counting input VAT into 2641. Tampered
   // params can't smuggle non-zero VAT into the items table.
+  //
+  // Exempt and export invoices take the same zeroing (issue #2553): the
+  // supplier charged no Swedish moms, so a rate that came from OCR, from a
+  // stale staged op or from the column's own 0.25 default has nothing to
+  // deduct behind it. The engine refuses to book 2641 for these treatments
+  // either way; storing 0 keeps the row honest about what the underlag says.
   const itemInserts = rawItems.map((item, idx) => {
     // Normalize percent-shaped rates (25 -> 0.25) and snap to the statutory
     // set: rows staged before the issue #310 fix (or tampered params) carry
     // percent integers, and inserting one books 2500 % VAT downstream.
-    const vatRate = reverseCharge ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
-    const vatAmt = reverseCharge ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
+    const vatRate = noDeductibleSellerVat ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
+    const vatAmt = noDeductibleSellerVat ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
     return {
       supplier_invoice_id: invoice.id,
       sort_order: idx,
@@ -5435,7 +5447,12 @@ async function commitCreditInvoice(
   }
 
   let journalEntryId: string | null = null
-  if (completeCreditNote && accountingMethod === 'accrual') {
+  // Kontantmetoden skips only while the original is still UNPAID: a paid one
+  // was already booked by its payment verifikat (revenue + 26xx utgående
+  // moms), and leaving that un-reversed overstates both. Same helper the
+  // dashboard and the v1 route use (issue #2552). `original` still carries the
+  // pre-credit status, which is what the decision needs.
+  if (completeCreditNote && creditNoteNeedsJournalEntry(accountingMethod, original)) {
     try {
       const journalEntry = await createCreditNoteJournalEntry(
         supabase,
@@ -5616,46 +5633,13 @@ async function commitImportSie(
     return { error: 'file_content, filename, and mappings are required', status: 400 }
   }
 
-  let parsed
-  try {
-    parsed = parseSIEFile(fileContent)
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'Failed to parse SIE file', status: 400 }
-  }
+  const job = await submitSIEJob(supabase,companyId,userId,fileContent,mappings,{
+    filename,createFiscalPeriod,importOpeningBalances,importTransactions,voucherSeries,openingBalanceSeries,updateAccountNames,
+  })
+  // The approval commits submission. The durable execution has its own status.
+  return {data:{import_id:job.id,operation_id:job.id,state:job.job_state,accepted:true,
+    status_tool:'gnubok_sie_import_status',fiscal_period_id:job.fiscal_period_id}}
 
-  try {
-    const result = await executeSIEImport(supabase, companyId, userId, parsed, mappings, {
-      filename,
-      fileContent,
-      createFiscalPeriod,
-      importOpeningBalances,
-      importTransactions,
-      voucherSeries,
-      openingBalanceSeries,
-      updateAccountNames,
-    })
-
-    if (!result.success) {
-      return { error: result.errors.join('; ') || 'SIE import failed', status: 400 }
-    }
-
-    return {
-      data: {
-        import_id: result.importId,
-        fiscal_period_id: result.fiscalPeriodId,
-        opening_balance_entry_id: result.openingBalanceEntryId,
-        journal_entries_created: result.journalEntriesCreated,
-        accounts_created: result.accountsCreated ?? 0,
-        // Informational facts that used to travel as warnings (#2462): the
-        // agent still needs them to explain a null opening_balance_entry_id.
-        accounts_renamed: result.accountsRenamed ?? 0,
-        opening_balance_skipped: result.details?.openingBalanceSkipped ?? null,
-        warnings: result.warnings,
-      },
-    }
-  } catch (err) {
-    return failUnlessBookkeepingError(err, 'SIE import failed', 500)
-  }
 }
 
 async function commitUndoSieImport(
@@ -5670,17 +5654,9 @@ async function commitUndoSieImport(
     return { error: 'import_id is required', status: 400 }
   }
 
-  const result = await undoSIEImport(supabase, companyId, importId, userId)
-  if (!result.success) {
-    return { error: result.error ?? 'SIE undo failed', status: 400 }
-  }
+  const job = await requestSIEJobAction(supabase,companyId,userId,importId,'undo')
+  return {data:{import_id:job.id,state:job.job_state,accepted:true,status_tool:'gnubok_sie_import_status'}}
 
-  return {
-    data: {
-      import_id: importId,
-      deleted_entries: result.deletedEntries,
-    },
-  }
 }
 
 // ── Phase 4: arbitrary-line bookkeeping primitives ───────────────
@@ -7373,8 +7349,8 @@ async function commitLinkTransactionJournalEntry(
  * Execute a pending_operation by type, update its status row, and return a
  * normalized CommitResult.
  *
- * Used by both the human-approval route and the auto-commit path. Status row
- * transitions are applied here so the two callers stay consistent.
+ * Used by every approval path (web single and bulk approval, MCP-relayed
+ * approval). Status row transitions are applied here so they stay consistent.
  *
  * When opts.actor is set, the entire executor runs inside a runWithActor()
  * scope so EVERY journal-entry commit the operation makes (regardless of
@@ -7457,8 +7433,8 @@ async function commitPendingOperationInner(
   }
 
   // ── Atomic claim: flip status pending → committing in a single conditional
-  //    update. If 0 rows are affected, another caller (auto-commit ↔ human
-  //    approval, or two parallel approvals) already claimed this op and we
+  //    update. If 0 rows are affected, another caller (two parallel approvals,
+  //    e.g. web and MCP) already claimed this op and we
   //    must not run side-effects. Without this, both callers can pass the
   //    in-memory status check and double-book journal entries, send duplicate
   //    emails, etc.

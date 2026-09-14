@@ -378,6 +378,7 @@ export default function AccountMappingStep({
                     <TableCell>
                       {mapping.sourceAccount === mapping.targetAccount &&
                       ['3', '4', '5', '6'].includes(mapping.sourceAccount.charAt(0)) ? (
+                        <>
                         <div className="flex gap-2">
                           <Select
                             value={mapping.defaultVatTreatment ?? 'none'}
@@ -435,6 +436,12 @@ export default function AccountMappingStep({
                             </SelectContent>
                           </Select>
                         </div>
+                        {mapping.providerVatCode ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {t('vat_treatment_source_code', { code: mapping.providerVatCode })}
+                          </p>
+                        ) : null}
+                        </>
                       ) : (
                         <span className="text-muted-foreground">-</span>
                       )}
