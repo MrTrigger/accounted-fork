@@ -269,3 +269,63 @@ describe('executeMigration: suggestParties', () => {
     expect(suggestPartiesForCompany).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * Bokio returns supplier invoices older than the register its API exposes
+ * with totalAmount 0 and no line items. Imported, they became 0 kr payables
+ * whose zero balance read as "betald" (292 of 661 rows for the company that
+ * reported it on 2026-09-14). An amount-less record is not a 0 kr invoice:
+ * it is declined, and the count is reported rather than left unexplained.
+ */
+describe('executeMigration: supplier invoices the provider sent without an amount', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(fetchAllRows as Mock).mockResolvedValue([])
+  })
+
+  function amountless(invoiceNumber: string): SupplierInvoiceDto {
+    const dto = supplierDto(invoiceNumber, '2019-06-01', false)
+    return {
+      ...dto,
+      lines: [],
+      legalMonetaryTotal: { payableAmount: { value: 0, currencyCode: 'SEK' } },
+      taxTotal: undefined,
+      paymentStatus: { paid: false, balance: { value: 0, currencyCode: 'SEK' }, source: 'balance' },
+    }
+  }
+
+  it('skips them under their own reason and imports the rest', async () => {
+    ;(fetchSupplierInvoicesHydrated as Mock).mockResolvedValue({
+      invoices: [amountless('L-OLD-1'), amountless('L-OLD-2'), supplierDto('L-1', '2026-03-01', false)],
+      hydration: HYDRATION,
+      unhydratedIds: new Set(),
+      excluded: [],
+    })
+
+    const results = await executeMigration(baseOptions({ importSupplierInvoices: true }))
+
+    expect(results.supplierInvoices).toMatchObject({
+      total: 3,
+      imported: 1,
+      skipped: 2,
+      skipReasons: { zeroTotal: 2 },
+    })
+    const rows = (insertWithPerRowFallback as Mock).mock.calls.find((c) => c[1] === 'supplier_invoices')![2]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].supplier_invoice_number).toBe('L-1')
+  })
+
+  it('keeps an amount-less invoice that still carries line items: those say what it is', async () => {
+    const withLines: SupplierInvoiceDto = {
+      ...amountless('L-OLD-3'),
+      lines: [{ id: '1', description: 'Tjänst', lineExtensionAmount: { value: 800, currencyCode: 'SEK' } }],
+    }
+    ;(fetchSupplierInvoicesHydrated as Mock).mockResolvedValue({
+      invoices: [withLines], hydration: HYDRATION, unhydratedIds: new Set(), excluded: [],
+    })
+
+    const results = await executeMigration(baseOptions({ importSupplierInvoices: true }))
+
+    expect(results.supplierInvoices).toMatchObject({ imported: 1, skipped: 0 })
+  })
+})

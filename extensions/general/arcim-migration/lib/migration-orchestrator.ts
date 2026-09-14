@@ -1081,6 +1081,20 @@ export async function executeMigration(options: MigrationOptions): Promise<Migra
         const stubByKey = new Map<string, NewSupplierStub>()
 
         for (const inv of invoices) {
+          // An invoice the provider returned with no amount AND no line items
+          // carries nothing to import: Bokio answers that way for invoices
+          // older than the register its API exposes (292 of 661 for one
+          // migrated company). Importing them wrote 0 kr rows whose zero
+          // balance then read as settled. A negative payable IS an amount (a
+          // kreditfaktura), so only a record with no amount at all is
+          // declined; the count is reported instead of being silently absent.
+          const payable = inv.legalMonetaryTotal?.payableAmount?.value
+          if ((!Number.isFinite(payable) || payable === 0) && inv.lines.length === 0) {
+            skipReasons.zeroTotal = (skipReasons.zeroTotal ?? 0) + 1
+            skipped++
+            continue
+          }
+
           const supplierOrgNumber = getOrgNumberFromParty(inv.supplier)
           let supplierId: string | null = null
 
