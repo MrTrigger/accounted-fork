@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useCapability, useCompany } from '@/contexts/CompanyContext'
 import { useBranding } from '@/lib/branding/brand-context'
 import { CAPABILITY } from '@/lib/entitlements/keys'
@@ -12,7 +12,6 @@ import type { AiClient } from '@/lib/onboarding/ai-clients'
 import { AI_TASK_HREF, AI_TASK_LABEL_KEY, listAiTasks } from '@/lib/worklist/ai-task'
 import type { WorklistCounts } from '@/lib/worklist/types'
 import { AiTaskAction } from '@/components/dashboard/AiTaskAction'
-import { Button } from '@/components/ui/button'
 import { InkText } from '@/components/onboarding/journey/ink'
 import { Confetti } from '../ui/Confetti'
 import { AgentChips } from '../ui/AgentChips'
@@ -151,10 +150,12 @@ export function DoneStep({ ctx, onLeave, leaving }: {
         </div>
       )}
 
-      <div className="jny-qactions">
-        <Button type="button" disabled={leaving} onClick={() => onLeave('done')}>
+      {/* The door is a quiet link, not the primary: the chips and the found rows are what this step is for (founder direction 2026-09-14). */}
+      <div className="done-door">
+        <button type="button" className="jny-btn-quiet" disabled={leaving} onClick={() => onLeave('done')}>
           {t('open_app', { appName })}
-        </Button>
+          <ChevronRight size={13} aria-hidden="true" />
+        </button>
       </div>
     </div>
   )

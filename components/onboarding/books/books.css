@@ -332,7 +332,13 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 .found-row .open:disabled { opacity: 0.5; cursor: default; }
 .found-note { margin: 22px auto 0; font-size: 13px; color: hsl(var(--muted-foreground)); }
 @media (max-width: 640px) { .found-row { flex-wrap: wrap; } .found-row .a { width: 100%; } }
-.bks-done .jny-qactions button { min-height: 44px; }
+/* the doors out: quiet text links, pushed away from what the step is for */
+.bank-exit { margin-top: 40px; }
+.bank-exit .jny-btn-quiet, .done-door .jny-btn-quiet { min-height: 44px; padding: 0 12px; border-radius: 99px; transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out); }
+.bank-exit .jny-btn-quiet:hover, .done-door .jny-btn-quiet:hover { background: hsl(var(--secondary) / 0.5); color: hsl(var(--foreground)); }
+.done-door { margin-top: 44px; }
+.done-door .jny-btn-quiet { display: inline-flex; align-items: center; gap: 4px; }
+.done-door .jny-btn-quiet:disabled { opacity: 0.5; cursor: default; }
 .bks-done .jny-qactions { margin-top: 16px; }
 .bks .jny-pt { width: min(150px, 18vw); }
 .bks .jny-journey, .bks .jny-canvas { max-width: 100%; }

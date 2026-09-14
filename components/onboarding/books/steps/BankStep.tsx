@@ -420,9 +420,6 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
                   {more || query.trim() ? t('bank_less') : t('bank_more')}
                 </button>
               ) : null}
-              <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
-                {t('bank_manual')}
-              </button>
             </div>
             <div id="onboarding-bank-list" className="bankgrid bank-list">
               {shownBanks.map((b, i) => (
@@ -432,6 +429,12 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
               ))}
             </div>
             {shownBanks.length === 0 ? <p className="jny-qsub">{t('bank_no_matches')}</p> : null}
+            {/* The way out sits under the banks, quiet: connecting is the point of the step (founder direction 2026-09-14). */}
+            <div className="bank-exit">
+              <button type="button" className="jny-btn-quiet" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
+                {t('bank_manual')}
+              </button>
+            </div>
           </>
         )
       ) : null}
