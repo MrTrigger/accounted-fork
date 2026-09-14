@@ -227,10 +227,12 @@ describe('executeMigration: hydration budget and scope', () => {
   it('skips the detail request for a supplier invoice whose (supplier, number) pair is already in the database', async () => {
     ;(fetchSuppliersDirect as Mock).mockResolvedValue([SUPPLIER])
     mListSupplier.mockResolvedValue([supplierDto('L-77'), supplierDto('L-78')])
-    // fetchAllRows is called once for the existing suppliers (step 3) and
-    // once for the existing supplier invoices (step 5); the mocked insert
-    // gives the supplier the id `suppliers-1`.
+    // fetchAllRows is called for the existing suppliers (step 3), for the
+    // per-chunk delta re-read before the supplier insert, and for the
+    // existing supplier invoices (step 5); the mocked insert gives the
+    // supplier the id `suppliers-1`.
     mFetchAll
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ supplier_invoice_number: 'L-77', supplier_id: 'suppliers-1' }])
 

@@ -19,7 +19,6 @@ import { cn } from '@/lib/utils'
 import { formatOrgNumberDisplay, stripOrgNumberFormatting } from '@/lib/invariants/org-number'
 import { useCompany } from '@/contexts/CompanyContext'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
-import { SuggestionsAttn } from '@/components/parties/SuggestionsAttn'
 import type { Supplier, SupplierType, CreateSupplierInput } from '@/types'
 
 const SupplierForm = dynamic(
@@ -141,8 +140,8 @@ export default function SuppliersPage() {
   return (
     <div className="space-y-8">
       {/* Page header (concept scene 26): title + export + Ny leverantör */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="font-display text-2xl leading-8 tracking-tight">{t('title')}</h1>
+      <div className="page-header flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="page-header-title font-display text-2xl leading-8 tracking-tight">{t('title')}</h1>
         <div className="flex items-center gap-2">
           <ReportExportMenu
             size="default"
@@ -177,7 +176,6 @@ export default function SuppliersPage() {
           </Dialog>
         </div>
       </div>
-      <SuggestionsAttn side="supplier" />
 
       {/* Toolbar: search (concept) */}
       <div className="flex flex-wrap items-center gap-2">

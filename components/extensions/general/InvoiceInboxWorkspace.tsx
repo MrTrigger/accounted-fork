@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useCompanySettings } from '@/lib/reference-data/hooks'
 import { useTranslations } from 'next-intl'
+import { InboxPipeline, type InboxPipeStage } from '@/components/extensions/general/InboxPipeline'
 import { useRouter } from 'next/navigation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,18 +13,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { AttnLine } from '@/components/ui/attn-line'
 import AiFilledIndicator from '@/components/ui/ai-filled-indicator'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
+import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
 import {
   Inbox,
   Upload,
@@ -68,10 +64,7 @@ import type { AccountingMethod, InboxChannelContext, InvoiceExtractionResult, In
 import { renderChannelParticipant } from '@/lib/documents/channel-context-notes'
 import { selectInboxFields } from '@/lib/documents/inbox-field-visibility'
 import {
-  matchesInboxKindFilter,
   resolveInboxKind,
-  INBOX_KIND_FILTERS,
-  type InboxKindFilter,
 } from '@/lib/documents/inbox-kind'
 import BookDirectlyDialog from '@/components/extensions/general/BookDirectlyDialog'
 import RegisterExpenseDialog, { type ExpensePayer } from '@/components/extensions/general/RegisterExpenseDialog'
@@ -260,12 +253,6 @@ const INBOUND_MAIL_DAYS = 30
 // `acme-x7f2@inbox.example` + 'lev' → `acme-x7f2+lev@inbox.example`. The
 // webhook splits the local part at the first `+` and looks up what is before
 // it, so the tag never changes which company the mail reaches.
-function plusAddress(address: string, tag: string): string {
-  const at = address.indexOf('@')
-  if (at === -1) return address
-  return `${address.slice(0, at)}+${tag}${address.slice(at)}`
-}
-
 // How far the underlag behind the selected row got.
 //
 // `none` is the only state that may claim "Inget underlag bifogat": it means the
@@ -460,9 +447,6 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const [filter, setFilter] = useState<
     'todo' | 'linked' | 'booked' | 'error' | 'all' | 'missing' | 'portal'
   >('todo')
-  // Document-type filter (#2129): leverantörsfakturor vs underlag, on top of
-  // the status filter. Not persisted, same as the status filter.
-  const [kindFilter, setKindFilter] = useState<InboxKindFilter>('all')
   const [searchTerm, setSearchTerm] = useState('')
   // Bulk selection. Items linked to a supplier invoice are skipped at delete
   // time (server returns 409); we still allow them to be selected so the
@@ -489,6 +473,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const detailRequestRef = useRef(0)
   const docRequestRef = useRef(0)
   const [inboxAddress, setInboxAddress] = useState<InboxAddress | null>(null)
+  const { dialogProps: rotateDialogProps, confirm: confirmRotate } = useDestructiveConfirm()
   // We asked for the inbox address and did not get an answer we can trust
   // (5xx, network, unparseable). Distinct from a 404, which honestly means no
   // address is provisioned yet.
@@ -809,35 +794,46 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     return counts
   }, [items])
 
-  // Pills, in order. The error pill only appears when there's something errored
-  // (or it's the active filter): keeps the happy-path inbox uncluttered.
-  const pills = useMemo(() => {
-    const list: { key: typeof filter; label: string; count: number }[] = [
-      { key: 'todo', label: 'Att göra', count: statusCounts.todo },
-      { key: 'linked', label: 'Kopplade', count: statusCounts.linked },
-      { key: 'booked', label: 'Bokförda', count: statusCounts.booked },
-    ]
-    // Two lists, because they are two different jobs. A purchase whose
-    // supplier keeps invoices behind a login is one you can settle now by
-    // going there; one with nothing known needs somebody to be asked. Mixing
-    // them buries the twelve you can act on among the hundred you cannot.
-    if (portalPurchases.length > 0 || filter === 'portal') {
-      list.push({ key: 'portal', label: t('filter_portal'), count: portalPurchases.length })
+  // The flow bar over the same rows (UI v2 PR 7). Each cell is a status
+  // filter the workspace already has; Tolkat counts items whose fields have
+  // been read, Arkiverat follows booking.
+  const pipeCounts = useMemo(
+    () => ({
+      missing: portalPurchases.length + otherPurchases.length,
+      incoming: items.length,
+      parsed: items.filter((it) => it.extracted_data && it.status !== 'processing' && it.status !== 'error').length,
+      matched: statusCounts.linked + statusCounts.booked,
+      booked: statusCounts.booked,
+    }),
+    [items, statusCounts, portalPurchases.length, otherPurchases.length],
+  )
+  const pipeActive: InboxPipeStage | null =
+    filter === 'missing' || filter === 'portal'
+      ? 'missing'
+      : filter === 'all'
+        ? 'incoming'
+        : filter === 'todo'
+          ? 'parsed'
+          : filter === 'linked'
+            ? 'matched'
+            : filter === 'booked'
+              ? 'booked'
+              : null
+  const selectPipeStage = (stage: InboxPipeStage) => {
+    if (stage === 'missing') {
+      // One list: the portal purchases lead, the rest follow.
+      setFilter('missing')
+      setSelectedId(null)
+      return
     }
-    if (otherPurchases.length > 0 || filter === 'missing') {
-      list.push({ key: 'missing', label: t('filter_missing'), count: otherPurchases.length })
-    }
-    if (statusCounts.error > 0 || filter === 'error') {
-      list.push({ key: 'error', label: 'Fel', count: statusCounts.error })
-    }
-    list.push({ key: 'all', label: 'Alla', count: statusCounts.all })
-    return list
-  }, [statusCounts, filter, portalPurchases.length, otherPurchases.length])
-
-  const activePill = useMemo(() => pills.find((p) => p.key === filter), [pills, filter])
+    setFilter(stage === 'incoming' ? 'all' : stage === 'parsed' ? 'todo' : stage === 'matched' ? 'linked' : 'booked')
+    setSelectedPurchaseId(null)
+  }
 
   const filteredPurchases = useMemo(() => {
-    const base = filter === 'portal' ? portalPurchases : otherPurchases
+    // The flow bar has one Saknas cell, so the portal purchases lead the
+    // same list.
+    const base = filter === 'portal' ? portalPurchases : [...portalPurchases, ...otherPurchases]
     const term = searchTerm.trim().toLowerCase()
     if (term === '') return base
     return base.filter((p) =>
@@ -859,41 +855,9 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     })
   }, [items, filter])
 
-  // Per-kind counts for the type menu, over the status-filtered list so the
-  // numbers match what picking an entry would show.
-  const kindCounts = useMemo(() => {
-    const counts: Record<InboxKindFilter, number> = {
-      all: statusFilteredItems.length,
-      supplier_invoice: 0,
-      underlag: 0,
-    }
-    for (const item of statusFilteredItems) {
-      const kind = resolveInboxKind(item)
-      if (matchesInboxKindFilter(kind, 'supplier_invoice')) counts.supplier_invoice += 1
-      else if (matchesInboxKindFilter(kind, 'underlag')) counts.underlag += 1
-    }
-    return counts
-  }, [statusFilteredItems])
-
-  // Rows the type menu is hiding right now (#2181): a +lev mail filed as a
-  // leverantörsfaktura is invisible under Underlag, and the trigger's count
-  // alone does not say that anything is missing.
-  const hiddenByKindFilter = kindFilter === 'all' ? 0 : kindCounts.all - kindCounts[kindFilter]
-
-  // The type menu only earns its row once something is classified (or the
-  // user has already narrowed): an inbox of unclassified rows has nothing to
-  // split.
-  const showKindFilter =
-    filter !== 'missing' &&
-    filter !== 'portal' &&
-    (kindFilter !== 'all' || kindCounts.supplier_invoice > 0 || kindCounts.underlag > 0)
-
   const filteredItems = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
     return statusFilteredItems.filter((item) => {
-      // Type filter: sender hint first, then the AI classification.
-      if (!matchesInboxKindFilter(resolveInboxKind(item), kindFilter)) return false
-
       // Search filter: supplier name, email subject/from, placeholder filename
       if (term === '') return true
       const haystack = [
@@ -907,7 +871,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         .toLowerCase()
       return haystack.includes(term)
     })
-  }, [statusFilteredItems, kindFilter, searchTerm])
+  }, [statusFilteredItems, searchTerm])
 
   // ── Selection ──────────────────────────────────────────────
 
@@ -1348,11 +1312,18 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     // read failed and we cannot rule one out. Rotating retires the old address,
     // and suppliers plus forwarding rules already point at it, so the one case
     // that must never skip this dialog is the one where we are unsure.
-    if (
-      (inboxAddress || addressLoadFailed) &&
-      !confirm('Skapa en ny inkorgsadress? Den gamla slutar att fungera.')
-    ) {
-      return
+    // The rotate control sits one icon away from Copy, so a slip lands here.
+    // An in-app dialog (not window.confirm) names the consequence and puts
+    // the irreversible action on a destructive button.
+    if (inboxAddress || addressLoadFailed) {
+      const ok = await confirmRotate({
+        title: t('rotate_confirm_title'),
+        description: t('rotate_confirm_description'),
+        confirmLabel: t('rotate_confirm_label'),
+        cancelLabel: t('rotate_confirm_cancel'),
+        variant: 'destructive',
+      })
+      if (!ok) return
     }
     setIsRotating(true)
     try {
@@ -1373,7 +1344,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     } finally {
       setIsRotating(false)
     }
-  }, [toast, inboxAddress, addressLoadFailed])
+  }, [toast, inboxAddress, addressLoadFailed, confirmRotate, t])
 
   // ── Render ─────────────────────────────────────────────────
 
@@ -1504,6 +1475,26 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         </div>
       </header>
 
+      {/* The flow bar is the status picker, with errors beside it only while
+          there are any. No document-type menu: the bar is the one axis, and a
+          second one next to it read as a second picker (founder review
+          2026-09-07). The left column keeps only the search. */}
+      <div className="mx-4 mt-3 flex items-center gap-3">
+        <InboxPipeline counts={pipeCounts} active={pipeActive} onSelect={selectPipeStage} />
+        {(statusCounts.error > 0 || filter === 'error') && (
+          <button
+            type="button"
+            onClick={() => {
+              setFilter('error')
+              setSelectedPurchaseId(null)
+            }}
+            className={cn(QUIET_LINK_CLASS, 'shrink-0 text-warning', filter === 'error' && 'underline')}
+          >
+            {t('pipe_errors', { count: statusCounts.error })}
+          </button>
+        )}
+      </div>
+
       {/* A pass takes over two minutes and reports nothing until it lands, so
           a spinner alone leaves somebody watching a button. This says which
           mailboxes are being read, what has been found so far, and keeps
@@ -1600,23 +1591,15 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
           {inboxAddress && (
             <div className="flex items-center gap-3 px-4 py-2 border-b border-border">
               <Mail className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <div className="min-w-0 flex-1">
-                <span className="tabular-nums">{inboxAddress.address}</span>
-                {/* Plus-addressing (#2129): the sender sorts the mail by
-                    writing +lev or +ver before the @. Both variants spelled
-                    out, since a tag is easier to copy than to construct. */}
-                <p className="mt-1 text-muted-foreground break-all">
-                  {t('address_plus_hint', {
-                    lev: plusAddress(inboxAddress.address, 'lev'),
-                    ver: plusAddress(inboxAddress.address, 'ver'),
-                  })}
-                </p>
-              </div>
+              {/* The address once, where the copy button is. Plus-addressing
+                  (#2129) as a rule, not spelled out per variant: the tag is
+                  the only part that changes. */}
               <InboxAddressBar
                 address={inboxAddress.address}
                 onRotate={handleRotateAddress}
                 isRotating={isRotating}
               />
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">{t('address_plus_hint')}</span>
             </div>
           )}
 
@@ -1756,95 +1739,6 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
                   className="pl-8 h-8 text-xs"
                 />
               </div>
-              {/* One row instead of three. Five filters wrapped to three lines
-                  in a 280px column, and the counts are what people actually
-                  read, so they stay visible on the trigger and inside the menu
-                  rather than being traded away for the space. */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full justify-between h-8 px-2.5 text-xs font-normal"
-                  >
-                    <span className="flex items-center gap-1.5 min-w-0">
-                      <span className="truncate">{activePill?.label ?? 'Att göra'}</span>
-                      <span className="tabular-nums text-muted-foreground">
-                        {activePill?.count ?? 0}
-                      </span>
-                    </span>
-                    <ChevronDown className="h-3.5 w-3.5 opacity-60 shrink-0" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-[--radix-dropdown-menu-trigger-width]">
-                  {pills.map((pill) => (
-                    <DropdownMenuItem
-                      key={pill.key}
-                      onSelect={() => {
-                        setFilter(pill.key)
-                        // The panes show one kind of row at a time; a stale
-                        // selection from the other kind would outlive its list.
-                        if (pill.key === 'missing' || pill.key === 'portal') setSelectedId(null)
-                        else setSelectedPurchaseId(null)
-                      }}
-                      className="justify-between text-xs"
-                    >
-                      <span className="flex items-center gap-2">
-                        <Check
-                          className={cn(
-                            'h-3.5 w-3.5',
-                            filter === pill.key ? 'opacity-100' : 'opacity-0',
-                          )}
-                        />
-                        {pill.label}
-                      </span>
-                      <span className="tabular-nums text-muted-foreground">{pill.count}</span>
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              {/* Document type (#2129): the Fortnox-style split between
-                  leverantörsfakturor and bokföringsunderlag, as a second
-                  menu in the same shape as the status one. */}
-              {showKindFilter && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-between h-8 px-2.5 text-xs font-normal"
-                    >
-                      <span className="flex items-center gap-1.5 min-w-0">
-                        <span className="truncate">{t(`kind_filter_${kindFilter}`)}</span>
-                        <span className="tabular-nums text-muted-foreground">
-                          {kindCounts[kindFilter]}
-                        </span>
-                      </span>
-                      <ChevronDown className="h-3.5 w-3.5 opacity-60 shrink-0" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-[--radix-dropdown-menu-trigger-width]">
-                    {INBOX_KIND_FILTERS.map((key) => (
-                      <DropdownMenuItem
-                        key={key}
-                        onSelect={() => setKindFilter(key)}
-                        className="justify-between text-xs"
-                      >
-                        <span className="flex items-center gap-2">
-                          <Check
-                            className={cn(
-                              'h-3.5 w-3.5',
-                              kindFilter === key ? 'opacity-100' : 'opacity-0',
-                            )}
-                          />
-                          {t(`kind_filter_${key}`)}
-                        </span>
-                        <span className="tabular-nums text-muted-foreground">{kindCounts[key]}</span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
             </div>
           )}
           {selectedIds.size > 0 && (
@@ -1974,19 +1868,13 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
                   beside it reads 50. */}
               {searchTerm.trim() !== ''
                 ? `Inga träffar på ”${searchTerm.trim()}”.`
-                : kindFilter !== 'all' && filter !== 'missing' && filter !== 'portal'
-                  // Same trap as the search term: "allt är bearbetat" would be
-                  // false while the status trigger above still counts rows the
-                  // type menu is hiding. Purchase lists ignore the type menu,
-                  // so a leftover kind filter must not speak for them.
-                  ? t('empty_no_kind_hits')
-                  : filter === 'todo'
-                    ? 'Inget att åtgärda; allt är bearbetat.'
-                    : filter === 'portal'
-                      ? 'Inga köp väntar på en faktura från en portal.'
-                      : filter === 'missing'
-                        ? 'Varje köp har sitt underlag.'
-                        : 'Inga poster matchar filtret.'}
+                : filter === 'todo'
+                  ? 'Inget att åtgärda; allt är bearbetat.'
+                  : filter === 'portal'
+                    ? 'Inga köp väntar på en faktura från en portal.'
+                    : filter === 'missing'
+                      ? 'Varje köp har sitt underlag.'
+                      : 'Inga poster matchar filtret.'}
             </div>
           ) : (
             <ul>
@@ -2014,22 +1902,6 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
                     />
                   ))}
             </ul>
-          )}
-          {/* The type menu hides rows without saying so (#2181): a +lev mail
-              is a leverantörsfaktura and does not show under Underlag. Say
-              how many, with the one click that brings them back. The empty
-              state above already says it when nothing is left. */}
-          {filter !== 'missing' && filter !== 'portal' && filteredItems.length > 0 && hiddenByKindFilter > 0 && (
-            <div className="px-4 py-2 border-t text-[11px] text-muted-foreground">
-              {t('hidden_by_kind_filter', { count: hiddenByKindFilter })}{' '}
-              <button
-                type="button"
-                className={cn(QUIET_LINK_CLASS, 'underline')}
-                onClick={() => setKindFilter('all')}
-              >
-                {t('kind_filter_all')}
-              </button>
-            </div>
           )}
         </aside>
 
@@ -2305,6 +2177,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         }}
       />
     )}
+    <DestructiveConfirmDialog {...rotateDialogProps} />
     </div>
   )
 }
@@ -2419,7 +2292,6 @@ function InboxAddressBar({
   return (
     <div className="flex flex-col min-w-0">
       <div className="flex items-center gap-2 min-w-0">
-        <span className="text-muted-foreground text-xs shrink-0">·</span>
         <code
           className={cn(
             'select-all font-mono text-xs text-muted-foreground min-w-0',
@@ -2450,7 +2322,8 @@ function InboxAddressBar({
           className="text-muted-foreground hover:text-foreground shrink-0"
           onClick={onRotate}
           disabled={isRotating}
-          title="Rotera till ny adress"
+          aria-label={t('rotate_address')}
+          title={t('rotate_address')}
         >
           {isRotating ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -2505,12 +2378,6 @@ function InboxRow({
   // Staged upload: the row is real (that IS the "mottaget" ack) but the
   // deferred AI extraction is still in flight. The realtime refetch flips it.
   const isExtracting = status === 'processing'
-  // A chat question the sender never answered (48h TTL hit): the missing
-  // info should be completed here instead. Quiet hint, not a status: the
-  // item still books normally. Booked items drop the reminder.
-  const hasUnansweredQuestion =
-    !isBooked && item.channel_context?.pending_question?.status === 'moved_to_app'
-
   const receivedMeta = (
     <span className="truncate">
       {timeAgo(item.email_received_at ?? item.created_at)}
@@ -2617,11 +2484,6 @@ function InboxRow({
                 <>
                   {item.extraction_skipped && (
                     <Badge variant="outline" className="font-normal">Inte AI-tolkad</Badge>
-                  )}
-                  {hasUnansweredQuestion && (
-                    <Badge variant="outline" className="font-normal text-attn border-attn/40">
-                      {t('wa_question_badge')}
-                    </Badge>
                   )}
                 </>
               )}
@@ -3295,7 +3157,7 @@ function FieldsRail({
             </div>
           )}
           {waUnanswered && (
-            <AttnLine className="pt-1">{t('wa_question_unanswered')}</AttnLine>
+            <p className="pt-1 text-muted-foreground">{t('wa_question_unanswered')}</p>
           )}
         </div>
       )}
@@ -3788,7 +3650,7 @@ function FieldsRail({
 
 export function emptyExtraction(): InvoiceExtractionResult {
   return {
-    supplier: { name: null, orgNumber: null, vatNumber: null, address: null, bankgiro: null, plusgiro: null },
+    supplier: { name: null, orgNumber: null, vatNumber: null, address: null, bankgiro: null, plusgiro: null, iban: null, bic: null },
     invoice: { invoiceNumber: null, invoiceDate: null, dueDate: null, paymentReference: null, currency: 'SEK' },
     lineItems: [],
     totals: { subtotal: null, vatAmount: null, total: null },
@@ -3805,6 +3667,8 @@ type FieldKey =
   | 'supplier.vatNumber'
   | 'supplier.bankgiro'
   | 'supplier.plusgiro'
+  | 'supplier.iban'
+  | 'supplier.bic'
   | 'invoice.invoiceNumber'
   | 'invoice.paymentReference'
   | 'invoice.invoiceDate'
@@ -3829,6 +3693,8 @@ const FIELD_DEFS: FieldDef[] = [
   { key: 'totals.vatAmount', label: 'Moms', type: 'number', inputMode: 'decimal' },
   { key: 'supplier.bankgiro', label: 'Bankgiro', type: 'text' },
   { key: 'supplier.plusgiro', label: 'Plusgiro', type: 'text' },
+  { key: 'supplier.iban', label: 'IBAN', type: 'text' },
+  { key: 'supplier.bic', label: 'BIC', type: 'text' },
   { key: 'invoice.invoiceNumber', label: 'Fakturanr', type: 'text' },
   { key: 'invoice.paymentReference', label: 'OCR/Referens', type: 'text' },
   { key: 'invoice.invoiceDate', label: 'Fakturadatum', type: 'date' },

@@ -145,6 +145,78 @@ const SIE_EMPTY_SERIES = [
   '}',
 ].join('\n')
 
+// SIE4I (subsystem import) file: per SIE 4B both series and verno may be
+// blank, because the receiving system assigns them. myWebLog exports look
+// like this (#2546).
+const SIE4I_EMPTY_SERIES_AND_NUMBER = [
+  '#FLAGGA 0',
+  '#SIETYP 4',
+  '#FNAMN "myWebLog AB"',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 3001 "Försäljning"',
+  '#VER "" "" 20240115 "Dagsrapport"',
+  '{',
+  '#TRANS 1930 {} 10000.00',
+  '#TRANS 3001 {} -10000.00',
+  '}',
+  '#VER "" "" 20240116 "Dagsrapport"',
+  '{',
+  '#TRANS 1930 {} 2500.00',
+  '#TRANS 3001 {} -2500.00',
+  '}',
+].join('\n')
+
+// A number token that is present but not a number stays an error: that is a
+// malformed file, not the SIE4I "receiver assigns" case.
+const SIE_GARBAGE_VER_NUMBER = [
+  '#FLAGGA 0',
+  '#SIETYP 4',
+  '#FNAMN "Trasig AB"',
+  '#RAR 0 20240101 20241231',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 3001 "Försäljning"',
+  '#VER A "abc" 20240115 "Trasigt nummer"',
+  '{',
+  '#TRANS 1930 {} 10000.00',
+  '#TRANS 3001 {} -10000.00',
+  '}',
+].join('\n')
+
+// SIE 4B corrected voucher (Fortnox-style): the original 5010 line was
+// struck (#BTRANS) and replaced by 6540 (#RTRANS, twinned by an identical
+// #TRANS). Final state = the #TRANS rows only, and it balances.
+const SIE_WITH_CORRECTIONS = [
+  '#FLAGGA 0',
+  '#SIETYP 4',
+  '#FNAMN "Rättat AB"',
+  '#RAR 0 20240101 20241231',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 5010 "Lokalhyra"',
+  '#KONTO 6540 "IT-tjänster"',
+  '#VER A 7 20240301 "Faktura IT"',
+  '{',
+  '#BTRANS 5010 {} 1200.00 20240301 "Lokalhyra" 0 "EL"',
+  '#RTRANS 6540 {} 1200.00 20240301 "IT-tjänster" 0 "EL"',
+  '#TRANS 6540 {} 1200.00 20240301 "IT-tjänster"',
+  '#TRANS 1930 {} -1200.00',
+  '}',
+].join('\n')
+
+// Spec violation: an #RTRANS with no identical #TRANS twin after it.
+const SIE_RTRANS_WITHOUT_TWIN = [
+  '#FLAGGA 0',
+  '#SIETYP 4',
+  '#FNAMN "Trasig AB"',
+  '#RAR 0 20240101 20241231',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 6540 "IT-tjänster"',
+  '#VER A 8 20240301 "Utan tvilling"',
+  '{',
+  '#RTRANS 6540 {} 1200.00',
+  '#TRANS 1930 {} -1200.00',
+  '}',
+].join('\n')
+
 // SIE file with { on same line as #VER
 const SIE_BRACE_ON_VER_LINE = [
   '#FLAGGA 0',
@@ -424,6 +496,32 @@ describe('parseSIEFile', () => {
       expect(errors).toHaveLength(0)
     })
 
+    it('allows empty series AND empty number in VER (SIE4I)', () => {
+      const result = parseSIEFile(SIE4I_EMPTY_SERIES_AND_NUMBER)
+      expect(result.vouchers).toHaveLength(2)
+
+      const [first, second] = result.vouchers
+      expect(first.series).toBe('')
+      // The number is a placeholder, flagged so nothing treats it as a source key.
+      expect(first.numberOmitted).toBe(true)
+      expect(first.date).toEqual(new Date(2024, 0, 15))
+      expect(first.description).toBe('Dagsrapport')
+      expect(first.lines).toHaveLength(2)
+      expect(second.numberOmitted).toBe(true)
+      expect(second.date).toEqual(new Date(2024, 0, 16))
+
+      const errors = result.issues.filter((i) => i.severity === 'error')
+      expect(errors).toHaveLength(0)
+    })
+
+    it('still errors on a VER number token that is not a number', () => {
+      const result = parseSIEFile(SIE_GARBAGE_VER_NUMBER)
+      expect(result.vouchers).toHaveLength(0)
+
+      const errors = result.issues.filter((i) => i.severity === 'error')
+      expect(errors.some((e) => e.message.includes('Ogiltig verifikationsdefinition'))).toBe(true)
+    })
+
     it('handles { on same line as #VER', () => {
       const result = parseSIEFile(SIE_BRACE_ON_VER_LINE)
       expect(result.vouchers).toHaveLength(1)
@@ -444,6 +542,49 @@ describe('parseSIEFile', () => {
       const errors = result.issues.filter((i) => i.severity === 'error')
       expect(errors.length).toBeGreaterThanOrEqual(1)
       expect(errors.some((e) => e.message.includes('balanserar inte'))).toBe(true)
+    })
+
+    // SIE 4B #BTRANS / #RTRANS (#2427): final state stays #TRANS-only, the
+    // correction history is kept aside on the voucher.
+    it('books #TRANS only and keeps #BTRANS/#RTRANS as correction history', () => {
+      const result = parseSIEFile(SIE_WITH_CORRECTIONS)
+      expect(result.vouchers).toHaveLength(1)
+      const v = result.vouchers[0]
+
+      // Final state: exactly the #TRANS rows, balanced, no double counting.
+      expect(v.lines).toHaveLength(2)
+      expect(v.lines[0]).toMatchObject({ account: '6540', amount: 1200 })
+      expect(v.lines[1]).toMatchObject({ account: '1930', amount: -1200 })
+      expect(result.issues.filter((i) => i.severity === 'error')).toHaveLength(0)
+
+      // History: the struck original and the added replacement, with the
+      // SIE `sign` (who corrected in the source system).
+      expect(v.corrections).toBeDefined()
+      expect(v.corrections!.struck).toHaveLength(1)
+      expect(v.corrections!.struck[0]).toMatchObject({ account: '5010', amount: 1200, description: 'Lokalhyra', signature: 'EL' })
+      expect(v.corrections!.added).toHaveLength(1)
+      expect(v.corrections!.added[0]).toMatchObject({ account: '6540', amount: 1200, signature: 'EL' })
+      expect(result.stats.totalTransactionLines).toBe(2)
+    })
+
+    it('leaves corrections undefined on a voucher without #BTRANS/#RTRANS', () => {
+      const result = parseSIEFile(SIE_WITH_VOUCHERS)
+      for (const v of result.vouchers) {
+        expect(v.corrections).toBeUndefined()
+      }
+    })
+
+    it('warns when an #RTRANS is not twinned by an identical #TRANS', () => {
+      const result = parseSIEFile(SIE_RTRANS_WITHOUT_TWIN)
+      const v = result.vouchers[0]
+
+      // Spec rule: #RTRANS is not part of the final state on its own.
+      expect(v.lines).toHaveLength(1)
+      expect(v.corrections!.added).toHaveLength(1)
+
+      const twinWarnings = result.issues.filter((i) => i.tag === 'RTRANS' && i.severity === 'warning')
+      expect(twinWarnings).toHaveLength(1)
+      expect(twinWarnings[0].message).toContain('följs inte av en identisk #TRANS')
     })
   })
 
@@ -893,6 +1034,37 @@ describe('parseSIEFile: invalid date handling', () => {
 // --- Fix 4: Missing amount handling ---
 
 describe('parseSIEFile: missing amount handling', () => {
+  it.each(['IB', 'UB', 'RES', 'TRANS', 'RTRANS', 'BTRANS'].flatMap(tag =>
+    ['', '\"\"', 'not-a-number', '100abc', 'Infinity', '1e999'].map(amount => ({ tag, amount }))
+  ))('marks the omitted financial record without coercing $tag $amount to zero', ({ tag, amount }) => {
+    const balanceRecord = ['IB', 'UB', 'RES'].includes(tag)
+    const record = balanceRecord ? `#${tag} -1 1930 ${amount}` : `#${tag} 1930 {} ${amount}`
+    const result = parseSIEFile(balanceRecord ? record : `#VER A 1 20240115 "Test"\n{\n${record}\n}`)
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      severity: 'warning', code: 'invalid_amount', tag, account: '1930', ...(balanceRecord ? { yearIndex: -1 } : {}),
+    }))
+    expect([...result.openingBalances, ...result.closingBalances, ...result.resultBalances]).toHaveLength(0)
+    expect(result.vouchers.flatMap(voucher => voucher.lines)).toHaveLength(0)
+  })
+
+  it.each([
+    { token: '0', amount: 0 },
+    { token: '\"0\"', amount: 0 },
+    { token: '\"1234.50\"', amount: 1234.5 },
+    { token: '1234,50', amount: 1234.5 },
+    { token: '\"-1234,50\"', amount: -1234.5 },
+  ])('preserves supported monetary format $token in balance and active records', ({ token, amount }) => {
+    const result = parseSIEFile([
+      `#IB 0 1930 ${token}`, `#UB 0 1930 ${token}`, `#RES 0 3001 ${token}`,
+      '#VER A 1 20240115 "Test"', '{', `#TRANS 1930 {} ${token}`, `#TRANS 3001 {} ${-amount}`, '}',
+    ].join('\n'))
+    expect(result.issues.filter(issue => issue.code === 'invalid_amount')).toEqual([])
+    expect(result.openingBalances[0].amount).toBe(amount)
+    expect(result.closingBalances[0].amount).toBe(amount)
+    expect(result.resultBalances[0].amount).toBe(amount)
+    expect(result.vouchers[0].lines[0].amount).toBe(amount)
+  })
+
   it('skips #IB with missing amount and adds warning', () => {
     const content = [
       '#FLAGGA 0',

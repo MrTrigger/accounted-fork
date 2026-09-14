@@ -1,5 +1,7 @@
 'use client'
 
+import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Download, FileCode, FileSpreadsheet, FileText, Table } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
@@ -22,6 +24,13 @@ export interface ReportExportItem {
 }
 
 /**
+ * The focused report page renders one toolbar row and leaves this slot at
+ * its right end. A menu mounted anywhere below it moves in there,
+ * so a report never spends a row of its own on the Exportera button.
+ */
+export const REPORT_TOOLBAR_SLOT_ID = 'report-toolbar-end'
+
+/**
  * The single "Exportera" affordance for a report. Replaces the scattered
  * per-format download buttons that used to float inside report card bodies.
  * `children` lets a report append a sibling action (e.g. the VAT review agent).
@@ -39,10 +48,16 @@ export function ReportExportMenu({
   variant?: 'outline' | 'default'
 }) {
   const t = useTranslations('reports')
+  // Resolved after mount: the slot is a sibling rendered above, present
+  // only on the focused report page (never on the standalone VAT page).
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    setSlot(document.getElementById(REPORT_TOOLBAR_SLOT_ID))
+  }, [])
   const hasItems = !!items && items.length > 0
   if (!hasItems && !children) return null
 
-  return (
+  const menu = (
     <div className="flex items-center justify-end gap-2">
       {hasItems && (
         <DropdownMenu>
@@ -82,4 +97,5 @@ export function ReportExportMenu({
       {children}
     </div>
   )
+  return slot ? createPortal(menu, slot) : menu
 }

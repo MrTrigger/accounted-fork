@@ -441,6 +441,18 @@ describe('tools/list payload size guard', () => {
     //     ignore_transaction: picking a read to demote needs prod usage data,
     //     not a guess inside a ROT/RUT PR; do that demotion as its own change
     //     and ratchet this ceiling back down.
+    //   * 2026-09-10, kollektivavtal semesterlön rate (#2477): one nullable
+    //     number on create/update_employee measured 60 597 with two
+    //     sentence-long field notes. Paid for inside the same two WRITE
+    //     tools: the create note is one clause, the update field carries no
+    //     note, and both tool descriptions, both default_dimensions notes
+    //     and the is_active note lost their filler. Ceiling unchanged, no
+    //     read demoted.
+    //   * 2026-09-13, kontantmetod credit notes (#2552): gnubok_credit_invoice
+    //     had to stop claiming "(accrual)" and say when the reversal posts.
+    //     Paid for inside the same tool: both property notes lost their
+    //     filler ('UUID of the invoice to credit' restates the schema).
+    //     Ceiling unchanged, no read demoted.
     expect(approxTokens).toBeLessThan(60_500)
   })
 

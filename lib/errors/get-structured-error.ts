@@ -25,6 +25,7 @@ import {
 import {
   AccountsNotInChartError,
   BookkeepingDatabaseError,
+  CannotCancelNonDraftError,
   CannotCorrectNonPostedError,
   CannotReverseNonPostedError,
   CannotReverseStornoError,
@@ -36,6 +37,8 @@ import {
   InvalidMappingResultError,
   JournalEntryNotBalancedError,
   JournalEntryNotFoundError,
+  JournalLineBothSidesNonZeroError,
+  JournalLineNegativeAmountError,
   CurrencyRevaluationAlreadyExistsError,
   MeaninglessCorrectionError,
   NoOpenPeriodForDateError,
@@ -155,11 +158,39 @@ function inferCode(message: string): string | null {
   if (/already has a journal entry/i.test(message)) return 'TRANSACTION_ALREADY_CATEGORIZED'
   if (/already been sent/i.test(message) || /already sent/i.test(message)) return 'INVOICE_ALREADY_SENT'
   if (/locked\/closed fiscal period/i.test(message)) return 'PERIOD_LOCKED'
+  // close_period / lock_period / run_year_end and period-service throw these
+  // as plain strings; without a code they surfaced as UNKNOWN_ERROR with
+  // "Något gick fel" (feedback seq 392722, close_period after run_year_end).
+  if (/Period is already closed|already closed/i.test(message)) return 'PERIOD_ALREADY_CLOSED'
+  if (/Period is already locked|already locked/i.test(message)) return 'PERIOD_LOCK_ALREADY_LOCKED'
   if (/Bokföringen är låst/i.test(message)) return 'PERIOD_LOCKED'
   if (/Transaction not found/i.test(message)) return 'NOT_FOUND'
   if (/Invoice not found/i.test(message)) return 'NOT_FOUND'
   if (/must be \d+ characters or fewer/i.test(message)) return 'VALIDATION_ERROR'
   return null
+}
+
+/**
+ * A thrown error may carry its own remediation when the fix depends on the
+ * call site (which inbox item to repair, which tool re-stages it) and the
+ * registry entry is shared with surfaces where that hint would be wrong.
+ * Only a well-formed hint is honored; anything else falls back to the
+ * registry.
+ */
+function extractRemediation(error: unknown): StructuredErrorRemediation | null {
+  if (typeof error !== 'object' || error === null) return null
+  const raw = (error as Record<string, unknown>).remediation
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const hint = raw as Record<string, unknown>
+  if (typeof hint.description !== 'string' || hint.description.trim() === '') return null
+  return {
+    description: hint.description,
+    ...(typeof hint.tool === 'string' ? { tool: hint.tool } : {}),
+    ...(typeof hint.resource === 'string' ? { resource: hint.resource } : {}),
+    ...(typeof hint.args === 'object' && hint.args !== null && !Array.isArray(hint.args)
+      ? { args: hint.args as Record<string, unknown> }
+      : {}),
+  }
 }
 
 function extractEnglishMessage(error: unknown): string {
@@ -198,7 +229,8 @@ export function getStructuredError(
   if (code === 'UNKNOWN_ERROR' && transient) code = 'TRANSIENT_ERROR'
 
   const entry = getErrorEntry(code)
-  let remediation = entry?.remediation
+  // The throw site knows more than the registry when it attaches a hint.
+  let remediation = extractRemediation(error) ?? entry?.remediation
 
   // Specialize INSUFFICIENT_SCOPE with the actual scope name when known.
   if (code === 'INSUFFICIENT_SCOPE' && options.attemptedScope && remediation) {
@@ -423,6 +455,22 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
       details: { totalDebit: err.totalDebit, totalCredit: err.totalCredit, kind: err.kind },
     }
   }
+  // Both malformed-line errors. Without an arm here they fall through to the
+  // INTERNAL_ERROR default below and a caller-side mistake surfaces as a 500
+  // on /api/v1; the negative-amount arm was missing for the same reason.
+  if (
+    err instanceof JournalLineNegativeAmountError ||
+    err instanceof JournalLineBothSidesNonZeroError
+  ) {
+    return {
+      code: err.code,
+      details: {
+        accountNumber: err.accountNumber,
+        debitAmount: err.debitAmount,
+        creditAmount: err.creditAmount,
+      },
+    }
+  }
   if (err instanceof FiscalPeriodNotFoundError) return { code: err.code }
   if (err instanceof EntryDateOutsideFiscalPeriodError) {
     return {
@@ -443,6 +491,9 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
     return { code: err.code, details: { sourceType: err.sourceType } }
   }
   if (err instanceof CannotCorrectNonPostedError) {
+    return { code: err.code, details: { currentStatus: err.currentStatus } }
+  }
+  if (err instanceof CannotCancelNonDraftError) {
     return { code: err.code, details: { currentStatus: err.currentStatus } }
   }
   if (err instanceof EntryAlreadyReversedError) return { code: err.code }
@@ -495,6 +546,12 @@ function buildResponse(
       ...(requestId ? { requestId } : {}),
       ...(details !== undefined ? { details } : {}),
     },
+  }
+  // Consumers that read only error.message need the same actionable summary
+  // as the app. Keep the full issues array and stable code for API clients.
+  if (code === 'VALIDATION_ERROR' && Array.isArray((details as { issues?: unknown } | undefined)?.issues)) {
+    body.error.message = getErrorMessage(body, { locale: 'sv' })
+    body.error.message_en = getErrorMessage(body, { locale: 'en' })
   }
   const res = NextResponse.json(body, { status: entry.httpStatus })
   if (requestId) res.headers.set('X-Request-Id', requestId)

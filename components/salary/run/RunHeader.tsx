@@ -28,7 +28,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   AlertTriangle,
-  ArrowLeft,
   ArrowLeftCircle,
   Download,
   Eye,
@@ -229,24 +228,14 @@ export function RunHeader({
 
   return (
     <>
-      {/* Back link on its own quiet row, so the title below keeps a stable
-          position across runs. */}
-      <div>
-        <Link
-          href="/salary"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          {t('back_to_salary')}
-        </Link>
-      </div>
-
       {/* Header: serif title with one status element, a quiet meta line, and
-          the next step on the right. Everything else lives in the ⋯ menu. */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
+          the next step on the right. Everything else lives in the ⋯ menu.
+          The page-header hooks turn it into the top bar; the sidebar says
+          where we are, so there is no back link. */}
+      <div className="page-header flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="page-header-lead min-w-0">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-display text-2xl leading-8 tracking-tight">
+            <h1 className="page-header-title font-display text-2xl leading-8 tracking-tight">
               {t('title', { period: periodLabel })}
             </h1>
             {run.status === 'booked' ? (
@@ -260,7 +249,7 @@ export function RunHeader({
               <Badge variant="outline">{t('correction_badge')}</Badge>
             )}
           </div>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+          <p className="page-header-meta mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
             {metaParts.map((part, i) => (
               <span key={i} className="inline-flex items-center gap-x-2">
                 {i > 0 && <span aria-hidden>·</span>}
@@ -270,7 +259,7 @@ export function RunHeader({
           </p>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="page-header-action flex shrink-0 flex-wrap items-center gap-2">
           {showPayslipSend && (
             // The span carries the tooltip: browsers suppress `title` on
             // disabled elements, and hover events don't fire on them.

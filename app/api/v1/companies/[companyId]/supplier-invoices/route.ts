@@ -28,6 +28,7 @@ import {
   decodeDefaultCursor,
   encodeDefaultCursor,
   parsePaginationParams,
+  PaginationQueryShape,
 } from '@/lib/api/v1/pagination'
 import { registerEndpoint, listEnvelope, dataEnvelope } from '@/lib/api/v1/registry'
 import { withApiV1 } from '@/lib/api/v1/with-api-v1'
@@ -42,6 +43,10 @@ import {
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { booksInvoicesOnIssue } from '@/lib/bookkeeping/booking-mode'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
+import {
+  defaultVatRateForTreatment,
+  treatmentDeductsInputVat,
+} from '@/lib/vat/supplier-invoice-line-checks'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { eventBus } from '@/lib/events'
@@ -85,6 +90,28 @@ const SI_SUMMARY_COLUMNS =
   'id, supplier_id, arrival_number, supplier_invoice_number, invoice_date, due_date, status, currency, subtotal, vat_amount, total, paid_amount, remaining_amount, is_credit_note, paid_at, created_at'
 
 const SUPPLIER_NAME_ONLY_COLUMNS = 'id, name'
+
+const ListFilters = z.object({
+  status: SupplierInvoiceStatus.optional().describe('Only supplier invoices in this status.'),
+  supplier_id: z.string().uuid().optional().describe('Only invoices from this supplier (id).'),
+  currency: z
+    .string()
+    .regex(/^[A-Z]{3}$/, 'currency must be a 3-letter ISO-4217 code')
+    .optional()
+    .describe('3-letter ISO 4217 code, uppercase (e.g. SEK, EUR).'),
+  date_from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date_from must be ISO YYYY-MM-DD')
+    .optional()
+    .describe('YYYY-MM-DD. Invoices with invoice_date on or after this date.'),
+  date_to: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date_to must be ISO YYYY-MM-DD')
+    .optional()
+    .describe('YYYY-MM-DD. Invoices with invoice_date on or before this date.'),
+})
+
+const ListQuery = ListFilters.extend(PaginationQueryShape)
 
 registerEndpoint({
   operation: 'supplier-invoices.list',
@@ -135,6 +162,7 @@ registerEndpoint({
   idempotent: true,
   reversible: false,
   dryRunSupported: false,
+  request: { query: ListQuery },
   response: { success: SupplierInvoicesListResponse },
 })
 
@@ -145,14 +173,7 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string }> }>(
     const { limit, cursor } = parsePaginationParams(url)
     const decoded = decodeDefaultCursor(cursor)
 
-    const FiltersSchema = z.object({
-      status: SupplierInvoiceStatus.optional(),
-      supplier_id: z.string().uuid().optional(),
-      currency: z.string().regex(/^[A-Z]{3}$/, 'currency must be a 3-letter ISO-4217 code').optional(),
-      date_from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date_from must be ISO YYYY-MM-DD').optional(),
-      date_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date_to must be ISO YYYY-MM-DD').optional(),
-    })
-    const filtersResult = FiltersSchema.safeParse({
+    const filtersResult = ListFilters.safeParse({
       status: url.searchParams.get('status') ?? undefined,
       supplier_id: url.searchParams.get('supplier_id') ?? undefined,
       currency: url.searchParams.get('currency') ?? undefined,
@@ -372,13 +393,19 @@ interface ComputedItem {
 // else at the surface rather than silently book a wrong figure.
 const ALLOWED_SV_VAT_RATES = new Set<number>([0, 0.06, 0.12, 0.25])
 
-function computeItemsAndTotals(input: z.infer<typeof CreateSupplierInvoiceSchema>):
+function computeItemsAndTotals(
+  input: z.infer<typeof CreateSupplierInvoiceSchema>,
+  vatTreatment: string,
+):
   | { ok: true; items: ComputedItem[]; subtotal: number; vatAmount: number; total: number }
   | { ok: false; field: string; message: string; attempted_rate: number; index: number } {
   const items: ComputedItem[] = []
   for (let index = 0; index < input.items.length; index++) {
     const item = input.items[index]
-    const vatRate = item.vat_rate ?? 0.25
+    // An omitted rate follows the invoice's vat_treatment, not a blanket
+    // 25 % (issue #2553): exempt, export and reverse_charge carry no
+    // Swedish moms at all, and reduced_12 / reduced_6 are 12 % / 6 %.
+    const vatRate = item.vat_rate ?? defaultVatRateForTreatment(vatTreatment)
     if (!ALLOWED_SV_VAT_RATES.has(vatRate)) {
       return {
         ok: false,
@@ -497,7 +524,31 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
       })
     }
 
-    const totalsResult = computeItemsAndTotals(body)
+    // Derive a sensible default for vat_treatment + reverse_charge from the
+    // supplier_type. EU/non-EU suppliers default to reverse-charge unless the
+    // caller explicitly overrides; Swedish suppliers default to standard 25%.
+    // The treatment is a booking contract, not metadata: the engine reads
+    // `invoice.reverse_charge` for the fiktiv-moms route and `vat_treatment`
+    // for whether any ingående moms may be deducted at all (issue #2553), and
+    // it decides the rate a line that omits vat_rate falls back to. Resolved
+    // here, before the items are computed, because computeItemsAndTotals
+    // needs it.
+    const foreignSupplier =
+      supplier.supplier_type === 'eu_business' || supplier.supplier_type === 'non_eu_business'
+    const reverseCharge = body.reverse_charge ?? foreignSupplier
+    // Force `vat_treatment` to track the resolved `reverse_charge` flag.
+    // Otherwise a caller could pass `vat_treatment: 'standard_25'` explicitly
+    // and have it co-exist with `reverse_charge=true` (driven by
+    // supplier_type), producing inconsistent metadata: the engine books via
+    // `reverse_charge` (Ruta 30 / 48) but a downstream momsdeklaration
+    // export reading `vat_treatment` would mis-classify. Normalisation here
+    // keeps the two fields in lock-step; an explicit override only sticks
+    // when it agrees with the boolean flag.
+    const vatTreatment = reverseCharge
+      ? 'reverse_charge'
+      : (body.vat_treatment ?? 'standard_25')
+
+    const totalsResult = computeItemsAndTotals(body, vatTreatment)
     if (!totalsResult.ok) {
       return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
         requestId: ctx.requestId,
@@ -539,28 +590,6 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
       total_sek: totalSek,
     } = supplierInvoiceSekAmounts(fx.rate, { subtotal, vatAmount, total })
 
-    // Derive a sensible default for vat_treatment + reverse_charge from the
-    // supplier_type. EU/non-EU suppliers default to reverse-charge unless the
-    // caller explicitly overrides; Swedish suppliers default to standard 25%.
-    // The engine looks at `invoice.reverse_charge` (boolean) for the actual
-    // booking choice: `vat_treatment` is recorded as metadata. Keeping the
-    // two in sync prevents momsdeklaration Ruta 30 / 48 misclassification on
-    // EU-supplier rows that omit both fields.
-    const foreignSupplier =
-      supplier.supplier_type === 'eu_business' || supplier.supplier_type === 'non_eu_business'
-    const reverseCharge = body.reverse_charge ?? foreignSupplier
-    // Force `vat_treatment` to track the resolved `reverse_charge` flag.
-    // Otherwise a caller could pass `vat_treatment: 'standard_25'` explicitly
-    // and have it co-exist with `reverse_charge=true` (driven by
-    // supplier_type), producing inconsistent metadata: the engine books via
-    // `reverse_charge` (Ruta 30 / 48) but a downstream momsdeklaration
-    // export reading `vat_treatment` would mis-classify. Normalisation here
-    // keeps the two fields in lock-step; an explicit override only sticks
-    // when it agrees with the boolean flag.
-    const vatTreatment = reverseCharge
-      ? 'reverse_charge'
-      : (body.vat_treatment ?? 'standard_25')
-
     // Cross-field constraint for reverse-charge invoices: the Swedish supplier
     // does not charge VAT, the buyer self-assesses (ML 1 kap 2§ p.4b /
     // 16 kap 6 § / 16 kap 13 §). All item vat_rates MUST be 0: otherwise the
@@ -577,6 +606,29 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
               'reverse_charge invoices must have vat_rate=0 on every line item: the buyer self-assesses VAT.',
             attempted_rate: items[offending].vat_rate,
             reverse_charge: true,
+          },
+        })
+      }
+    }
+
+    // Same cross-field constraint for the treatments that carry no Swedish
+    // moms at all (issue #2553). An `exempt` purchase is undantagen (ML 10
+    // kap: bank, försäkring, hyra, vård, utbildning) and an `export` purchase
+    // carries no Swedish moms either, so neither has any debiterad ingående
+    // moms to deduct: the gross is the cost. A line claiming a rate or an
+    // amount contradicts the treatment, so refuse it here rather than store a
+    // figure the engine will refuse to book (2641 / Ruta 48).
+    if (!treatmentDeductsInputVat(vatTreatment)) {
+      const offending = items.findIndex((it) => it.vat_rate !== 0 || it.vat_amount !== 0)
+      if (offending !== -1) {
+        return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+          requestId: ctx.requestId,
+          details: {
+            field: `items[${offending}].vat_rate`,
+            message:
+              `vat_treatment '${vatTreatment}' invoices must have vat_rate=0 and vat_amount=0 on every line item: the supplier charges no Swedish VAT, so there is no input VAT to deduct.`,
+            attempted_rate: items[offending].vat_rate,
+            vat_treatment: vatTreatment,
           },
         })
       }

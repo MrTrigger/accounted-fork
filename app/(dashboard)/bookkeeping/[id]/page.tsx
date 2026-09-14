@@ -22,6 +22,7 @@ import {
   Bot,
   MoreHorizontal,
   Trash2,
+  Users,
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -86,6 +87,10 @@ type RattelseLogRow = {
   // actor is unknown or the lookup failed.
   actor_label: string | null
   created_at: string
+  // 'sie_import': correction history carried by the imported SIE file
+  // (#BTRANS/#RTRANS); the source system's signature stands in for the actor.
+  source?: 'user' | 'sie_import' | null
+  external_signature?: string | null
 }
 
 type PeriodStatus = 'open' | 'locked' | 'closed'
@@ -432,20 +437,32 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
   const struckDisplayLines = rattelseLog
     .filter((r) => r.rattelse_type === 'lines')
     .flatMap((r) =>
-      (r.struck_lines ?? []).map((s) => ({ ...s, struck_at: r.created_at, struck_by: r.actor_label }))
+      (r.struck_lines ?? []).map((s) => ({
+        ...s,
+        struck_at: r.created_at,
+        struck_by: r.source === 'sie_import' ? (r.external_signature ?? null) : r.actor_label,
+        imported: r.source === 'sie_import',
+      }))
     )
 
   // The struck marker beside a struck row: who and when at a glance, the
-  // date alone when the actor could not be resolved.
-  const struckMarker = (s: { struck_at: string; struck_by: string | null }) =>
-    s.struck_by
+  // date alone when the actor could not be resolved. Imported history has no
+  // "when" (SIE carries only the signature), so it says where instead.
+  const struckMarker = (s: { struck_at: string; struck_by: string | null; imported?: boolean }) => {
+    if (s.imported) {
+      return s.struck_by
+        ? t('struck_marker_imported_by', { actor: s.struck_by })
+        : t('struck_marker_imported')
+    }
+    return s.struck_by
       ? t('struck_marker_by', { date: formatDate(s.struck_at), actor: s.struck_by })
       : t('struck_marker', { date: formatDate(s.struck_at) })
+  }
 
   // Live and struck lines interleaved by original position.
   const displayRows: Array<
     | { kind: 'live'; line: JournalEntryLine }
-    | { kind: 'struck'; line: StruckLineSnapshot & { struck_at: string; struck_by: string | null } }
+    | { kind: 'struck'; line: StruckLineSnapshot & { struck_at: string; struck_by: string | null; imported?: boolean } }
   > = [
     ...lines.map((l) => ({ kind: 'live' as const, line: l })),
     ...struckDisplayLines.map((s) => ({ kind: 'struck' as const, line: s })),
@@ -971,26 +988,36 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
         </div>
       </DetailSection>
 
-      {/* Underlag: linked invoices as rows, then the document list. */}
+      {/* Underlag: linked invoices and lönekörningar as rows, then the
+          document list. Each row is the followable half of a link the app
+          already stores (BFL 5 kap 7 §, hänvisning till underlag). */}
       <DetailSection kicker={t('attachments_title')} aside={underlagAside}>
         {references.length > 0 && (
           <DefRow label={t('references_title')} className="items-baseline">
             <ul className="divide-y divide-border">
-              {references.map((ref) => (
-                <li key={`${ref.type}-${ref.id}`} className="py-1 first:pt-0 last:pb-0">
-                  <Link
-                    href={ref.type === 'invoice' ? `/invoices/${ref.id}` : `/supplier-invoices/${ref.id}`}
-                    className="inline-flex items-center gap-2 hover:underline"
-                  >
-                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="truncate">
-                      {ref.type === 'invoice'
-                        ? t('reference_invoice', { number: ref.number })
-                        : t('reference_supplier_invoice', { number: ref.number })}
-                    </span>
-                  </Link>
-                </li>
-              ))}
+              {references.map((ref) => {
+                const href =
+                  ref.type === 'invoice'
+                    ? `/invoices/${ref.id}`
+                    : ref.type === 'supplier_invoice'
+                      ? `/supplier-invoices/${ref.id}`
+                      : `/salary/runs/${ref.id}`
+                const label =
+                  ref.type === 'invoice'
+                    ? t('reference_invoice', { number: ref.number })
+                    : ref.type === 'supplier_invoice'
+                      ? t('reference_supplier_invoice', { number: ref.number })
+                      : t('reference_salary_run', { number: ref.number })
+                const Icon = ref.type === 'salary_run' ? Users : FileText
+                return (
+                  <li key={`${ref.type}-${ref.id}`} className="py-1 first:pt-0 last:pb-0">
+                    <Link href={href} className="inline-flex items-center gap-2 hover:underline">
+                      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{label}</span>
+                    </Link>
+                  </li>
+                )
+              })}
             </ul>
           </DefRow>
         )}
@@ -1027,10 +1054,20 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                   {/* data-ph-mask: the actor label is a person's e-mail or name */}
                   <span data-ph-mask="" className="text-muted-foreground">
                     <span className="tabular-nums">{formatDate(row.created_at)}</span>
-                    {row.actor_label ? ` · ${row.actor_label}` : ''}
+                    {row.source === 'sie_import'
+                      ? row.external_signature
+                        ? ` · ${t('rattelse_imported_signature', { actor: row.external_signature })}`
+                        : ''
+                      : row.actor_label
+                        ? ` · ${row.actor_label}`
+                        : ''}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {row.rattelse_type === 'metadata' ? t('rattelse_kind_metadata') : t('rattelse_kind_lines')}
+                    {row.source === 'sie_import'
+                      ? t('rattelse_kind_imported')
+                      : row.rattelse_type === 'metadata'
+                        ? t('rattelse_kind_metadata')
+                        : t('rattelse_kind_lines')}
                   </span>
                 </div>
                 {row.rattelse_type === 'metadata' ? (

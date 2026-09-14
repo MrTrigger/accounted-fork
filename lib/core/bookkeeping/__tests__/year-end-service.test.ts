@@ -35,6 +35,7 @@ interface SeededTables {
   invoice_payments?: Row[]
   supplier_invoice_payments?: Row[]
   company_settings?: Row[]
+  kontantmetod_cutoff_entries?: Row[]
 }
 
 /**
@@ -158,6 +159,7 @@ function fxBaseTables(extra: SeededTables = {}): SeededTables {
     supplier_invoices: extra.supplier_invoices ?? [],
     invoice_payments: extra.invoice_payments ?? [],
     supplier_invoice_payments: extra.supplier_invoice_payments ?? [],
+    kontantmetod_cutoff_entries: extra.kontantmetod_cutoff_entries ?? [],
   }
 }
 
@@ -327,6 +329,59 @@ describe('validateYearEndReadiness', () => {
     expect(codes).toContain('PERIOD_ALREADY_CLOSED')
     expect(codes).toContain('CLOSING_ENTRY_EXISTS')
     expect(codes).toContain('CONTINUITY_MISMATCH')
+  })
+
+  // executeYearEndClosing posts the closing entry INTO the period before it
+  // locks it (steps 4 and 7): a period locked beforehand used to pass
+  // readiness and then hit the period-lock trigger at commit. The MCP skill
+  // prescribed exactly that order (feedback seq 392722).
+  it('blocks a locked (not closed) period with PERIOD_LOCKED and says to unlock it', async () => {
+    const period = makeFiscalPeriod({
+      id: 'fp-1',
+      is_closed: false,
+      closing_entry_id: null,
+      locked_at: '2026-01-15T10:00:00Z',
+    })
+    results = noGapResults(period)
+
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [],
+      isBalanced: true,
+      totalDebit: 0,
+      totalCredit: 0,
+    } as never)
+
+    const supabase = makeClient()
+    const result = await validateYearEndReadiness(supabase as never, 'company-1', 'user-1', 'fp-1')
+    expect(result.ready).toBe(false)
+    const locked = result.blockers.find((b) => b.code === 'PERIOD_LOCKED')
+    expect(locked).toBeDefined()
+    expect(locked!.message).toMatch(/lås upp/)
+    expect(locked!.message).toMatch(/låser den sedan självt/)
+    expect(result.errors).toContain(locked!.message)
+  })
+
+  it('does not add PERIOD_LOCKED on a closed period (closed periods are locked too, but cannot be unlocked)', async () => {
+    const period = makeFiscalPeriod({
+      id: 'fp-1',
+      is_closed: true,
+      closing_entry_id: 'ce-1',
+      locked_at: '2026-01-15T10:00:00Z',
+    })
+    results = noGapResults(period)
+
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [],
+      isBalanced: true,
+      totalDebit: 0,
+      totalCredit: 0,
+    } as never)
+
+    const supabase = makeClient()
+    const result = await validateYearEndReadiness(supabase as never, 'company-1', 'user-1', 'fp-1')
+    const codes = result.blockers.map((b) => b.code)
+    expect(codes).toContain('PERIOD_ALREADY_CLOSED')
+    expect(codes).not.toContain('PERIOD_LOCKED')
   })
 
   it('returns errors when trial balance is unbalanced', async () => {
@@ -688,9 +743,9 @@ describe('validateYearEndReadiness: kontantmetoden cut-off gate', () => {
     vi.mocked(findNextPeriod).mockResolvedValue(nextPeriod as never)
   })
 
-  function cashTables(journalEntries: Row[] = []): SeededTables {
+  function cashTables(cutoffMarkers: Row[] = []): SeededTables {
     return {
-      ...fxBaseTables({ journal_entries: journalEntries }),
+      ...fxBaseTables({ kontantmetod_cutoff_entries: cutoffMarkers }),
       company_settings: [{
         company_id: 'company-1', accounting_method: 'cash', entity_type: 'aktiebolag',
       }],
@@ -715,20 +770,27 @@ describe('validateYearEndReadiness: kontantmetoden cut-off gate', () => {
       id: 'inv-1', reference: 'F-1', vatTreatment: 'standard_25',
       outstanding: 1250, vat: 250,
     }], [], 'aktiebolag')
+    // Marker rows (kontantmetod_cutoff_entries), both anchored to the CLOSED
+    // period, each carrying its journal entry. The descriptions below are
+    // grundbok text the gate no longer reads.
     const markers = [
       {
-        id: 'cutoff', company_id: 'company-1', fiscal_period_id: 'fp-1',
-        voucher_series: 'A', voucher_number: 10, status: 'posted', source_type: 'year_end',
-        source_id: 'fp-1', entry_date: '2024-12-31',
-        description: KONTANTMETOD_CUTOFF_DESCRIPTIONS.receivable,
-        lines: expected.receivableLines,
+        company_id: 'company-1', fiscal_period_id: 'fp-1', kind: 'receivable',
+        entry: {
+          id: 'cutoff', fiscal_period_id: 'fp-1', status: 'posted',
+          entry_date: '2024-12-31',
+          description: KONTANTMETOD_CUTOFF_DESCRIPTIONS.receivable,
+          lines: expected.receivableLines,
+        },
       },
       {
-        id: 'reversal', company_id: 'company-1', fiscal_period_id: 'fp-2',
-        voucher_series: 'A', voucher_number: 1, status: 'posted', source_type: 'year_end',
-        source_id: 'fp-1', entry_date: '2025-01-01',
-        description: KONTANTMETOD_CUTOFF_DESCRIPTIONS.receivableReversal,
-        lines: reverseLines(expected.receivableLines),
+        company_id: 'company-1', fiscal_period_id: 'fp-1', kind: 'receivable_reversal',
+        entry: {
+          id: 'reversal', fiscal_period_id: 'fp-2', status: 'posted',
+          entry_date: '2025-01-01',
+          description: KONTANTMETOD_CUTOFF_DESCRIPTIONS.receivableReversal,
+          lines: reverseLines(expected.receivableLines),
+        },
       },
     ]
 

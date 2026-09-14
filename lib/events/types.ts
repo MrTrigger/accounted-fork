@@ -32,6 +32,7 @@ export type CoreEvent =
   | { type: 'journal_entry.committed'; payload: { entry: JournalEntry; userId: string; companyId: string } }
   | { type: 'journal_entry.corrected'; payload: { original: JournalEntry; storno: JournalEntry; corrected: JournalEntry; userId: string; companyId: string } }
   | { type: 'journal_entry.reversed'; payload: { originalEntry: JournalEntry; reversalEntry: JournalEntry; userId: string; companyId: string } }
+  | { type: 'journal_entry.cancelled'; payload: { entry: JournalEntry; userId: string; companyId: string } }
   | { type: 'journal_entry.deleted'; payload: { entryId: string; voucherSeries: string; voucherNumber: number; userId: string; companyId: string } }
   // Documents
   // extractionOwner: set by the invoice inbox on documents it extracts itself,
@@ -133,6 +134,28 @@ export type CoreEvent =
       userId: string
       companyId: string
     } }
+  // Emitted on every failed bank sync (cron, the manual button, an agent
+  // trigger): one durable row per failure with the class, the connection
+  // status after handling and the INTERNAL error text, so a same-day
+  // failure across connections can be diagnosed after the server log has
+  // expired (feedback seq 340107). message is never the user-facing Swedish
+  // string: that one is the same for every cause. httpStatus/ebCode are set
+  // when the transport exposed them (Enable Banking envelope or connector
+  // code).
+  | { type: 'bank_connection.sync_failed'; payload: {
+      connectionId: string
+      bankName: string | null
+      provider: 'enable_banking' | 'accounted_connect'
+      trigger: 'agent' | 'cron' | 'manual'
+      errorClass: 'session_expired' | 'bank_unavailable' | 'connector' | 'unknown'
+      status: string
+      /** Redacted summary (class name + scrubbed phrase); never a raw provider body. */
+      diagnostic: string
+      httpStatus?: number
+      ebCode?: string
+      userId: string
+      companyId: string
+    } }
   // Stripe Connect lifecycle: connect/disconnect are outward-facing consent
   // transitions (a third party gains/loses access to payment data), so they
   // land in event_log for the audit trail, mirroring bank_connection.*.
@@ -145,6 +168,9 @@ export type CoreEvent =
   // Shopify store lifecycle: same audit doctrine as stripe.*/woocommerce.*.
   | { type: 'shopify.connected'; payload: { connectionId: string; shopDomain: string; userId: string; companyId: string } }
   | { type: 'shopify.disconnected'; payload: { connectionId: string; shopDomain: string | null; reason: 'user' | 'revoked_upstream'; userId: string; companyId: string } }
+  // Zettle organization lifecycle: same audit doctrine as shopify.*.
+  | { type: 'zettle.connected'; payload: { connectionId: string; organizationUuid: string; userId: string; companyId: string } }
+  | { type: 'zettle.disconnected'; payload: { connectionId: string; organizationUuid: string | null; reason: 'user' | 'revoked_upstream'; userId: string; companyId: string } }
   // Periods
   | { type: 'period.locked'; payload: { period: FiscalPeriod; userId: string; companyId: string } }
   | { type: 'period.unlocked'; payload: { period: FiscalPeriod; userId: string; companyId: string } }

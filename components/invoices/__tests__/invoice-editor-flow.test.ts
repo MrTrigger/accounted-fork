@@ -4,6 +4,8 @@ import {
   deriveForvalChips,
   deriveRequiresHousing,
   filterArticleSuggestions,
+  isComposingKey,
+  resolveEntryKey,
   type NextStepInput,
   type ForvalChipsInput,
 } from '@/components/invoices/invoice-editor-flow'
@@ -306,5 +308,98 @@ describe('filterArticleSuggestions', () => {
 
   it('returns nothing when nothing matches', () => {
     expect(filterArticleSuggestions(articles, 'zzz')).toEqual([])
+  })
+})
+
+describe('resolveEntryKey', () => {
+  const base = { query: 'Konsulttid', open: false, activeIdx: -1, matchCount: 0 }
+
+  it('Enter with typed text commits a free-text row', () => {
+    expect(resolveEntryKey({ ...base, key: 'Enter' })).toEqual({ kind: 'free_text', text: 'Konsulttid' })
+  })
+
+  it('Tab with typed text commits the same way as Enter (issue #2481)', () => {
+    expect(resolveEntryKey({ ...base, key: 'Tab', query: '  Konsulttid ' })).toEqual({
+      kind: 'free_text',
+      text: 'Konsulttid',
+    })
+  })
+
+  it('a highlighted suggestion wins over the typed text, for Enter and Tab', () => {
+    const open = { ...base, open: true, activeIdx: 1, matchCount: 3 }
+    expect(resolveEntryKey({ ...open, key: 'Enter' })).toEqual({ kind: 'article', index: 1 })
+    expect(resolveEntryKey({ ...open, key: 'Tab' })).toEqual({ kind: 'article', index: 1 })
+  })
+
+  it('a stale highlight past the match list falls back to the text', () => {
+    expect(resolveEntryKey({ ...base, key: 'Enter', open: true, activeIdx: 2, matchCount: 1 })).toEqual({
+      kind: 'free_text',
+      text: 'Konsulttid',
+    })
+  })
+
+  it('a closed popover ignores the highlight', () => {
+    expect(resolveEntryKey({ ...base, key: 'Enter', open: false, activeIdx: 0, matchCount: 3 })).toEqual({
+      kind: 'free_text',
+      text: 'Konsulttid',
+    })
+  })
+
+  it('nothing typed does nothing, so Tab passes through and Enter is inert', () => {
+    expect(resolveEntryKey({ ...base, key: 'Tab', query: '   ' })).toEqual({ kind: 'none' })
+    expect(resolveEntryKey({ ...base, key: 'Enter', query: '' })).toEqual({ kind: 'none' })
+  })
+
+  it('other keys are not commits', () => {
+    expect(resolveEntryKey({ ...base, key: 'ArrowDown' })).toEqual({ kind: 'none' })
+  })
+
+  it('Shift+Tab navigates backwards and never commits, even with a highlight', () => {
+    expect(resolveEntryKey({ ...base, key: 'Tab', shiftKey: true })).toEqual({ kind: 'none' })
+    expect(
+      resolveEntryKey({ ...base, key: 'Tab', shiftKey: true, open: true, activeIdx: 0, matchCount: 2 }),
+    ).toEqual({ kind: 'none' })
+  })
+
+  // Issue #2447: Gboard autocorrecting the free-text description keeps a
+  // composition open, and every keydown inside one is keyCode 229 /
+  // 'Unidentified'. Committing there would materialise the row with whatever
+  // was typed before the correction landed.
+  it('a composing key never commits, whichever key it claims to be', () => {
+    expect(resolveEntryKey({ ...base, key: 'Enter', composing: true })).toEqual({ kind: 'none' })
+    expect(resolveEntryKey({ ...base, key: 'Tab', composing: true })).toEqual({ kind: 'none' })
+    expect(
+      resolveEntryKey({ ...base, key: 'Enter', composing: true, open: true, activeIdx: 0, matchCount: 2 }),
+    ).toEqual({ kind: 'none' })
+  })
+
+  it("the IME's placeholder key 'Unidentified' is not a commit", () => {
+    expect(resolveEntryKey({ ...base, key: 'Unidentified' })).toEqual({ kind: 'none' })
+    expect(
+      resolveEntryKey({ ...base, key: 'Unidentified', open: true, activeIdx: 0, matchCount: 2 }),
+    ).toEqual({ kind: 'none' })
+  })
+
+  it('a finished composition commits again', () => {
+    expect(resolveEntryKey({ ...base, key: 'Enter', composing: false })).toEqual({
+      kind: 'free_text',
+      text: 'Konsulttid',
+    })
+  })
+})
+
+describe('isComposingKey', () => {
+  it('reads all three signals an IME can raise', () => {
+    expect(isComposingKey({ isComposing: true, key: 'Enter', keyCode: 13 })).toBe(true)
+    // Android/Chrome still reports the legacy code, sometimes without
+    // isComposing, and pairs it with an unnamed key.
+    expect(isComposingKey({ keyCode: 229, key: 'Unidentified' })).toBe(true)
+    expect(isComposingKey({ key: 'Unidentified' })).toBe(true)
+  })
+
+  it('lets a plain key press through', () => {
+    expect(isComposingKey({ isComposing: false, key: 'Enter', keyCode: 13 })).toBe(false)
+    expect(isComposingKey({ key: 'Tab', keyCode: 9 })).toBe(false)
+    expect(isComposingKey({})).toBe(false)
   })
 })

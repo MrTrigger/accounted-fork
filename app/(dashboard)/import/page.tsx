@@ -1,6 +1,9 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
+import SIEJobProgress from '@/components/import/SIEJobProgress'
+import { uploadSIEFile } from '@/lib/import/sie-job-client'
+import { legacyNotices } from '@/lib/import/notices'
 import { fetchAccounts } from '@/lib/reference-data/fetchers'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { useSearchParams, useRouter } from 'next/navigation'
@@ -23,7 +26,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import { ArrowLeft, CreditCard, Landmark, Loader2, ChevronRight, Download, AlertTriangle, ShoppingBag, ShoppingCart } from 'lucide-react'
+import { ArrowLeft, CreditCard, Landmark, Loader2, ChevronRight, Download, ShoppingBag, ShoppingCart } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCompany, useCapability } from '@/contexts/CompanyContext'
@@ -53,7 +56,7 @@ import type {
 } from '@/lib/import/articles/types'
 
 import type { ImportExecuteOptions } from '@/components/import/ImportReviewStep'
-import { applyMappingOverride } from '@/lib/import/account-mapper'
+import { applyMappingOverride, isValidBASRange } from '@/lib/import/account-mapper'
 import { decodeFileContent } from '@/lib/import/shared/encoding'
 import type { BankFileParseResult, BankFileFormatId, BankFileDuplicateInfo, GenericCSVColumnMapping } from '@/lib/import/bank-file/types'
 import type { SkattekontoFileParseResult } from '@/lib/import/skattekonto-file/types'
@@ -76,9 +79,6 @@ import {
 import type { AccountVatTreatment } from '@/lib/vat/account-vat-treatment'
 import type { TheaterModel } from '@/lib/import/theater-model'
 
-/** Above this size the client-side theater parse is skipped (main-thread
- *  parse of very large SIE files would jank the animation it exists for). */
-const THEATER_MAX_FILE_BYTES = 8 * 1024 * 1024
 import type { BASAccount } from '@/types'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import dynamic from 'next/dynamic'
@@ -399,20 +399,11 @@ function BankFileImportWizard() {
       {/* Status chip for at-a-glance "auto-sync is healthy / stale / needs attention" */}
       <BankSyncStatusChip />
 
-      {/* Overlap warning: active PSD2 means file import will likely create
-          duplicates of transactions the nightly sync already covers. */}
+      {/* Overlap note: active PSD2 means a file import of the same period
+          duplicates what the nightly sync already fetched. One quiet
+          sentence, not a box (design convention 6). */}
       {activePsd2Banks.length > 0 && (
-        <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-4">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
-          <div className="flex-1 text-sm">
-            <p className="font-medium">
-              {tTx('import_psd2_active_warning_title', { bankName: activePsd2Banks.join(', ') })}
-            </p>
-            <p className="mt-1 text-muted-foreground">
-              {tTx('import_psd2_active_warning_body')}
-            </p>
-          </div>
-        </div>
+        <AttnLine>{tTx('import_psd2_active_warning_body', { bankName: activePsd2Banks.join(', ') })}</AttnLine>
       )}
 
       {/* Progress */}
@@ -715,7 +706,7 @@ function SIEImportWizard({
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [validationWarnings, setValidationWarnings] = useState<string[]>([])
   const [duplicateImportId, setDuplicateImportId] = useState<string | null>(null)
-  const [isReplacing, setIsReplacing] = useState(false)
+  const isReplacing = false
 
   const [file, setFile] = useState<File | null>(null)
   const [, setParsed] = useState<ParsedSIEFile | null>(null)
@@ -725,6 +716,20 @@ function SIEImportWizard({
   const [issues, setIssues] = useState<ParseIssue[]>([])
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [theaterModel, setTheaterModel] = useState<TheaterModel | null>(null)
+  const jobSearch = useSearchParams()
+  const jobRouter = useRouter()
+  const [jobId,setJobId] = useState<string|null>(jobSearch.get('job'))
+  const showJob = useCallback((id: string | null) => {
+    setJobId(id)
+    const params = new URLSearchParams(jobSearch.toString())
+    params.set('mode', 'sie')
+    if (id) params.set('job', id)
+    else params.delete('job')
+    jobRouter.replace(`/import?${params.toString()}`, { scroll: false })
+  }, [jobRouter, jobSearch])
+  const [replaceExisting,setReplaceExisting] = useState(false)
+  const [storagePath,setStoragePath] = useState<string|null>(null)
+  const jobT = useTranslations('import.sie_job')
   const [, setSieAccounts] = useState<{ number: string; name: string }[]>([])
   const [isCreatingAccounts, setIsCreatingAccounts] = useState(false)
 
@@ -751,7 +756,10 @@ function SIEImportWizard({
 
     try {
       const formData = new FormData()
-      formData.append('file', selectedFile)
+      const uploadedPath = await uploadSIEFile(selectedFile)
+      setStoragePath(uploadedPath)
+      formData.append('storagePath',uploadedPath)
+      formData.append('filename',selectedFile.name)
 
       const res = await fetch('/api/import/sie/parse', {
         method: 'POST',
@@ -811,6 +819,7 @@ function SIEImportWizard({
         stats: data.parsed.stats,
       })
       setPreview(data.preview)
+      if (data.existingImport?.id) setDuplicateImportId(data.existingImport.id)
       setIssues(data.parsed.issues)
       setSieAccounts(data.parsed.accounts)
 
@@ -839,75 +848,21 @@ function SIEImportWizard({
     }
   }, [toast])
 
-  const handleUndo = useCallback(async (importId: string) => {
-    setIsLoading(true)
-    try {
-      const res = await fetch(`/api/import/sie/${importId}/undo`, { method: 'DELETE' })
-      const data = await res.json()
+  const handleUndo = useCallback(async (importId:string) => {
+    const response = await fetch('/api/import/sie/'+importId+'/action',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'undo'}),
+    })
+    const body = await response.json()
+    if (!response.ok) {setError(getErrorMessage(body));return}
+    showJob(importId)
+  },[showJob])
 
-      if (!res.ok) {
-        toast({ title: 'Kunde inte ångra import', description: getErrorMessage(data), variant: 'destructive' })
-        return
-      }
-
-      toast({
-        title: 'Import ångrad',
-        description: `${data.deletedEntries} verifikation${data.deletedEntries === 1 ? '' : 'er'} raderades.`,
-      })
-
-      // Reset wizard to upload step so the user can re-import a corrected file
-      setStep('upload')
-      setFile(null)
-      setParsed(null)
-      setMappings([])
-      setPreview(null)
-      setIssues([])
-      setImportResult(null)
-      setError(null)
-      setErrorType(undefined)
-      setValidationErrors([])
-      setValidationWarnings([])
-      setDuplicateImportId(null)
-      setSieAccounts([])
-    } catch {
-      toast({ title: 'Anslutningsfel', description: 'Kunde inte nå servern.', variant: 'destructive' })
-    } finally {
-      setIsLoading(false)
-    }
-  }, [toast])
-
-  const handleReplace = useCallback(async (importId: string) => {
-    if (!file) return
-
-    setIsReplacing(true)
-    try {
-      const res = await fetch(`/api/import/sie/${importId}/replace`, { method: 'POST' })
-      const data = await res.json()
-
-      if (!res.ok) {
-        toast({ title: 'Kunde inte ersätta import', description: getErrorMessage(data), variant: 'destructive' })
-        return
-      }
-
-      toast({
-        title: 'Import ersatt',
-        description: `${data.deletedEntries} verifikation${data.deletedEntries === 1 ? '' : 'er'} raderades. Importerar ny fil...`,
-      })
-
-      // Clear error state and re-trigger the file upload
-      setError(null)
-      setErrorType(undefined)
-      setDuplicateImportId(null)
-
-      // Small delay so the user sees the success toast before re-upload starts
-      await new Promise(resolve => setTimeout(resolve, 500))
-      handleFileSelect(file)
-    } catch {
-      toast({ title: 'Anslutningsfel', description: 'Kunde inte nå servern.', variant: 'destructive' })
-    } finally {
-      setIsReplacing(false)
-    }
-  }, [file, handleFileSelect, toast])
+  const handleReplace = useCallback(async (_importId:string) => {
+    setReplaceExisting(true)
+    setDuplicateImportId(null)
+    setError(null)
+    if (file) await handleFileSelect(file)
+  },[file,handleFileSelect])
 
   const handleMappingChange = useCallback((sourceAccount: string, targetAccount: string, targetName: string) => {
     setMappings((prev) => enrichChangedAccountMappingWithVat(
@@ -965,7 +920,7 @@ function SIEImportWizard({
   }, [mappings])
 
   const missingAccounts = mappings
-    .filter((m) => !m.targetAccount)
+    .filter((m) => !m.targetAccount && isValidBASRange(m.sourceAccount))
     .map((m) => ({ number: m.sourceAccount, name: m.sourceName }))
 
   const handleCreateAccounts = useCallback(async () => {
@@ -1040,72 +995,25 @@ function SIEImportWizard({
     setIsLoading(true)
     setError(null)
 
-    // Import theater: parse the file client-side (the parser is browser-clean)
-    // so the graph can build itself while the server writes. Best-effort with
-    // a size cap: any failure just leaves the plain spinner takeover.
-    if (file.size <= THEATER_MAX_FILE_BYTES) {
-      void (async () => {
-        try {
-          const [{ parseSIEFile, detectEncoding, decodeBuffer }, { buildTheaterModel }] =
-            await Promise.all([import('@/lib/import/sie-parser'), import('@/lib/import/theater-model')])
-          const buffer = await file.arrayBuffer()
-          const parsed = parseSIEFile(decodeBuffer(buffer, detectEncoding(buffer)))
-          setTheaterModel(buildTheaterModel(parsed))
-        } catch {
-          // Theater is a nicety; the import itself is unaffected.
-        }
-      })()
-    }
-
     try {
       const formData = new FormData()
-      formData.append('file', file)
+      if (!storagePath) throw new Error('SIE-filen måste laddas upp igen.')
+      formData.append('storagePath',storagePath)
+      formData.append('filename',file.name)
       formData.append('mappings', JSON.stringify(mappings))
-      formData.append('options', JSON.stringify(options))
+      formData.append('options', JSON.stringify({...options,onExistingPeriod:replaceExisting ? 'replace' : 'block',
+        supersedesImportId:replaceExisting ? duplicateImportId : undefined}))
 
       const res = await fetch('/api/import/sie/execute', { method: 'POST', body: formData })
       const data = await res.json()
 
       if (!res.ok) {
-        const code = data?.error?.code as string | undefined
-        const message = getErrorMessage(data)
-        const failedResult = data?.error?.details?.result as typeof data.result | undefined
-
-        if (code === 'SIE_DUPLICATE_FILE' || code === 'SIE_DUPLICATE_PERIOD') {
-          setError(message)
-          toast({ title: 'Filen har redan importerats', description: message, variant: 'destructive' })
-          return
-        }
-        if (failedResult) {
-          setImportResult(failedResult)
-        } else {
-          setError(message)
-          toast({ title: 'Import misslyckades', description: message, variant: 'destructive' })
-          return
-        }
-      } else {
-        setImportResult(data.result)
+        const msg = getErrorMessage(data)
+        setError(msg)
+        toast({ title: 'Import avbröts', description: msg, variant: 'destructive' })
+        return
       }
-
-      setStep('result')
-      // An import creates periods and accounts: refresh the session caches so
-      // every picker in the app sees them without a reload.
-      void invalidateReferenceData(['ref:accounts', 'ref:fiscal-periods'])
-
-      if (data.result?.success) {
-        const created = data.result.journalEntriesCreated
-        const skipped = data.result.details?.skippedVouchers?.total || 0
-        toast({
-          title: 'Import genomförd',
-          description: `${created} verifikationer skapades${skipped > 0 ? ` (${skipped} hoppades över)` : ''}`,
-        })
-      } else if (data.result && !data.result.success) {
-        toast({
-          title: 'Import slutförd med problem',
-          description: `${data.result.errors?.length || 0} fel uppstod under importen. Se resultatet för detaljer.`,
-          variant: 'destructive',
-        })
-      }
+      showJob(data.data.importId)
     } catch (err) {
       const isNetworkError = err instanceof TypeError && (err.message === 'Failed to fetch' || err.message.includes('NetworkError'))
       const msg = isNetworkError
@@ -1116,17 +1024,24 @@ function SIEImportWizard({
     } finally {
       setIsLoading(false)
     }
-  }, [file, mappings, toast])
+  }, [file, mappings, storagePath, replaceExisting, duplicateImportId, showJob, toast])
 
   const goToStep = (targetStep: ImportWizardStep) => { setStep(targetStep); setError(null); setValidationErrors([]); setValidationWarnings([]) }
   const goBack = () => { const i = sieSteps.indexOf(step); if (i > 0) setStep(sieSteps[i - 1]) }
 
   const handleNewImport = () => {
+    showJob(null); setReplaceExisting(false);setStoragePath(null)
     setStep('upload'); setFile(null); setParsed(null); setMappings([])
     setPreview(null); setIssues([]); setImportResult(null); setError(null); setErrorType(undefined)
     setValidationErrors([]); setValidationWarnings([]); setDuplicateImportId(null)
     setSieAccounts([]); setIsCreatingAccounts(false); setTheaterModel(null)
   }
+
+  const handleJobCompleted = useCallback((result:ImportResult) => {
+    setImportResult(result);setStep('result');setJobId(null)
+    void invalidateReferenceData(['ref:accounts','ref:fiscal-periods'])
+  },[])
+  if (jobId) return <SIEJobProgress key={jobId} importId={jobId} onCompleted={handleJobCompleted} onUndone={handleNewImport}/>
 
   return (
     <div className="space-y-6">
@@ -1164,10 +1079,14 @@ function SIEImportWizard({
           onConfirmAllVatTreatments={handleConfirmAllVatTreatments}
           onContinue={confirmVatReview} onBack={goBack} />
       )}
+      {duplicateImportId && <label className="flex items-center gap-3 text-sm">
+        <input type="checkbox" checked={replaceExisting} onChange={event => setReplaceExisting(event.target.checked)}/>
+        {jobT('replace')}
+      </label>}
       {step === 'review' && preview && (
         <ImportReviewStep preview={preview} mappings={mappings}
           onExecute={handleExecuteImport} onBack={goBack} isLoading={isLoading}
-          theaterModel={theaterModel} />
+          theaterModel={theaterModel} error={error} />
       )}
       {step === 'result' && importResult && (
         <ImportResultStep result={importResult} onNewImport={handleNewImport} onUndo={handleUndo}
@@ -1434,6 +1353,7 @@ function OpeningBalanceFlow() {
       {obStep === 'edit' && parseResult && (
         <OpeningBalanceEditStep
           rows={parseResult.rows}
+          notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onContinue={handleEditContinue}
           onBack={() => {
             if (needsMapping) {
@@ -1715,6 +1635,7 @@ function CustomersFlow() {
       {step === 'edit' && parseResult && (
         <CustomersEditStep
           rows={parseResult.rows}
+          notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onExecute={handleExecute}
           onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
           isLoading={isLoading}
@@ -1972,6 +1893,7 @@ function SuppliersFlow() {
       {step === 'edit' && parseResult && (
         <SuppliersEditStep
           rows={parseResult.rows}
+          notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onExecute={handleExecute}
           onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
           isLoading={isLoading}
@@ -2217,6 +2139,7 @@ function ArticlesFlow() {
       {step === 'edit' && parseResult && (
         <ArticlesEditStep
           rows={parseResult.rows}
+          notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onExecute={handleExecute}
           onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
           isLoading={isLoading}
@@ -2326,11 +2249,14 @@ const WooCommercePanel = getSettingsPanel('woocommerce')
 // And for the Shopify order feed: same category as the WooCommerce feed above.
 const ShopifyPanel = getSettingsPanel('shopify')
 
+// And for the Zettle purchase feed: same category as the Shopify feed above.
+const ZettlePanel = getSettingsPanel('zettle')
+
 // ============================================================
 // Import Page with Selection Cards
 // ============================================================
 
-type ImportMode = null | 'psd2' | 'stripe' | 'woocommerce' | 'shopify' | 'bank' | 'skattekonto' | 'sie' | 'underlag' | 'csv_data' | 'migration'
+type ImportMode = null | 'psd2' | 'stripe' | 'woocommerce' | 'shopify' | 'zettle' | 'bank' | 'skattekonto' | 'sie' | 'underlag' | 'csv_data' | 'migration'
 
 export default function ImportPage() {
   const { isSandbox, role } = useCompany()
@@ -2366,7 +2292,7 @@ export default function ImportPage() {
     // Manual file-import modes (bank file, CSV/Excel, SIE) stay reachable.
     const allowedModes = isSandbox
       ? ['bank', 'skattekonto', 'sie', 'underlag', 'csv_data']
-      : ['psd2', 'stripe', 'woocommerce', 'shopify', 'bank', 'skattekonto', 'sie', 'underlag', 'csv_data', 'migration']
+      : ['psd2', 'stripe', 'woocommerce', 'shopify', 'zettle', 'bank', 'skattekonto', 'sie', 'underlag', 'csv_data', 'migration']
     if (!isSandbox && searchParams.get('migration')) {
       setMode('migration')
     } else {
@@ -2441,6 +2367,8 @@ export default function ImportPage() {
   const woocommerceDisabled = isSandbox
   const hasShopifyExtension = ENABLED_EXTENSION_IDS.has('shopify')
   const shopifyDisabled = isSandbox
+  const hasZettleExtension = ENABLED_EXTENSION_IDS.has('zettle')
+  const zettleDisabled = isSandbox
 
   return (
     <div className="space-y-8">
@@ -2515,6 +2443,16 @@ export default function ImportPage() {
                     chips={<LogoChip src="/logos/shopify.svg" name="Shopify" />}
                     disabled={shopifyDisabled}
                     onClick={() => setMode('shopify')}
+                  />
+                )}
+                {hasZettleExtension && (
+                  <ImportRow
+                    title={t('zettle_title')}
+                    sub={t('zettle_description')}
+                    chip={<BetaChip label={t('badge_beta')} />}
+                    chips={<LogoChip src="/logos/zettle.svg" name="Zettle" />}
+                    disabled={zettleDisabled}
+                    onClick={() => setMode('zettle')}
                   />
                 )}
                 {hasMigrationExtension && (
@@ -2758,11 +2696,26 @@ export default function ImportPage() {
           </Card>
         )
       )}
+      {mode === 'zettle' && (
+        hasZettleExtension && ZettlePanel ? (
+          <ZettlePanel />
+        ) : (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+              <ShoppingBag className="mb-4 h-10 w-10 text-muted-foreground/40" />
+              <p className="mb-1 font-medium">{t('zettle_not_enabled_title')}</p>
+              <p className="max-w-md text-sm text-muted-foreground">
+                {t('zettle_not_enabled_description')}
+              </p>
+            </CardContent>
+          </Card>
+        )
+      )}
       {mode === 'bank' && <BankFileImportWizard />}
       {mode === 'skattekonto' && <SkattekontoImportWizard />}
       {/* The CSV/Excel wizard opens on "Ingående balanser" by default, which is
           exactly the manual path the SIE preview offers on an IB imbalance. */}
-      {mode === 'sie' && <SIEImportWizard onOpenManualOpeningBalances={() => setMode('csv_data')} />}
+      {mode === 'sie' && <SIEImportWizard key={searchParams.get('job') ?? 'new'} onOpenManualOpeningBalances={() => setMode('csv_data')} />}
       {mode === 'underlag' && <UnderlagImportWizard />}
       {mode === 'csv_data' && <CSVDataImportWizard />}
       {mode === 'migration' && (

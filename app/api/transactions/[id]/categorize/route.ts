@@ -5,6 +5,7 @@ import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
 import { getTemplateById, buildMappingResultFromTemplate, validateTemplateForEntity } from '@/lib/bookkeeping/booking-templates'
+import { applyVatAmountOverride } from '@/lib/bookkeeping/vat-amount-override'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
 import { reverseOrphanedJournalEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import { getEarliestFiscalPeriodStart } from '@/lib/core/bookkeeping/period-service'
@@ -23,6 +24,7 @@ import {
   escapeLikePattern,
   normalizeOcrReference,
 } from '@/lib/invoices/duplicate-payment-guard'
+import { matchesNormalizedReference } from '@/lib/invoices/ocr-keys'
 import {
   invoiceAmountSek,
   magnitudesWithinTolerance,
@@ -340,14 +342,37 @@ export const POST = withRouteContext(
     } else if (body.template_id) {
       const template = getTemplateById(body.template_id)!
       mappingResult = buildMappingResultFromTemplate(template, transaction as Transaction, entityType)
+      if (body.vat_amount != null) {
+        // The underlag's moms replaces the template's rate-based line; the
+        // helper refuses treatments it cannot apply to, which is a 400.
+        try {
+          mappingResult = applyVatAmountOverride(mappingResult, transaction as Transaction, template.vat_treatment, body.vat_amount)
+        } catch (err) {
+          txLog.warn('vat_amount rejected for template booking', err as Error)
+          return errorResponseFromCode('TX_CATEGORIZE_INVALID_VAT_AMOUNT', txLog, {
+            requestId,
+            details: { vat_amount: body.vat_amount, vat_treatment: template.vat_treatment ?? null },
+          })
+        }
+      }
     } else {
-      mappingResult = buildMappingResultFromCategory(
-        finalCategory,
-        transaction as Transaction,
-        is_business,
-        entityType,
-        body.vat_treatment,
-      )
+      try {
+        mappingResult = buildMappingResultFromCategory(
+          finalCategory,
+          transaction as Transaction,
+          is_business,
+          entityType,
+          body.vat_treatment,
+          body.vat_amount ?? null,
+        )
+      } catch (err) {
+        if (body.vat_amount == null) throw err
+        txLog.warn('vat_amount rejected for category booking', err as Error)
+        return errorResponseFromCode('TX_CATEGORIZE_INVALID_VAT_AMOUNT', txLog, {
+          requestId,
+          details: { vat_amount: body.vat_amount, vat_treatment: body.vat_treatment ?? null },
+        })
+      }
     }
 
     // Book the bank leg against the transaction's ACTUAL settlement account
@@ -748,10 +773,12 @@ export const POST = withRouteContext(
         }
       }
 
-      // OCR pass: if the bank-tx reference matches an open invoice's
-      // invoice_number, surface it regardless of customer-name match. This
-      // catches the common case where the bank populated `reference` but
-      // neither merchant_name nor description carried the customer name.
+      // OCR pass: if the bank-tx reference matches an open invoice's reference
+      // keys (its invoice_number, or the OCR the invoice printed: same digits
+      // plus a Luhn check digit), surface it regardless of customer-name
+      // match. This catches the common case where the bank populated
+      // `reference` but neither merchant_name nor description carried the
+      // customer name.
       const txReference = (transaction as Transaction & { reference?: string | null }).reference
       const normalizedTxRef = normalizeOcrReference(txReference ?? null)
       if (normalizedTxRef) {
@@ -773,7 +800,7 @@ export const POST = withRouteContext(
         )
         for (const res of refSweepResults) {
           for (const row of (res.data ?? []) as unknown as CandidateRow[]) {
-            if (normalizeOcrReference(row.invoice_number) !== normalizedTxRef) continue
+            if (!matchesNormalizedReference(row.invoice_number, normalizedTxRef)) continue
             if (!comparable(row)) continue
             if (!openInvoiceCandidates.some((existing) => existing.id === row.id)) {
               openInvoiceCandidates.unshift(row)
@@ -787,8 +814,7 @@ export const POST = withRouteContext(
           requestId,
           details: {
             candidates: openInvoiceCandidates.slice(0, 5).map((inv) => {
-              const reasonOcr =
-                normalizedTxRef && normalizeOcrReference(inv.invoice_number) === normalizedTxRef
+              const reasonOcr = matchesNormalizedReference(inv.invoice_number, normalizedTxRef)
               return {
                 invoice_id: inv.id,
                 invoice_number: inv.invoice_number,

@@ -33,6 +33,10 @@ import {
   deriveForvalChips,
   deriveRequiresHousing,
   filterArticleSuggestions,
+  isComposingKey,
+  resolveEntryKey,
+  type EntryGhostCell,
+  type EntryKeyAction,
   type NextStep,
 } from '@/components/invoices/invoice-editor-flow'
 import { sortArticles } from '@/lib/articles/sort'
@@ -63,6 +67,7 @@ import { BankDetailsSetupDialog } from '@/components/invoices/BankDetailsSetupDi
 import { FirstInvoiceLogoPrompt } from '@/components/invoices/FirstInvoiceLogoPrompt'
 import { useCompany, useCapability } from '@/contexts/CompanyContext'
 import { useAccounts, useArticles, useCompanySettings, useCustomers } from '@/lib/reference-data/hooks'
+import { isInvoiceTypeEnabled } from '@/lib/invoices/invoice-type-toggles'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { CAPABILITY } from '@/lib/entitlements/keys'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
@@ -88,6 +93,8 @@ import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
 import { isUsableInvoicePayee } from '@/lib/cash-accounts/invoice-payee'
 import type { InvoiceCopyInitial } from '@/lib/invoices/copy-invoice'
 import { INVOICE_POSTING_ACCOUNT_REGEX } from '@/lib/invoices/posting-account'
+import { UNIT_DATALIST_ID, UNIT_MAX_LENGTH } from '@/lib/invoices/units'
+import UnitDatalist from '@/components/invoices/UnitDatalist'
 import {
   buildInvoiceWritePayload,
   buildSelfBilledPayload,
@@ -106,7 +113,6 @@ import type {
 } from '@/types'
 
 const currencies: Currency[] = ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK']
-const units = ['st', 'tim', 'dag', 'månad', 'km', 'kg']
 
 // A draft invoice + its line items, as fetched for the edit flow.
 export type InvoiceForEdit = Invoice & { items: InvoiceItem[] }
@@ -154,6 +160,19 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 // focus. rounded-sm: nested leaf inside the rows surface (radius ladder).
 const CELL_INPUT_CLASS =
   'rounded-sm border border-transparent bg-transparent px-2 py-1 text-[13px] transition-colors duration-150 hover:bg-secondary/40 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground/60'
+
+// Ghost cell in the entry row: previews the append default in the italic
+// muted tone, hovers like a cell input so it reads as clickable.
+const ENTRY_GHOST_CLASS =
+  'rounded-sm border border-transparent bg-transparent px-2 py-1 text-[13px] italic text-muted-foreground/50 tabular-nums transition-colors duration-150 hover:bg-secondary/40 cursor-text'
+
+// The add-row links under the table. Quiet links on desktop, inflated to a
+// 40px touch target on coarse pointers: on Android they are the only way into
+// a row (issue #2447), so they have to be comfortably tappable.
+const ADD_ROW_LINK_CLASS = cn(
+  QUIET_LINK_CLASS,
+  'inline-flex items-center pointer-coarse:min-h-10',
+)
 
 // Row-control icon button: 24px visual hit area in dense rows (per the row
 // chrome decision), inflated to a 40px touch target on coarse pointers.
@@ -534,6 +553,14 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   const [entryActiveIdx, setEntryActiveIdx] = useState(-1)
   const [settleIndex, setSettleIndex] = useState<number | null>(null)
   const entryInputRef = useRef<HTMLInputElement>(null)
+  // The entry row and its suggestion popover share this wrapper: the blur
+  // handler asks it whether focus is still inside before closing, so a tap on
+  // a suggestion or ghost cell cannot lose the race (issue #2447).
+  const entryRootRef = useRef<HTMLDivElement>(null)
+  // Set when a keydown was swallowed as an IME composition artefact, so the
+  // matching keyup (which arrives after compositionend with a real key) can
+  // still act on an Android action-key press.
+  const entryComposingKeyRef = useRef(false)
   const customerTriggerRef = useRef<HTMLButtonElement>(null)
   const entryListId = useId()
   const settingsPanelId = useId()
@@ -958,15 +985,35 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   }
 
   function commitEntryFreeText(text: string) {
+    // Enter or Tab commits and the caret lands in the new row's à-pris cell
+    // with the 0 selected.
+    commitEntryToCell(text, 'unit_price')
+  }
+
+  // Commit the entry row and put focus in one cell of the row it became. The
+  // ghost cells route here on click (issue #2481): a mouse user starts in the
+  // amount, quantity, unit or VAT cell of a row that does not exist yet, so
+  // the click births the row (description as typed, possibly empty) and
+  // lands in the same cell. The inputs mount on the next commit, hence the
+  // timeout; the VAT Select trigger is not a registered field, so it is
+  // reached through the data-cell anchor instead of setFocus.
+  function commitEntryToCell(text: string, cell: EntryGhostCell) {
     const index = fields.length
     appendProductRow(text)
     setEntryQuery('')
     setEntryOpen(false)
     setEntryActiveIdx(-1)
     markRowSettled(index)
-    // Enter commits and the caret lands in the new row's à-pris cell with
-    // the 0 selected. The input mounts on the next commit, hence the timeout.
-    window.setTimeout(() => setFocus(`items.${index}.unit_price`, { shouldSelect: true }), 0)
+    window.setTimeout(() => {
+      if (cell === 'quantity' || cell === 'unit_price' || cell === 'unit') {
+        setFocus(`items.${index}.${cell}`, { shouldSelect: true })
+        return
+      }
+      const trigger = document.querySelector<HTMLElement>(
+        `#invoice-editor-row-${index} [data-cell="${cell}"]`,
+      )
+      trigger?.focus()
+    }, 0)
   }
 
   // Free-text / blank row: explanatory text under an item, or an empty
@@ -1011,7 +1058,25 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     }, 800)
   }
 
+  // Commit the entry row the way a resolved key action says to. Shared by the
+  // keyboard handlers and the "Lägg till rad" button so there is one rule for
+  // what a commit means, whatever triggered it.
+  function runEntryAction(action: EntryKeyAction, matches: ArticleOption[]) {
+    if (action.kind === 'article') commitEntryArticle(matches[action.index].id)
+    else if (action.kind === 'free_text') commitEntryFreeText(action.text)
+  }
+
   function handleEntryKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    // An open IME composition (Gboard autocorrect on Android) reports every
+    // keydown as keyCode 229 / 'Unidentified', the action key included:
+    // acting on one would commit the pre-correction text, and arrowing would
+    // fight the candidate list. The keyup below picks the press back up once
+    // the composition has ended (issue #2447).
+    if (isComposingKey(e.nativeEvent)) {
+      entryComposingKeyRef.current = true
+      return
+    }
+    entryComposingKeyRef.current = false
     const matches = filterArticleSuggestions(articles, entryQuery)
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -1020,19 +1085,78 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setEntryActiveIdx((i) => Math.max(i - 1, -1))
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      if (entryOpen && entryActiveIdx >= 0 && matches[entryActiveIdx]) {
-        commitEntryArticle(matches[entryActiveIdx].id)
-      } else if (entryQuery.trim()) {
-        commitEntryFreeText(entryQuery.trim())
-      }
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      // Tab commits like Enter (issue #2481): before, it left the typed text
+      // stranded in the entry row and submit failed on "at least one row".
+      // An empty Tab passes through so the row is not a focus trap; an empty
+      // Enter is swallowed so it never submits the form.
+      const action = resolveEntryKey({
+        key: e.key,
+        shiftKey: e.shiftKey,
+        query: entryQuery,
+        open: entryOpen,
+        activeIdx: entryActiveIdx,
+        matchCount: matches.length,
+      })
+      if (e.key === 'Enter' || action.kind !== 'none') e.preventDefault()
+      runEntryAction(action, matches)
     } else if (e.key === 'Escape') {
       // Close only the suggestions; the host dialog ignores Escape anyway.
       e.stopPropagation()
       setEntryOpen(false)
       setEntryActiveIdx(-1)
     }
+  }
+
+  // The other half of the IME handling: Android delivers the action key as a
+  // composing keydown, then compositionend (which flushes the corrected text
+  // into entryQuery), then a keyup carrying the real key. That keyup is the
+  // only honest chance to act on the press, and only right after a keydown we
+  // swallowed, so a desktop Enter can never commit twice.
+  function handleEntryKeyUp(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!entryComposingKeyRef.current) return
+    entryComposingKeyRef.current = false
+    if (e.key !== 'Enter' || isComposingKey(e.nativeEvent)) return
+    const matches = filterArticleSuggestions(articles, entryQuery)
+    runEntryAction(
+      resolveEntryKey({
+        key: 'Enter',
+        query: entryQuery,
+        open: entryOpen,
+        activeIdx: entryActiveIdx,
+        matchCount: matches.length,
+      }),
+      matches,
+    )
+  }
+
+  // Keyboard-free commit (issue #2447): a touch keyboard has no Tab, and an
+  // IME can swallow Enter, so the entry row also needs a visible button. Same
+  // rule as Enter, down to a highlighted suggestion winning; with nothing
+  // typed it adds a blank product row, which is what the explicit add-row
+  // button did before the entry row replaced it.
+  function addEntryRow() {
+    const matches = filterArticleSuggestions(articles, entryQuery)
+    const action = resolveEntryKey({
+      key: 'Enter',
+      query: entryQuery,
+      open: entryOpen,
+      activeIdx: entryActiveIdx,
+      matchCount: matches.length,
+    })
+    if (action.kind !== 'none') {
+      runEntryAction(action, matches)
+      return
+    }
+    // Nothing typed: add the blank product row and start in its description,
+    // the same landing addTextRow gives.
+    const index = fields.length
+    appendProductRow('')
+    setEntryQuery('')
+    setEntryOpen(false)
+    setEntryActiveIdx(-1)
+    markRowSettled(index)
+    window.setTimeout(() => setFocus(`items.${index}.description`), 0)
   }
 
   // Open/close the per-row article re-link strip (row ⋮ menu). Closing never
@@ -2260,8 +2384,9 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                 </span>
               )}
             </SectionLabel>
-            <div className="relative">
+            <div ref={entryRootRef} className="relative">
               <div className="overflow-x-auto">
+                <UnitDatalist />
                 <div className="min-w-[540px]">
                   {/* Header row: offset by the drag-grip gutter (w-8). */}
                   <div className="pl-8">
@@ -2382,29 +2507,21 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                                     rowErrors?.quantity && 'border-destructive',
                                   )}
                                 />
-                                <Controller
-                                  name={`items.${index}.unit`}
-                                  control={control}
-                                  render={({ field: unitField }) => (
-                                    <Select value={unitField.value} onValueChange={unitField.onChange}>
-                                      <SelectTrigger
-                                        className={cn(
-                                          CELL_SELECT_TRIGGER_CLASS,
-                                          'text-muted-foreground',
-                                          rowErrors?.unit && 'border-destructive',
-                                        )}
-                                        aria-label={t('unit_label')}
-                                      >
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {units.map((unit) => (
-                                          <SelectItem key={unit} value={unit}>
-                                            {unit}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
+                                {/* Free text with suggestions, not a closed
+                                    list: any unit the API stores (an article
+                                    imported as "l" or "m2") must be typable
+                                    here and must render as itself. */}
+                                <input
+                                  data-cell="unit"
+                                  list={UNIT_DATALIST_ID}
+                                  maxLength={UNIT_MAX_LENGTH}
+                                  {...register(`items.${index}.unit`)}
+                                  aria-label={t('unit_label')}
+                                  aria-invalid={rowErrors?.unit ? true : undefined}
+                                  className={cn(
+                                    CELL_INPUT_CLASS,
+                                    'w-14 text-muted-foreground',
+                                    rowErrors?.unit && 'border-destructive',
                                   )}
                                 />
                               </div>
@@ -2431,7 +2548,11 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                                       onValueChange={(v) => vatField.onChange(Number(v))}
                                       disabled={vatRatePlan.isPickerLocked}
                                     >
-                                      <SelectTrigger className={CELL_SELECT_TRIGGER_CLASS} aria-label={t('vat_label')}>
+                                      <SelectTrigger
+                                        data-cell="vat_rate"
+                                        className={CELL_SELECT_TRIGGER_CLASS}
+                                        aria-label={t('vat_label')}
+                                      >
                                         <SelectValue />
                                       </SelectTrigger>
                                       <SelectContent>
@@ -2849,14 +2970,27 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                           if (!entryOpen) setEntryOpen(true)
                         }}
                         onFocus={() => setEntryOpen(true)}
-                        onBlur={() =>
+                        onBlur={(e) => {
+                          // Never close while focus stays inside the entry row
+                          // and its popover: a tap on a suggestion or a ghost
+                          // cell would otherwise unmount its own target before
+                          // the commit ran (issue #2447). relatedTarget is
+                          // null on several touch browsers, hence the
+                          // activeElement re-check after the delay.
+                          const next = e.relatedTarget as Node | null
+                          if (next && entryRootRef.current?.contains(next)) return
                           window.setTimeout(() => {
+                            if (entryRootRef.current?.contains(document.activeElement)) return
                             setEntryOpen(false)
                             setEntryActiveIdx(-1)
-                          }, 120)
-                        }
+                          }, 250)
+                        }}
                         onKeyDown={handleEntryKeyDown}
+                        onKeyUp={handleEntryKeyUp}
                         placeholder={t('entry_placeholder')}
+                        // Labels the Android action key as the commit, instead
+                        // of the newline the free-text field otherwise implies.
+                        enterKeyHint="done"
                         autoComplete="off"
                         role="combobox"
                         aria-expanded={entryOpen}
@@ -2871,14 +3005,68 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                         aria-describedby={entryOpen ? `${entryListId}-hint` : undefined}
                         className={cn(CELL_INPUT_CLASS, 'w-full')}
                       />
-                      <div className="whitespace-nowrap px-2 text-right text-[13px] italic text-muted-foreground/50 tabular-nums">
-                        1 st
+                      {/* Ghost cells are tap targets (issues #2481, #2447): a
+                          tap births the row and lands in that cell. tabIndex
+                          -1 keeps Tab on the description input; pointerdown,
+                          like the suggestion buttons, so the entry input's
+                          blur never races the commit, and so touch and pen
+                          fire it natively instead of waiting for a
+                          synthesized mouse event that arrives too late. */}
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          aria-label={t('quantity_label')}
+                          className={cn(ENTRY_GHOST_CLASS, 'w-14 text-right')}
+                          onPointerDown={(e) => {
+                            if (e.pointerType === 'mouse' && e.button !== 0) return
+                            e.preventDefault()
+                            commitEntryToCell(entryQuery.trim(), 'quantity')
+                          }}
+                        >
+                          1
+                        </button>
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          aria-label={t('unit_label')}
+                          className={ENTRY_GHOST_CLASS}
+                          onPointerDown={(e) => {
+                            if (e.pointerType === 'mouse' && e.button !== 0) return
+                            e.preventDefault()
+                            commitEntryToCell(entryQuery.trim(), 'unit')
+                          }}
+                        >
+                          st
+                        </button>
                       </div>
-                      <div className="px-2 text-right text-[13px] italic text-muted-foreground/50 tabular-nums">0</div>
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        aria-label={t('unit_price_label')}
+                        className={cn(ENTRY_GHOST_CLASS, 'w-full text-right')}
+                        onPointerDown={(e) => {
+                          if (e.pointerType === 'mouse' && e.button !== 0) return
+                          e.preventDefault()
+                          commitEntryToCell(entryQuery.trim(), 'unit_price')
+                        }}
+                      >
+                        0
+                      </button>
                       {vatRegistered && (
-                        <div className="whitespace-nowrap px-2 text-[13px] italic text-muted-foreground/50 tabular-nums">
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          aria-label={t('vat_label')}
+                          className={cn(ENTRY_GHOST_CLASS, 'whitespace-nowrap')}
+                          onPointerDown={(e) => {
+                            if (e.pointerType === 'mouse' && e.button !== 0) return
+                            e.preventDefault()
+                            commitEntryToCell(entryQuery.trim(), 'vat_rate')
+                          }}
+                        >
                           {vatRatePlan.defaultRate} %
-                        </div>
+                        </button>
                       )}
                       <div />
                       <div />
@@ -2907,7 +3095,11 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                           'flex w-full items-baseline justify-between gap-3 px-3 py-2 text-left',
                           i === entryActiveIdx ? 'bg-secondary/60' : 'hover:bg-secondary/40',
                         )}
-                        onMouseDown={(e) => {
+                        onPointerDown={(e) => {
+                          // pointerdown, not mousedown: on touch the
+                          // synthesized mouse event arrives after the blur
+                          // has already unmounted this listbox (issue #2447).
+                          if (e.pointerType === 'mouse' && e.button !== 0) return
                           e.preventDefault()
                           commitEntryArticle(a.id)
                         }}
@@ -2939,11 +3131,19 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
 
             {itemsRootMsg && <p className="mt-2 text-sm text-destructive">{itemsRootMsg}</p>}
 
-            {!isSelfBilled && (
-              <button type="button" className={cn(QUIET_LINK_CLASS, 'mt-3 inline-block')} onClick={addTextRow}>
-                + {t('add_text_row')}
+            {/* The keyboard-free way into a row (issue #2447): Android has
+                no Tab and an IME can eat Enter, so the entry row must also be
+                reachable by tapping something that says so. */}
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              <button type="button" className={ADD_ROW_LINK_CLASS} onClick={addEntryRow}>
+                + {t('add_row')}
               </button>
-            )}
+              {!isSelfBilled && (
+                <button type="button" className={ADD_ROW_LINK_CLASS} onClick={addTextRow}>
+                  + {t('add_text_row')}
+                </button>
+              )}
+            </div>
 
             {/* Taxed-where-performed disclosure, muted: the page's single
                 ochre line is the next-step line (design decision d). */}
@@ -3052,8 +3252,16 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="invoice">{t('doctype_invoice')}</SelectItem>
-                              <SelectItem value="proforma">{t('doctype_proforma')}</SelectItem>
-                              <SelectItem value="quote">{t('doctype_quote')}</SelectItem>
+                              {/* Kinds switched off in Inställningar > Försäljning
+                                  are hidden unless this document already is one. */}
+                              {(field.value === 'proforma' ||
+                                isInvoiceTypeEnabled(companySettings, 'proforma_enabled')) && (
+                                <SelectItem value="proforma">{t('doctype_proforma')}</SelectItem>
+                              )}
+                              {(field.value === 'quote' ||
+                                isInvoiceTypeEnabled(companySettings, 'quotes_enabled')) && (
+                                <SelectItem value="quote">{t('doctype_quote')}</SelectItem>
+                              )}
                               <SelectItem value="delivery_note">{t('doctype_delivery_note')}</SelectItem>
                             </SelectContent>
                           </Select>

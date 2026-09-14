@@ -26,6 +26,10 @@ vi.mock('@supabase/supabase-js', async () => {
   return { ...actual, createClient: vi.fn().mockReturnValue({}) }
 })
 
+vi.mock('@/lib/api/v1/check-period-lock', () => ({
+  checkPeriodLock: vi.fn().mockResolvedValue({ locked: false, fiscal_period_id: 'fp-1' }),
+}))
+
 vi.mock('@/lib/bookkeeping/invoice-entries', () => ({
   createCreditNoteJournalEntry: vi.fn().mockResolvedValue({
     id: 'mmmmmmmm-mmmm-4mmm-8mmm-mmmmmmmmmmmm',
@@ -36,11 +40,13 @@ import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-key
 import {
   createCreditNoteJournalEntry as mockedCreditEntry,
 } from '@/lib/bookkeeping/invoice-entries'
+import { checkPeriodLock as mockedCheckPeriodLock } from '@/lib/api/v1/check-period-lock'
 import { POST as creditInvoice } from '../route'
 
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
 const mockServiceClient = createServiceClientNoCookies as ReturnType<typeof vi.fn>
 const mockCreditEntry = mockedCreditEntry as ReturnType<typeof vi.fn>
+const mockCheckPeriodLock = mockedCheckPeriodLock as ReturnType<typeof vi.fn>
 
 type MockResult = { data?: unknown; error?: unknown }
 function makeFlexibleSupabase(byTable: Record<string, MockResult | MockResult[]>) {
@@ -104,6 +110,24 @@ const ORIGINAL_SENT_INVOICE = {
   items: [{ sort_order: 0, description: 'x', quantity: 1, unit: 'st', unit_price: 10000, line_total: 10000, vat_rate: 25, vat_amount: 2500 }],
 }
 
+// Kontantmetoden books the sale at payment, so a PAID original already carries
+// revenue + utgående moms on the ledger (issue #2552).
+const ORIGINAL_PAID_INVOICE = {
+  ...ORIGINAL_SENT_INVOICE,
+  status: 'paid',
+  journal_entry_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+  paid_at: '2026-05-20T10:00:00Z',
+  paid_amount: 12500,
+}
+
+// Never paid, never booked: nothing for the credit note to reverse.
+const ORIGINAL_UNPAID_CASH_INVOICE = {
+  ...ORIGINAL_SENT_INVOICE,
+  journal_entry_id: null,
+  paid_at: null,
+  paid_amount: null,
+}
+
 const CREATED_CREDIT_NOTE = {
   id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
   invoice_number: 'KR-2026-0042',
@@ -118,6 +142,7 @@ const CREATED_CREDIT_NOTE = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockCheckPeriodLock.mockResolvedValue({ locked: false, fiscal_period_id: 'fp-1' })
   mockValidate.mockResolvedValue({
     userId: USER_ID,
     companyId: COMPANY_ID,
@@ -157,6 +182,59 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/credit', () => {
     expect(body.data.total).toBe(-12500)
     expect(body.data.journal_entry_id).toBe('mmmmmmmm-mmmm-4mmm-8mmm-mmmmmmmmmmmm')
     expect(mockCreditEntry).toHaveBeenCalledTimes(1)
+  })
+
+  it('dates the credit note in Europe/Stockholm, not UTC', async () => {
+    vi.useFakeTimers()
+    // 23:30 UTC on 2026-05-31 is already 2026-06-01 in Stockholm (CEST).
+    vi.setSystemTime(new Date('2026-05-31T23:30:00Z'))
+    try {
+      const supabase = makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: [
+          { data: ORIGINAL_SENT_INVOICE, error: null },
+          { data: CREATED_CREDIT_NOTE, error: null },
+        ],
+        invoice_items: { data: null, error: null },
+        company_settings: { data: { accounting_method: 'accrual', entity_type: 'aktiebolag' }, error: null },
+      })
+      mockServiceClient.mockReturnValue(supabase)
+
+      const res = await creditInvoice(
+        makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/credit`),
+        detailParams(COMPANY_ID, INVOICE_ID),
+      )
+
+      expect(res.status).toBe(201)
+      expect(mockCheckPeriodLock).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, '2026-06-01')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns 400 INVOICE_CREDIT_PERIOD_LOCKED before writing anything when today is in a locked period', async () => {
+    mockCheckPeriodLock.mockResolvedValue({ locked: true, reason: 'period_locked_at_set', fiscal_period_id: 'fp-locked' })
+    const supabase = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      invoices: [{ data: ORIGINAL_SENT_INVOICE, error: null }],
+    })
+    mockServiceClient.mockReturnValue(supabase)
+
+    const res = await creditInvoice(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/credit`),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVOICE_CREDIT_PERIOD_LOCKED')
+    expect(body.error.details.reason).toBe('period_locked_at_set')
+    expect(body.error.details.fiscal_period_id).toBe('fp-locked')
+    // Only the pre-flight read of the original happened: no insert, no flip.
+    const tables = supabase.from.mock.calls.map((c) => c[0])
+    expect(tables.filter((t) => t === 'invoices')).toHaveLength(1)
+    expect(tables).not.toContain('invoice_items')
+    expect(mockCreditEntry).not.toHaveBeenCalled()
   })
 
   it('returns 404 INVOICE_CREDIT_ORIGINAL_NOT_FOUND when the original is missing', async () => {
@@ -287,6 +365,79 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/credit', () => {
     expect(body.data.preview.invoice_number).toBe('KR-2026-0042')
     expect(body.data.preview.credited_invoice_id).toBe(INVOICE_ID)
     expect(body.data.preview.would_create_journal_entry).toBe(true)
+    expect(mockCreditEntry).not.toHaveBeenCalled()
+  })
+
+  it('books the reversal under kontantmetoden when the original was paid (#2552)', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: [
+          { data: ORIGINAL_PAID_INVOICE, error: null },
+          { data: CREATED_CREDIT_NOTE, error: null },
+        ],
+        invoice_items: { data: null, error: null },
+        company_settings: { data: { accounting_method: 'cash', entity_type: 'enskild_firma' }, error: null },
+      }),
+    )
+
+    const res = await creditInvoice(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/credit`),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.data.journal_entry_id).toBe('mmmmmmmm-mmmm-4mmm-8mmm-mmmmmmmmmmmm')
+    expect(mockCreditEntry).toHaveBeenCalledTimes(1)
+  })
+
+  it('dry-run flags would_create_journal_entry for a paid kontantmetod original', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: { data: ORIGINAL_PAID_INVOICE, error: null },
+        company_settings: { data: { accounting_method: 'cash', entity_type: 'enskild_firma' }, error: null },
+      }),
+    )
+
+    const res = await creditInvoice(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/credit?dry_run=true`,
+      ),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.preview.would_create_journal_entry).toBe(true)
+    expect(body.data.preview.accounting_method).toBe('cash')
+    expect(mockCreditEntry).not.toHaveBeenCalled()
+  })
+
+  it('skips the reversal under kontantmetoden while the original is unpaid and unbooked', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: [
+          { data: ORIGINAL_UNPAID_CASH_INVOICE, error: null },
+          { data: CREATED_CREDIT_NOTE, error: null },
+        ],
+        invoice_items: { data: null, error: null },
+        company_settings: { data: { accounting_method: 'cash', entity_type: 'enskild_firma' }, error: null },
+      }),
+    )
+
+    const res = await creditInvoice(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/credit`),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.data.journal_entry_id).toBeNull()
+    // No JOURNAL_ENTRY_NOT_POSTED warning: the deferral is correct, not a failure.
+    expect(body.data.warnings).toBeUndefined()
     expect(mockCreditEntry).not.toHaveBeenCalled()
   })
 

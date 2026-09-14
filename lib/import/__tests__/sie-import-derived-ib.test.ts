@@ -251,7 +251,10 @@ describe('executeSIEImport: derived IB from #UB -1 (issue #675)', () => {
 
     expect(createJournalEntry).not.toHaveBeenCalled()
     expect(result.openingBalanceEntryId).toBeNull()
-    expect(result.warnings.join(' ')).toMatch(/hoppades över eftersom bolaget redan har bokförda verifikationer/)
+    // The skip is the correct outcome for every year after the first, so it
+    // is recorded as info in details, not pushed as a warning (#2462).
+    expect(result.details?.openingBalanceSkipped).toBe('prior_activity')
+    expect(result.warnings.join(' ')).not.toMatch(/hoppades över eftersom bolaget/)
     // Zero entries from a file with no vouchers is a deliberate no-op (the
     // continuation guard skipped the IB), not a failure: the finalizer
     // downgrade only fires when the file contained vouchers that could not
@@ -307,6 +310,10 @@ describe('executeSIEImport: derived IB from #UB -1 (issue #675)', () => {
       // The chronological activity check excludes the already-imported 2026
       // entries when deciding whether the 2025 #IB is legitimate.
       { count: 0 },
+      // Orphan-IB guard for 2025: no surviving IB voucher.
+      {},
+      // The resync reads the series of the 2026 IB it replaces (seq 345150).
+      { data: { voucher_series: 'M' } },
     ]
 
     vi.mocked(createJournalEntry).mockResolvedValueOnce({
@@ -376,9 +383,12 @@ describe('executeSIEImport: derived IB from #UB -1 (issue #675)', () => {
       entry_date: '2026-01-01',
       }),
     )
-    expect(vi.mocked(replaceOpeningBalanceEntry).mock.calls[0]?.[4]).not.toHaveProperty(
-      'voucher_series',
-    )
+    // The replacement follows the replaced entry's series: the RPC stornos
+    // the old IB in its own series, so anything else splits the pair
+    // (M storno, A replacement) out of date order (feedback seq 345150).
+    expect(vi.mocked(replaceOpeningBalanceEntry).mock.calls[0]?.[4]).toMatchObject({
+      voucher_series: 'M',
+    })
   })
 
   it('warns without changing a locked successor opening balance', async () => {
@@ -543,6 +553,13 @@ describe('executeSIEImport — untransferred prior-year results', () => {
       /Resultatet för Räkenskapsår 2024\/2025 .* har inte förts om till eget kapital/
     )
     expect(result.details?.untransferredResults).toEqual([culprit])
+    // Scoped to periods before the imported year: an unscoped walk named
+    // the same culprit under every later year of a multi-year run (#2462).
+    expect(findUntransferredResults).toHaveBeenCalledWith(
+      expect.anything(),
+      'company-1',
+      { beforePeriodStart: '2024-01-01' }
+    )
   })
 
   it('adds nothing when every prior year transferred its result', async () => {

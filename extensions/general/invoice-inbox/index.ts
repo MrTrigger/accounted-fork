@@ -69,6 +69,7 @@ import {
   supplierInvoiceSekAmounts,
 } from '@/lib/currency/supplier-invoice-rate'
 import { roundOre } from '@/lib/money'
+import { defaultVatRateForTreatment } from '@/lib/vat/supplier-invoice-line-checks'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { renderChannelContextNotes } from '@/lib/documents/channel-context-notes'
 import { CreateSupplierInvoiceSchema, BookInboxItemDirectlySchema, BulkBookInboxSchema } from '@/lib/api/schemas'
@@ -99,6 +100,7 @@ import { fetchPurchasesWithoutUnderlag } from '@/lib/transactions/purchases-with
 import { lookupPortal } from '@/lib/receipt-hunt/portal-directory'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { checkInboxUploadRateLimit } from '@/lib/rate-limits/inbox'
+import { backfillSupplierPaymentDetails, type SupplierPaymentDetails } from '@/lib/supplier-invoices/payment-details-backfill'
 import { simpleParser } from 'mailparser'
 import type { InboxChannelContext, InvoiceExtractionResult, InvoiceInboxItem, SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
@@ -2593,6 +2595,12 @@ export const invoiceInboxExtension: Extension = {
           return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
         }
 
+        // The scan read the supplier's giro or IBAN with everything else: a
+        // supplier that lacks them takes them now, so the invoice can go
+        // into a betalfil without a detour to the supplier card.
+        const scannedSupplier = (item.extracted_data as { supplier?: SupplierPaymentDetails } | null)?.supplier
+        if (scannedSupplier) await backfillSupplierPaymentDetails(ctx.supabase, ctx.companyId, supplier.id as string, scannedSupplier)
+
         // Särskild löneskatt (SLP): same guards as /api/supplier-invoices.
         // The 7533/2514 pair is only lawful on 741x pension premiums and
         // cannot be combined with periodisering on the same row.
@@ -2666,8 +2674,16 @@ export const invoiceInboxExtension: Extension = {
           return NextResponse.json({ error: 'Failed to get arrival number' }, { status: 500 })
         }
 
+        // The stored treatment, resolved once: it decides what a line that
+        // omits vat_rate falls back to and whether the engine may book any
+        // ingaende moms at all (#2553).
+        const vatTreatment = body.vat_treatment || 'standard_25'
+
         const items = body.items.map((bodyItem, index) => {
-          const vatRate = bodyItem.vat_rate ?? 0.25
+          // An omitted rate follows the invoice's vat_treatment, not a
+          // blanket 25 % (#2553): exempt, export and reverse_charge carry no
+          // Swedish moms, reduced_12 / reduced_6 carry their own rate.
+          const vatRate = bodyItem.vat_rate ?? defaultVatRateForTreatment(vatTreatment)
           const lineTotal = bodyItem.amount != null
             ? Math.round(bodyItem.amount * 100) / 100
             : Math.round((bodyItem.quantity ?? 1) * (bodyItem.unit_price ?? 0) * 100) / 100
@@ -2737,7 +2753,7 @@ export const invoiceInboxExtension: Extension = {
             // Which day's kurs the SEK amounts were translated at: the audit
             // trail that makes them verifiable (BFL 5 kap).
             exchange_rate_date: fx.rate.exchangeRateDate,
-            vat_treatment: body.vat_treatment || 'standard_25',
+            vat_treatment: vatTreatment,
             reverse_charge: body.reverse_charge || false,
             payment_reference: body.payment_reference || null,
             subtotal: roundOre(subtotal),

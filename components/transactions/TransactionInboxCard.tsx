@@ -1,19 +1,19 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { useDocumentExtraction } from '@/lib/hooks/use-document-extraction'
 import ExtractionStatus from '@/components/ui/extraction-status'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { TD_CLASS, CHECKBOX_REVEAL_CLASS, RowFoldout } from '@/components/ui/dry-table'
+import { TD_CLASS, CHECKBOX_REVEAL_CLASS } from '@/components/ui/dry-table'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { isImportedTransaction } from '@/lib/transactions/origin'
 import {
   AlertCircle,
   ArrowRightLeft,
-  ChevronRight,
   EyeOff,
   FileSearch,
   Link2,
@@ -33,6 +33,22 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+import dynamic from 'next/dynamic'
+import type { DrawerAction } from './TransactionDrawer'
+
+// The drawer, and the document viewer it carries, load on the first expand:
+// the list's own chunk stays free of them.
+const TransactionDrawer = dynamic(() => import('./TransactionDrawer').then((m) => m.TransactionDrawer), { ssr: false })
+import { HUE_DOT_CLASS, type TemplateHue } from '@/lib/bookkeeping/template-group-colors'
+
+/** The top suggestion for an unbooked row, shown in the Kategori cell. */
+export interface RowProposal {
+  label: string
+  hue: TemplateHue
+  confidence: number
+  /** One line on why, the same words the review header uses. */
+  why: string
+}
 
 // True when the AI tier is active: gates user-facing strings that promise
 // AI behavior. On the free build (document-extraction disabled) we keep the
@@ -43,6 +59,7 @@ import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { canDetachDocument } from './detach-underlag'
 import type { TransactionWithInvoice, CategorizeHandler } from './transaction-types'
 import type { CashAccount } from '@/types'
+import type { TxColumnId } from '@/lib/transactions/columns-v2'
 
 interface TransactionInboxCardProps {
   transaction: TransactionWithInvoice
@@ -82,7 +99,8 @@ interface TransactionInboxCardProps {
   /** Detach the pinned underlag (DELETE attach-document). Unbooked rows only:
    *  once the doc has propagated onto a verifikation the route answers 409. */
   onDetachDocument?: (transaction: TransactionWithInvoice) => void
-  onOpenCategoryDialog: (transaction: TransactionWithInvoice) => void
+  /** The page passes the element that asked, so the picker can open beside it. */
+  onOpenCategoryDialog: (transaction: TransactionWithInvoice, anchor?: HTMLElement) => void
   onDelete?: (id: string) => void
   /** Mark the transaction as ignored so it leaves the inbox without a journal entry. */
   onIgnore?: (transaction: TransactionWithInvoice) => void
@@ -100,13 +118,26 @@ interface TransactionInboxCardProps {
    *  already-imported verifikat, so the row carries a quiet marker steering
    *  toward matching rather than re-booking. */
   preMigrationCutoff?: string | null
+  /** The visible columns (lib/transactions/columns-v2, UI v2 PR 4). */
+  columns: ReadonlySet<TxColumnId>
+  /** Konto column: bank and account, resolved by the page from cashAccounts. */
+  accountLabel?: string | null
+  /** Kategori column: a match hint; null shows the "Välj kategori" prompt. */
+  categoryLabel?: string | null
+  /** Brand icon for the Konto cell (bank, Stripe, Skatteverket). */
+  accountLogo?: string | null
+  /** The top rule or keyword suggestion, shown in the Kategori cell; Bokför uses it. */
+  proposal?: RowProposal | null
+  /** Book the row with its proposal (opens the review with the template set). */
+  onBookProposal?: (transaction: TransactionWithInvoice) => void
 }
 
 /**
- * A bank transaction in the inbox, rendered as a dry-table row pair (concept
- * scene 10): main row with hover checkbox/chevron and the primary action as a
- * quiet pill, plus a foldout with the row's detail and full action set. The
- * ⋯ overflow menu stays on the row for one-click access to the same actions.
+ * A bank transaction in the inbox, rendered as a dry-table row (concept scene
+ * 10): selection checkbox, the visible columns and the primary action as a
+ * quiet pill. A click opens the drawer with the row's detail and full action
+ * set; the ⋯ overflow menu stays on the row for one-click access to the same
+ * actions.
  */
 export default function TransactionInboxCard({
   transaction,
@@ -131,7 +162,14 @@ export default function TransactionInboxCard({
   cashAccounts,
   onToggleSelect,
   preMigrationCutoff = null,
+  columns,
+  accountLabel = null,
+  categoryLabel = null,
+  accountLogo = null,
+  proposal = null,
+  onBookProposal,
 }: TransactionInboxCardProps) {
+  const show = (c: TxColumnId) => columns.has(c)
   const t = useTranslations('tx_inbox_card')
   const tDetach = useTranslations('tx_detach')
   const tMethod = useTranslations('tx_method')
@@ -224,10 +262,11 @@ export default function TransactionInboxCard({
 
   // Primary action: invoice/supplier-invoice match keeps the 1-click
   // shortcut; otherwise the user opens the template picker. Rendered as the
-  // row-level quiet pill AND as the foldout's leading pill.
-  const runPrimary = () => {
+  // row-level quiet pill AND as the drawer's leading pill.
+  const runPrimary = (anchor?: HTMLElement) => {
     if (matchLabel) onOpenMatchDialog(transaction)
-    else onOpenCategoryDialog(transaction)
+    else if (proposal && onBookProposal) onBookProposal(transaction)
+    else onOpenCategoryDialog(transaction, anchor)
   }
   const primaryLabel = matchLabel ?? 'Bokför'
 
@@ -244,8 +283,8 @@ export default function TransactionInboxCard({
     ? 'Dela inbetalningen på flera fakturor'
     : 'Dela utbetalningen på flera leverantörsfakturor'
 
-  // Secondary row actions live twice, deliberately: as quiet links in the
-  // foldout (concept vact) and in the row's ⋯ overflow menu for one-click use.
+  // Secondary row actions live twice, deliberately: in the drawer and in the
+  // row's ⋯ overflow menu for one-click use.
   // "Matcha mot befintlig verifikation": link to an already-booked voucher.
   // Available on any unbooked row (income or expense), independent of whether an
   // invoice match was auto-detected: the user may want to point the bank line at
@@ -281,23 +320,32 @@ export default function TransactionInboxCard({
   // marker steering toward matching rather than re-booking.
   const isPreMigration = !!preMigrationCutoff && transaction.date <= preMigrationCutoff
 
-  // The foldout carries row detail only (actions live on the row: pill + ⋯).
-  // Rows with nothing to show don't expand at all; classified imported rows
-  // always have at least the payment-method line.
-  const hasFoldoutContent =
-    Boolean(transaction.transaction_method) ||
-    (transaction.currency !== 'SEK' && transaction.amount_sek != null) ||
-    // No originalName requirement: below md the inline "redigerad" marker is
-    // hidden, so the foldout is the only place the edited state survives; it
-    // must open even when the original bank name is missing.
-    Boolean(transaction.title_edited_at) ||
-    Boolean(skvCounterpartDate) ||
-    isPreMigration ||
-    (HAS_AI_EXTRACTION && (extraction.status === 'running' || extraction.status === 'failed'))
-  const canExpand = hasFoldoutContent
-  // An exiting row's foldout closes with it: the foldout <tr> has no exit
-  // styling of its own and would otherwise linger un-animated.
-  const expanded = isExpanded && canExpand && !isExiting
+  // The overflow actions as data: the row's ⋯ menu and the drawer render
+  // the same list, in the same order, from one place.
+  const overflowItems: DrawerAction[] = []
+  if (showInvoiceMatchButton)
+    overflowItems.push({ key: 'invoice', label: invoiceMatchLabel, icon: Link2, onSelect: () => onOpenMatchInvoicePicker(transaction) })
+  if (showMatchVoucherItem)
+    overflowItems.push({ key: 'voucher', label: t('match_voucher_btn'), icon: FileSearch, onSelect: () => onOpenMatchVoucher!(transaction) })
+  if (showMatchExpenseItem)
+    overflowItems.push({ key: 'expense', label: t('match_expense_btn'), icon: FileSearch, onSelect: () => onOpenMatchExpense!(transaction) })
+  if (showAttachDocumentItem)
+    overflowItems.push({ key: 'attach', label: t('attach_document_btn'), icon: Paperclip, onSelect: () => onOpenAttachDocument!(transaction) })
+  if (showDetachDocumentItem)
+    overflowItems.push({ key: 'detach', label: tDetach('menu_item'), icon: Unlink, onSelect: () => onDetachDocument!(transaction) })
+  if (showSplitItem) overflowItems.push({ key: 'split', label: splitMatchLabel, icon: Split, onSelect: () => onOpenSplitMatch!(transaction) })
+  if (showEditItem) overflowItems.push({ key: 'edit', label: t('edit_title_aria'), icon: Pencil, onSelect: () => onEditTitle!(transaction) })
+  if (showMoveAccountItem)
+    overflowItems.push({ key: 'move', label: t('move_account_btn'), icon: ArrowRightLeft, onSelect: () => onMoveCashAccount!(transaction) })
+  const dangerItems: DrawerAction[] = []
+  if (showIgnoreItem) dangerItems.push({ key: 'ignore', label: t('ignore_btn'), icon: EyeOff, onSelect: () => onIgnore!(transaction) })
+  if (showDeleteItem) dangerItems.push({ key: 'delete', label: t('delete_aria'), icon: Trash2, onSelect: () => onDelete!(transaction.id), destructive: true })
+  const showDangerSeparator =
+    (showIgnoreItem || showDeleteItem) && (showMatchVoucherItem || showAttachDocumentItem || showSplitItem || showEditItem || showMoveAccountItem)
+
+  // Every row opens the drawer, which always has something to show. An
+  // exiting row's drawer closes with it.
+  const expanded = isExpanded && !isExiting
 
   return (
     <>
@@ -305,7 +353,7 @@ export default function TransactionInboxCard({
         data-tx-id={transaction.id}
         className={cn(
           'group transition-colors duration-150',
-          canExpand && 'cursor-pointer',
+          'cursor-pointer',
           expanded ? 'bg-secondary/25' : 'hover:bg-secondary/35',
           isSelected && 'bg-secondary/40',
           isDisabled && 'opacity-50',
@@ -315,30 +363,25 @@ export default function TransactionInboxCard({
         // focus and activation (row expand, Bokför, the ⋯ menu) during the
         // 350ms removal window.
         inert={isExiting || undefined}
-        role={canExpand ? 'button' : undefined}
-        tabIndex={canExpand ? 0 : undefined}
-        aria-expanded={canExpand ? expanded : undefined}
-        onClick={canExpand ? () => onToggleExpand(transaction.id) : undefined}
-        onKeyDown={
-          canExpand
-            ? (e) => {
-                // Only when the row itself is focused: Enter/Space on a nested
-                // control (Bokför, ⋯, checkbox) bubbles here, and preventDefault
-                // would cancel the button's keyboard activation.
-                if (e.target !== e.currentTarget) return
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onToggleExpand(transaction.id)
-                }
-              }
-            : undefined
-        }
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={() => onToggleExpand(transaction.id)}
+        onKeyDown={(e) => {
+          // Only when the row itself is focused: Enter/Space on a nested
+          // control (Bokför, ⋯, checkbox) bubbles here, and preventDefault
+          // would cancel the button's keyboard activation.
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onToggleExpand(transaction.id)
+          }
+        }}
       >
-        {/* Always-visible selection checkbox (concept .cb) */}
-        {/* Zero-width cell: the checkbox hangs in the left page margin so
-            the date column can sit flush with the page edge. */}
+        {/* Always-visible selection checkbox (concept .cb) in a real first
+            column: the full-bleed panel has no margin for it to hang in. */}
         <td
-          className={cn(TD_CLASS, 'relative w-0 !p-0 select-none')}
+          className={cn(TD_CLASS, 'select-none', 'w-7 !pl-0 !pr-2')}
           onClick={(e) => e.stopPropagation()}
         >
           {selectable && (
@@ -350,15 +393,18 @@ export default function TransactionInboxCard({
               onCheckedChange={() => onToggleSelect(transaction.id, shiftHeld.current)}
               aria-label="Välj transaktion"
               className={cn(
-                'absolute -left-5 top-1/2 -translate-y-1/2 border-foreground duration-150 md:-left-6',
+                'border-foreground duration-150',
+                'block',
                 isSelected ? 'opacity-100' : CHECKBOX_REVEAL_CLASS,
               )}
             />
           )}
         </td>
-        <td className={cn(TD_CLASS, '!pl-0 whitespace-nowrap tabular-nums text-muted-foreground')}>
-          {formatDate(transaction.date)}
-        </td>
+        {show('date') && (
+          <td className={cn(TD_CLASS, '!pl-0 whitespace-nowrap tabular-nums text-muted-foreground')}>
+            {formatDate(transaction.date)}
+          </td>
+        )}
         {/* overflow-hidden: the shrink-0 markers below don't truncate, so on
             a viewport too narrow for them the cell must clip instead of
             painting over the Belopp column. */}
@@ -368,7 +414,7 @@ export default function TransactionInboxCard({
             <TransactionAttachmentIndicator documentId={attachedDocumentId} />
             {/* The markers below are desktop-only (hidden md:*): on mobile
                 they overflowed the cell into Belopp; their info stays
-                reachable in the foldout (TransactionHistoryList gates its
+                reachable in the drawer (TransactionHistoryList gates its
                 markers the same way). */}
             {transaction.title_edited_at && (
               <span
@@ -393,16 +439,50 @@ export default function TransactionInboxCard({
             )}
           </span>
         </td>
-        <td
-          className={cn(
-            TD_CLASS,
-            'whitespace-nowrap text-right tabular-nums rr-mask',
-            isIncome && 'text-success',
-          )}
-        >
-          {isIncome ? '+' : ''}
-          {formatCurrency(transaction.amount, transaction.currency)}
-        </td>
+        {columns.has('category') && (
+          <td className={cn(TD_CLASS, 'whitespace-nowrap')} onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className={cn(
+                'inline-flex max-w-[16rem] items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs transition-colors duration-150',
+                categoryLabel || proposal
+                  ? 'text-foreground hover:bg-secondary/60'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+              onClick={(e) => onOpenCategoryDialog(transaction, e.currentTarget)}
+              disabled={isProcessing || isDisabled}
+              title={!categoryLabel && proposal ? t('proposal_title', { label: proposal.label, percent: Math.round(proposal.confidence * 100) }) : undefined}
+            >
+              {!categoryLabel && proposal && (
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', HUE_DOT_CLASS[proposal.hue])} aria-hidden />
+              )}
+              <span className="truncate">{categoryLabel ?? proposal?.label ?? t('category_pick')}</span>
+            </button>
+          </td>
+        )}
+        {columns.has('account') && (
+          <td className={cn(TD_CLASS, 'whitespace-nowrap text-muted-foreground')}>
+            <span className="inline-flex items-center gap-2">
+              {accountLogo && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={accountLogo} alt="" className="h-4 w-4 shrink-0 rounded-sm object-contain" />
+              )}
+              {accountLabel ?? ''}
+            </span>
+          </td>
+        )}
+        {show('amount') && (
+          <td
+            className={cn(
+              TD_CLASS,
+              'whitespace-nowrap text-right tabular-nums rr-mask',
+              isIncome && 'text-success',
+            )}
+          >
+            {isIncome ? '+' : ''}
+            {formatCurrency(transaction.amount, transaction.currency)}
+          </td>
+        )}
         <td className={cn(TD_CLASS, 'relative whitespace-nowrap text-right !pr-0 py-[9px]')}>
           <span className="row-collapsible inline-flex items-center justify-end gap-2">
             <Button
@@ -411,7 +491,7 @@ export default function TransactionInboxCard({
               className="h-7 px-3.5 text-xs"
               onClick={(e) => {
                 e.stopPropagation()
-                runPrimary()
+                runPrimary(e.currentTarget)
               }}
               disabled={isProcessing || isDisabled}
             >
@@ -436,195 +516,65 @@ export default function TransactionInboxCard({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-[14rem]">
-                  {showInvoiceMatchButton && (
+                  {overflowItems.map((item) => (
                     <DropdownMenuItem
+                      key={item.key}
                       onClick={(e) => {
                         e.stopPropagation()
-                        onOpenMatchInvoicePicker(transaction)
+                        item.onSelect()
                       }}
                     >
-                      <Link2 className="h-4 w-4" />
-                      {invoiceMatchLabel}
+                      <item.icon className="h-4 w-4" />
+                      {item.label}
                     </DropdownMenuItem>
-                  )}
-                  {showMatchVoucherItem && (
+                  ))}
+                  {showDangerSeparator && <DropdownMenuSeparator />}
+                  {dangerItems.map((item) => (
                     <DropdownMenuItem
+                      key={item.key}
+                      className={item.destructive ? 'text-destructive focus:text-destructive' : undefined}
                       onClick={(e) => {
                         e.stopPropagation()
-                        onOpenMatchVoucher!(transaction)
+                        item.onSelect()
                       }}
                     >
-                      <FileSearch className="h-4 w-4" />
-                      {t('match_voucher_btn')}
+                      <item.icon className="h-4 w-4" />
+                      {item.label}
                     </DropdownMenuItem>
-                  )}
-                  {showMatchExpenseItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onOpenMatchExpense!(transaction)
-                      }}
-                    >
-                      <FileSearch className="h-4 w-4" />
-                      {t('match_expense_btn')}
-                    </DropdownMenuItem>
-                  )}
-                  {showAttachDocumentItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onOpenAttachDocument!(transaction)
-                      }}
-                    >
-                      <Paperclip className="h-4 w-4" />
-                      {t('attach_document_btn')}
-                    </DropdownMenuItem>
-                  )}
-                  {showDetachDocumentItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDetachDocument!(transaction)
-                      }}
-                    >
-                      <Unlink className="h-4 w-4" />
-                      {tDetach('menu_item')}
-                    </DropdownMenuItem>
-                  )}
-                  {showSplitItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onOpenSplitMatch!(transaction)
-                      }}
-                    >
-                      <Split className="h-4 w-4" />
-                      {splitMatchLabel}
-                    </DropdownMenuItem>
-                  )}
-                  {showEditItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onEditTitle!(transaction)
-                      }}
-                    >
-                      <Pencil className="h-4 w-4" />
-                      {t('edit_title_aria')}
-                    </DropdownMenuItem>
-                  )}
-                  {showMoveAccountItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onMoveCashAccount!(transaction)
-                      }}
-                    >
-                      <ArrowRightLeft className="h-4 w-4" />
-                      {t('move_account_btn')}
-                    </DropdownMenuItem>
-                  )}
-                  {(showIgnoreItem || showDeleteItem) && (showMatchVoucherItem || showAttachDocumentItem || showSplitItem || showEditItem || showMoveAccountItem) && (
-                    <DropdownMenuSeparator />
-                  )}
-                  {showIgnoreItem && (
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onIgnore!(transaction)
-                      }}
-                    >
-                      <EyeOff className="h-4 w-4" />
-                      {t('ignore_btn')}
-                    </DropdownMenuItem>
-                  )}
-                  {showDeleteItem && (
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDelete!(transaction.id)
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      {t('delete_aria')}
-                    </DropdownMenuItem>
-                  )}
+                  ))}
                 </DropdownMenuContent>
               </DropdownMenu>
-            )}
-            {/* Expand affordance hangs in the right page margin, mirroring
-                the selection checkbox on the left. */}
-            {canExpand && (
-              <ChevronRight
-                className={cn(
-                  'absolute -right-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground transition-all duration-200 md:-right-6',
-                  expanded ? 'rotate-90 opacity-100' : 'opacity-0 group-hover:opacity-100',
-                )}
-              />
             )}
           </span>
         </td>
       </tr>
-      {expanded && (
-        <tr data-no-stagger>
-          <td colSpan={5} className="border-b border-border p-0">
-            <RowFoldout>
-              <div className="pb-6 pt-1">
-                {transaction.transaction_method ||
-                (transaction.currency !== 'SEK' && transaction.amount_sek != null) ||
-                transaction.title_edited_at ||
-                skvCounterpartDate ||
-                isPreMigration ? (
-                  <div className="space-y-1 py-1 text-xs text-muted-foreground">
-                    {transaction.transaction_method && (
-                      <p>
-                        {t('method_line', {
-                          method: tMethod(transaction.transaction_method),
-                        })}
-                      </p>
-                    )}
-                    {transaction.currency !== 'SEK' && transaction.amount_sek != null && (
-                      <p className="tabular-nums">
-                        {formatCurrency(transaction.amount, transaction.currency)}
-                        {' · '}
-                        {formatCurrency(transaction.amount_sek)}
-                      </p>
-                    )}
-                    {transaction.title_edited_at && (
-                      <p>
-                        {originalName
-                          ? t('original_name_tooltip', { name: originalName })
-                          : t('edited_no_original')}
-                      </p>
-                    )}
-                    {skvCounterpartDate && (
-                      <p>
-                        {t('skv_counterpart_label')}{' '}
-                        {t('skv_counterpart_body', { date: skvCounterpartDate })}
-                      </p>
-                    )}
-                    {isPreMigration && <p>{t('pre_migration_foldout')}</p>}
-                  </div>
-                ) : null}
-
-                {/* Extraction status: visible only while AI is reading a freshly
-                    attached document, or briefly if reading failed. */}
-                {HAS_AI_EXTRACTION &&
-                  (extraction.status === 'running' || extraction.status === 'failed') && (
-                    <div className="py-1">
-                      <ExtractionStatus
-                        status={extraction.status}
-                        elapsedMs={extraction.elapsedMs}
-                      />
-                    </div>
-                  )}
-
-              </div>
-            </RowFoldout>
-          </td>
-        </tr>
-      )}
+      {expanded &&
+        createPortal(
+          <TransactionDrawer
+            transaction={transaction}
+            accountLabel={accountLabel}
+            categoryLabel={categoryLabel ?? proposal?.label ?? null}
+            proposalWhy={!categoryLabel && proposal ? proposal.why : null}
+            accountLogo={accountLogo}
+            primaryLabel={primaryLabel}
+            onPrimary={(anchor) => runPrimary(anchor)}
+            onOpenCategory={(anchor) => onOpenCategoryDialog(transaction, anchor)}
+            actions={[...overflowItems, ...dangerItems]}
+            methodLabel={transaction.transaction_method ? tMethod(transaction.transaction_method) : null}
+            originalName={originalName ?? null}
+            skvCounterpartDate={skvCounterpartDate}
+            isPreMigration={isPreMigration}
+            attachedDocumentId={attachedDocumentId}
+            extra={
+              HAS_AI_EXTRACTION && (extraction.status === 'running' || extraction.status === 'failed') ? (
+                <ExtractionStatus status={extraction.status} elapsedMs={extraction.elapsedMs} />
+              ) : null
+            }
+            processing={isProcessing}
+            onClose={() => onToggleExpand(transaction.id)}
+          />,
+          document.body,
+        )}
     </>
   )
 }

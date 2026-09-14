@@ -16,12 +16,15 @@ import {
   getResolvedDashboardAgentProfile,
 } from './request-context'
 import { HemChecklistSection, HemNoticesSection, HemPanesSection } from './hem-sections'
+import { PageHeader } from '@/components/ui/page-header'
+import { HelpPopover } from '@/components/ui/help-popover'
+import { getTranslations } from 'next-intl/server'
 
 export const dynamic = 'force-dynamic'
 
 // Home route = Hem (concept scene 14): greeting + Att göra + Fortsätt.
-// The KPI/revenue/deadline widgets left the page (founder direction,
-// dev_docs/last_session_resume.md §8), which also pruned their fetches:
+// The KPI/revenue/deadline widgets left the page (founder direction),
+// which also pruned their fetches:
 // the journal-line YTD aggregation, unpaid-invoice totals and deadline
 // queries are gone and the page got faster.
 //
@@ -155,36 +158,56 @@ export default async function DashboardPage() {
   }
   const setupOpen = !settings.initial_setup_completed_at && !settings.initial_setup_dismissed_at
 
-  return (
+  // The streamed sections: the notice line and the
+  // setup checklist fill in behind their own Suspense boundaries.
+  const notices = (
+    <Suspense fallback={null}>
+      <HemNoticesSection companyId={companyId} userId={user.id} now={now} />
+    </Suspense>
+  )
+  const checklist = (
+    <Suspense fallback={<ChecklistSkeleton />}>
+      <HemChecklistSection
+        companyId={companyId}
+        userId={user.id}
+        now={now}
+        initialSetup={initialSetup}
+        hasMcpKey={hasMcpKey}
+        vatRegistered={settings.vat_registered}
+        momsPeriod={settings.moms_period ?? null}
+      />
+    </Suspense>
+  )
+
+  // Hem: greeting, notice line, setup checklist, then the Att göra and
+  // Fortsätt panes side by side. The content runs under the Att göra top
+  // bar, and MainContainer's full-bleed frame stretches it to the panel. The
+  // three-pane queue of PR 3 was tried and dropped (founder direction
+  // 2026-09-10: "the to-do page should be the old homepage, but stretched").
+  const hem = (
     <DashboardContent
       companyId={companyId}
       agentBuilt={agentBuilt}
       userFirstName={userFirstName}
       initialSetup={initialSetup}
       hasSkatteverketConnected={(skatteverketTokenCount || 0) > 0}
-      notices={
-        <Suspense fallback={null}>
-          <HemNoticesSection companyId={companyId} userId={user.id} now={now} />
-        </Suspense>
-      }
-      checklist={
-        <Suspense fallback={<ChecklistSkeleton />}>
-          <HemChecklistSection
-            companyId={companyId}
-            userId={user.id}
-            now={now}
-            initialSetup={initialSetup}
-            hasMcpKey={hasMcpKey}
-            vatRegistered={settings.vat_registered}
-            momsPeriod={settings.moms_period ?? null}
-          />
-        </Suspense>
-      }
+      notices={notices}
+      checklist={checklist}
       panes={
         <Suspense fallback={<PanesSkeleton />}>
           <HemPanesSection companyId={companyId} now={now} setupOpen={setupOpen} />
         </Suspense>
       }
     />
+  )
+
+  const tV2 = await getTranslations('att_gora_v2')
+  const header = <PageHeader title={tV2('title')} help={<HelpPopover>{tV2('help')}</HelpPopover>} />
+
+  return (
+    <>
+      {header}
+      {hem}
+    </>
   )
 }

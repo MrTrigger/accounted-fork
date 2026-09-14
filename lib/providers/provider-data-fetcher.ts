@@ -1,4 +1,5 @@
 import type {
+  AccountingAccountDto,
   CompanyInformationDto,
   CustomerDto,
   SupplierDto,
@@ -163,6 +164,33 @@ export async function fetchCompanyInfoDirect(
  * orchestrator's ProviderRunState.grantProven, which counts rows instead).
  * A failed request still throws; only genuinely absent resources return [].
  */
+/**
+ * The provider's chart of accounts, with the per-account momskod the SIE
+ * export leaves out (SIE4 #KONTO carries no VAT code). Fortnox only so far:
+ * its VATCode is a named code whose meaning is documented
+ * (lib/providers/fortnox/vat-codes.ts). Visma's VatCodeId is an opaque id
+ * that needs a second lookup, and the Björn Lundén and Briox code sets are
+ * unverified, so those answer [] until their semantics are pinned down.
+ *
+ * Fortnox lists the chart of the CURRENT financial year when no
+ * financialyear filter is given; that is the chart the user sees in Fortnox
+ * today, which is what the mapping step should agree with.
+ */
+export async function fetchAccountingAccountsDirect(
+  provider: ProviderName,
+  accessToken: string,
+): Promise<AccountingAccountDto[]> {
+  if (provider === 'fortnox') {
+    const config = FORTNOX_RESOURCE_CONFIGS[ResourceType.AccountingAccounts]!;
+    const items = await fortnoxClient.getPaginated<Record<string, unknown>>(
+      accessToken, config.listEndpoint, config.listKey, { pageSize: 500 },
+    );
+    return items.map((item) => config.mapper(item) as AccountingAccountDto);
+  }
+
+  return [];
+}
+
 export async function fetchCustomersDirect(
   provider: ProviderName,
   accessToken: string,
@@ -440,6 +468,30 @@ export interface HydratedInvoices<T extends SalesInvoiceDto | SupplierInvoiceDto
    * absent: the migration must not report them as "the provider had none".
    */
   unhydratedIds: Set<string>;
+  /**
+   * Listed invoices the caller's `select` predicate declined BEFORE the
+   * detail pass, so no budget was spent on them. Absent when no predicate
+   * was given (every listed invoice is in `invoices`).
+   */
+  excluded?: T[];
+}
+
+/**
+ * Caller's choice of which listed invoices are worth a detail fetch. Runs on
+ * the list payload, before hydration, so a declined invoice costs nothing
+ * beyond its share of the list page.
+ */
+export type InvoiceSelect<T extends SalesInvoiceDto | SupplierInvoiceDto> = (dto: T) => boolean;
+
+function partitionBySelect<T extends SalesInvoiceDto | SupplierInvoiceDto>(
+  invoices: T[],
+  select: InvoiceSelect<T> | undefined,
+): { kept: T[]; excluded: T[] } {
+  if (!select) return { kept: invoices, excluded: [] };
+  const kept: T[] = [];
+  const excluded: T[] = [];
+  for (const dto of invoices) (select(dto) ? kept : excluded).push(dto);
+  return { kept, excluded };
 }
 
 /**
@@ -762,9 +814,12 @@ export async function fetchSalesInvoicesHydrated(
   accessToken: string,
   providerCompanyId?: string,
   budgetMs: number = DEFAULT_HYDRATION_BUDGET_MS,
+  select?: InvoiceSelect<SalesInvoiceDto>,
 ): Promise<HydratedInvoices<SalesInvoiceDto>> {
-  const invoices = await fetchSalesInvoicesDirect(provider, accessToken, providerCompanyId);
-  return hydrateSalesInvoices(provider, accessToken, providerCompanyId, invoices, budgetMs);
+  const listed = await fetchSalesInvoicesDirect(provider, accessToken, providerCompanyId);
+  const { kept, excluded } = partitionBySelect(listed, select);
+  const hydrated = await hydrateSalesInvoices(provider, accessToken, providerCompanyId, kept, budgetMs);
+  return { ...hydrated, excluded };
 }
 
 /**
@@ -807,9 +862,12 @@ export async function fetchSupplierInvoicesHydrated(
   accessToken: string,
   providerCompanyId?: string,
   budgetMs: number = DEFAULT_HYDRATION_BUDGET_MS,
+  select?: InvoiceSelect<SupplierInvoiceDto>,
 ): Promise<HydratedInvoices<SupplierInvoiceDto>> {
-  const invoices = await fetchSupplierInvoicesDirect(provider, accessToken, providerCompanyId);
-  return hydrateSupplierInvoices(provider, accessToken, providerCompanyId, invoices, budgetMs);
+  const listed = await fetchSupplierInvoicesDirect(provider, accessToken, providerCompanyId);
+  const { kept, excluded } = partitionBySelect(listed, select);
+  const hydrated = await hydrateSupplierInvoices(provider, accessToken, providerCompanyId, kept, budgetMs);
+  return { ...hydrated, excluded };
 }
 
 /**

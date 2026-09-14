@@ -11,6 +11,7 @@ import { agentToolRegistry } from '@/lib/agent/tools/registry'
 import type { AgentTool, AgentActorContext, StagedOperationResult } from '@/lib/agent/tools/types'
 import { isStagedOperation } from '@/lib/agent/tools/types'
 import { buildSystemPrompt } from './system-prompt'
+import { loadFiscalYearInventory } from '@/lib/agent/fiscal-years'
 import { createLogger } from '@/lib/logger'
 import { swedishToday } from '@/lib/utils'
 
@@ -135,7 +136,7 @@ export type StreamEvent =
       // The agent successfully wrote a memory mid-conversation (remember_fact
       // or forget_fact). Stream-time only: not persisted. The chat surface
       // renders a discreet "Sparat: …" chip so users know memory happened
-      // without having to visit /settings/agent-memory.
+      // without having to visit /settings/assistant?view=memory.
       kind: 'memory_captured'
       tool_use_id: string
       action: 'remembered' | 'forgotten'
@@ -258,12 +259,13 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
   // On a first turn the caller already read the profile summary to build the
   // intent's prompt template, so it hands it over rather than making the same
   // round trip again for the system prompt.
-  const [profile, memory, vatStatus] = await Promise.all([
+  const [profile, memory, vatStatus, fiscalYears] = await Promise.all([
     args.preloadedProfileSummary !== undefined
       ? Promise.resolve(args.preloadedProfileSummary)
       : loadProfileSummary(supabase, companyId),
     loadRankedMemory(supabase, companyId, 30),
     loadVatStatus(supabase, companyId),
+    loadFiscalYearInventory(supabase, companyId),
   ])
 
   const systemPrompt = await buildSystemPrompt({
@@ -275,6 +277,7 @@ export async function runChatTurn(args: RunTurnArgs): Promise<void> {
     rankedMemory: memory,
     vatStatus,
     today: swedishToday(),
+    fiscalYears,
     supabase,
   })
 

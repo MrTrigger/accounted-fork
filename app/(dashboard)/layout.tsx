@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { cookies, headers } from 'next/headers'
 import DashboardNav from '@/components/dashboard/DashboardNav'
@@ -8,14 +9,14 @@ import { computeIdentityHash } from '@/lib/analytics/identity-hash'
 import { AgentSheetProvider } from '@/components/agent/AgentSheetProvider'
 import AgentTrigger from '@/components/agent/AgentTrigger'
 import LazyCommandPalette from '@/components/common/LazyCommandPalette'
+import { SupportDialogHost } from '@/components/support/SupportDialogHost'
 import { SettingsHotkey } from '@/components/settings/SettingsHotkey'
 import { SessionTimeoutController } from '@/components/auth/SessionTimeoutController'
 import { SandboxBanner } from '@/components/dashboard/SandboxBanner'
+import { SystemNoticeBanner } from '@/components/dashboard/SystemNoticeBanner'
+import { parseSystemNoticeUntil } from '@/components/dashboard/system-notice'
 import TrialExpiredDialog from '@/components/billing/TrialExpiredDialog'
-import MultiUserGraceBanner from '@/components/billing/MultiUserGraceBanner'
 import { resolveDormantCompanyIds } from '@/lib/company/active-company'
-import { getMultiUserState } from '@/lib/entitlements/multi-user'
-import { createServiceClient } from '@/lib/supabase/server'
 import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider, type ByraTeamRef } from '@/contexts/CompanyContext'
 import { ReferenceDataSeed } from '@/components/providers/ReferenceDataSeed'
@@ -54,8 +55,8 @@ const NO_COMPANY_ALLOWED_PATHS = ['/settings/account']
  * Frame layout: on desktop the page is a rounded panel floating on the
  * warm-toned frame (bg-frame on the wrapper div), with its own inner
  * scroll. 10px margin against the frame; height is the remaining
- * viewport. The sidebar (fixed, w-64) sits borderless on the frame, so
- * the panel starts at ml-64. On mobile the panel dissolves: full-width
+ * viewport. The sidebar (fixed, --nav-w wide) sits borderless on the
+ * frame, so the panel starts at ml-[var(--nav-w)]. On mobile the panel dissolves: full-width
  * document flow with the bottom nav, exactly as before.
  */
 const MAIN_PANEL_CLASS =
@@ -112,9 +113,9 @@ export default async function DashboardLayout({
     // popover (full_name + initial) so it's clear which user is logged
     // in, distinct from the active company shown at the top.
     supabase.from('profiles').select('full_name').eq('id', user.id).maybeSingle(),
-    // Per-user UI state (nav collapse/fold state), server-rendered so the
-    // sidebar width is right on first paint, plus the hide-assistant-FAB
-    // preference (Inställningar → Assistenten).
+    // Per-user UI state (assistant panel geometry, trial acknowledgement),
+    // server-rendered so both are right on first paint, plus the
+    // hide-assistant-FAB preference (Inställningar → Assistenten).
     supabase.from('user_preferences').select('ui_state, hide_assistant_fab').eq('user_id', user.id).maybeSingle(),
     supabase.from('company_members').select('company_id, role, companies:company_id(id, name, org_number, entity_type, accounting_framework, created_by, team_id, archived_at, created_at, updated_at)').eq('user_id', user.id),
   ])
@@ -123,6 +124,14 @@ export default async function DashboardLayout({
   const isNoCompanyAllowed = NO_COMPANY_ALLOWED_PATHS.some((p) =>
     pathname.startsWith(p)
   )
+
+  // Operator-set system notice (NEXT_PUBLIC_SYSTEM_NOTICE_UNTIL): null when
+  // unset or expired, so the banner is not even rendered outside its window.
+  // Computed before the shell branches below so every signed-in user sees it,
+  // byrå consultants and stale-cookie sessions included.
+  const systemNoticeUntil = parseSystemNoticeUntil(process.env.NEXT_PUBLIC_SYSTEM_NOTICE_UNTIL)
+  const systemNoticeBanner =
+    systemNoticeUntil !== null ? <SystemNoticeBanner until={systemNoticeUntil} /> : null
 
   // Team now carries `kind` directly (types/index.ts, WL-08).
   const membershipRows = teamMemberships
@@ -214,6 +223,7 @@ export default async function DashboardLayout({
         <AgentSheetProvider>
           <CompanyTabSync />
           <div className="min-h-dvh bg-frame md:flex md:flex-col">
+            {systemNoticeBanner}
             <DashboardNav
               companyName={getBranding().appName.toLowerCase()}
               entityType="enskild_firma"
@@ -225,12 +235,15 @@ export default async function DashboardLayout({
               className={MAIN_PANEL_CLASS}
               role="main"
             >
-              <div className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
+              <MainContainer companyId={null}>
                 {children}
-              </div>
+              </MainContainer>
             </main>
             {settingsModal}
             <SettingsHotkey />
+          <Suspense fallback={null}>
+            <SupportDialogHost />
+          </Suspense>
           </div>
         </AgentSheetProvider>
       </CompanyProvider>
@@ -372,6 +385,7 @@ export default async function DashboardLayout({
         <AgentSheetProvider>
           <CompanyTabSync />
           <div className="min-h-dvh bg-frame md:flex md:flex-col">
+            {systemNoticeBanner}
             <DashboardNav
               companyName={getBranding().appName.toLowerCase()}
               entityType="enskild_firma"
@@ -379,9 +393,9 @@ export default async function DashboardLayout({
               extensionNavItems={getExtensionNavItems()}
             />
             <main id="main-content" className={MAIN_PANEL_CLASS} role="main">
-              <div className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
+              <MainContainer companyId={null}>
                 {children}
-              </div>
+              </MainContainer>
             </main>
             {settingsModal}
             <SettingsHotkey />
@@ -410,6 +424,8 @@ export default async function DashboardLayout({
   const dimensionsEnabled = settings?.dimensions_enabled ?? false
   // Kundorder visibility: same UI-only gate as dimensionsEnabled.
   const salesOrdersEnabled = settings?.sales_orders_enabled ?? false
+  // Offerter row: UI-only gate, default on (a fresh settings row has it true).
+  const quotesEnabled = settings?.quotes_enabled ?? true
   // Körjournal visibility: the settings toggle is the normal way in, existing
   // trips force the row on so already-created data stays reachable.
   const hasMileage = (settings?.mileage_enabled ?? false) || hasMileageTrips
@@ -439,50 +455,10 @@ export default async function DashboardLayout({
       })),
   )
 
-  // The entitlements-derived multiUser state is computed from the grant rows
-  // the CALLER can see, and RLS hides team-scoped grants from users outside
-  // the team (byrå clients): re-verify any non-entitled answer through the
-  // SECURITY DEFINER state RPC before acting on it. One extra round trip only
-  // in the rare non-entitled case.
-  const activeMultiUser =
-    entitlements.multiUser.state === 'entitled'
-      ? entitlements.multiUser
-      : await getMultiUserState(supabase, companyId)
-
-  // Grace countdown banner data: only while the ACTIVE company is in its
-  // 20-day window AND actually has affected people (>= 1 non-owner member).
-  // Service client because other members' emails are not readable through
-  // the caller's RLS (same reason as GET /api/company/members).
-  let graceBanner: { graceEndsAt: string; affectedEmails: string[]; isAffectedUser: boolean } | null =
-    null
-  if (!isSandbox && activeMultiUser.state === 'grace' && activeMultiUser.graceEndsAt) {
-    const serviceClient = await createServiceClient()
-    const { data: memberRows } = await serviceClient
-      .from('company_members')
-      .select('user_id, role')
-      .eq('company_id', companyId)
-    const affected = (memberRows || []).filter((m) => m.role !== 'owner')
-    if (affected.length > 0) {
-      const { data: affectedProfiles } = await serviceClient
-        .from('profiles')
-        .select('id, email')
-        .in('id', affected.map((a) => a.user_id))
-      const emailById = new Map((affectedProfiles || []).map((p) => [p.id, p.email as string | null]))
-      graceBanner = {
-        graceEndsAt: activeMultiUser.graceEndsAt,
-        affectedEmails: affected
-          .map((a) => emailById.get(a.user_id))
-          .filter((e): e is string => !!e),
-        isAffectedUser: affected.some((a) => a.user_id === user.id),
-      }
-    }
-  }
-
-  // Client-driven UI preferences (sidebar collapse + fold state). Read here
-  // so the shell renders at the right width on first paint; the nav toggles
-  // flip the data attribute client-side and persist via /api/user/ui-state.
+  // Client-driven UI preferences (assistant panel geometry, trial
+  // acknowledgement), read here so the first paint matches what the client
+  // persists via /api/user/ui-state.
   const uiState = (userPrefs?.ui_state ?? {}) as import('@/types').UserUiState
-  const navCollapsed = uiState.nav_collapsed === true
 
   const allCompanyEntries = (allMemberships || [])
     .filter((m) => m.companies)
@@ -529,7 +505,6 @@ export default async function DashboardLayout({
     trialEndsAt: entitlements.trialEndsAt,
     entitlementState: entitlements.entitlementState,
     trialExpiredAt: entitlements.trialExpiredAt,
-    multiUser: activeMultiUser,
     lockedCompanyIds: [...dormantCompanyIds],
   }
 
@@ -573,7 +548,6 @@ export default async function DashboardLayout({
         <div
           id="dash-shell"
           className="min-h-dvh bg-frame md:flex md:flex-col"
-          style={{ '--nav-w': navCollapsed ? '64px' : '248px' } as React.CSSProperties}
         >
           {/* Skip to content link for keyboard/screen reader users */}
           <a
@@ -584,20 +558,14 @@ export default async function DashboardLayout({
             Hoppa till innehåll
           </a>
           {isSandbox && <SandboxBanner />}
-          {graceBanner && (
-            <MultiUserGraceBanner
-              graceEndsAt={graceBanner.graceEndsAt}
-              affectedEmails={graceBanner.affectedEmails}
-              isAffectedUser={graceBanner.isAffectedUser}
-              companyName={displayName}
-            />
-          )}
+          {systemNoticeBanner}
           <DashboardNav
             companyName={settings?.company_name || 'Min verksamhet'}
             entityType={entityType}
             paysSalaries={paysSalaries}
             dimensionsEnabled={dimensionsEnabled}
             salesOrdersEnabled={salesOrdersEnabled}
+            quotesEnabled={quotesEnabled}
             hasWebshop={hasWebshop}
             hasMileage={hasMileage}
             hasExpenseClaims={hasExpenseClaims}
@@ -605,7 +573,6 @@ export default async function DashboardLayout({
             extensionNavItems={getExtensionNavItems()}
             userName={userProfile?.full_name ?? null}
             userEmail={user.email ?? null}
-            initialUiState={uiState}
           />
           <main id="main-content" className={MAIN_PANEL_CLASS} role="main">
             <MainContainer companyId={companyId}>
@@ -623,7 +590,7 @@ export default async function DashboardLayout({
               )}
             </MainContainer>
           </main>
-          {/* One-time expired-trial notice. Sandbox/anonymous demo users have
+          {/* One-time post-trial invitation. Sandbox/anonymous demo users have
               no billing (their companies carry trial grants too), so the gate
               lives here where both flags are known. Acknowledgement persists
               per user AND company in user_preferences.ui_state, read here
@@ -631,7 +598,6 @@ export default async function DashboardLayout({
           {!isSandbox && !user.is_anonymous && (
             <TrialExpiredDialog
               state={entitlements.entitlementState}
-              trialExpiredAt={entitlements.trialExpiredAt}
               companyId={companyId}
               initialAcknowledged={!!uiState.trial_expired_ack?.[companyId]}
             />
