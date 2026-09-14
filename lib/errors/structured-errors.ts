@@ -2308,8 +2308,8 @@ const SIE_IMPORT: Record<string, StructuredErrorEntry> = {
   },
   SIE_PARSE_INVALID_TYPE: {
     httpStatus: 400,
-    message_sv: 'Filtypen stöds inte. Ladda upp en fil med ändelsen .sie eller .se.',
-    message_en: 'Unsupported file type; upload a .sie or .se file.',
+    message_sv: 'Filtypen stöds inte. Ladda upp en fil med ändelsen .se, .sie eller .si.',
+    message_en: 'Unsupported file type; upload a .se, .sie or .si file.',
   },
   SIE_PARSE_FILE_TOO_LARGE: {
     httpStatus: 400,

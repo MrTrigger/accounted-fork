@@ -145,6 +145,43 @@ const SIE_EMPTY_SERIES = [
   '}',
 ].join('\n')
 
+// SIE4I (subsystem import) file: per SIE 4B both series and verno may be
+// blank, because the receiving system assigns them. myWebLog exports look
+// like this (#2546).
+const SIE4I_EMPTY_SERIES_AND_NUMBER = [
+  '#FLAGGA 0',
+  '#SIETYP 4',
+  '#FNAMN "myWebLog AB"',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 3001 "Försäljning"',
+  '#VER "" "" 20240115 "Dagsrapport"',
+  '{',
+  '#TRANS 1930 {} 10000.00',
+  '#TRANS 3001 {} -10000.00',
+  '}',
+  '#VER "" "" 20240116 "Dagsrapport"',
+  '{',
+  '#TRANS 1930 {} 2500.00',
+  '#TRANS 3001 {} -2500.00',
+  '}',
+].join('\n')
+
+// A number token that is present but not a number stays an error: that is a
+// malformed file, not the SIE4I "receiver assigns" case.
+const SIE_GARBAGE_VER_NUMBER = [
+  '#FLAGGA 0',
+  '#SIETYP 4',
+  '#FNAMN "Trasig AB"',
+  '#RAR 0 20240101 20241231',
+  '#KONTO 1930 "Företagskonto"',
+  '#KONTO 3001 "Försäljning"',
+  '#VER A "abc" 20240115 "Trasigt nummer"',
+  '{',
+  '#TRANS 1930 {} 10000.00',
+  '#TRANS 3001 {} -10000.00',
+  '}',
+].join('\n')
+
 // SIE 4B corrected voucher (Fortnox-style): the original 5010 line was
 // struck (#BTRANS) and replaced by 6540 (#RTRANS, twinned by an identical
 // #TRANS). Final state = the #TRANS rows only, and it balances.
@@ -457,6 +494,32 @@ describe('parseSIEFile', () => {
 
       const errors = result.issues.filter((i) => i.severity === 'error')
       expect(errors).toHaveLength(0)
+    })
+
+    it('allows empty series AND empty number in VER (SIE4I)', () => {
+      const result = parseSIEFile(SIE4I_EMPTY_SERIES_AND_NUMBER)
+      expect(result.vouchers).toHaveLength(2)
+
+      const [first, second] = result.vouchers
+      expect(first.series).toBe('')
+      // The number is a placeholder, flagged so nothing treats it as a source key.
+      expect(first.numberOmitted).toBe(true)
+      expect(first.date).toEqual(new Date(2024, 0, 15))
+      expect(first.description).toBe('Dagsrapport')
+      expect(first.lines).toHaveLength(2)
+      expect(second.numberOmitted).toBe(true)
+      expect(second.date).toEqual(new Date(2024, 0, 16))
+
+      const errors = result.issues.filter((i) => i.severity === 'error')
+      expect(errors).toHaveLength(0)
+    })
+
+    it('still errors on a VER number token that is not a number', () => {
+      const result = parseSIEFile(SIE_GARBAGE_VER_NUMBER)
+      expect(result.vouchers).toHaveLength(0)
+
+      const errors = result.issues.filter((i) => i.severity === 'error')
+      expect(errors.some((e) => e.message.includes('Ogiltig verifikationsdefinition'))).toBe(true)
     })
 
     it('handles { on same line as #VER', () => {

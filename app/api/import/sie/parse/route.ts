@@ -20,6 +20,7 @@ import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { SIEAccountMappingRecord } from '@/lib/import/types'
+import { hasSIEFileExtension } from '@/lib/import/sie-file-extensions'
 import { getErrorMessage as getUserErrorMessage } from '@/lib/errors/get-error-message'
 import { readSIERequestFile } from '@/lib/import/sie-intake'
 import { resolveSIEFiscalYear } from '@/lib/import/sie-jobs'
@@ -40,8 +41,7 @@ export const POST = withRouteContext(
       return errorResponseFromCode('SIE_PARSE_NO_FILE', log, { requestId })
     }
 
-    const filename = file.name.toLowerCase()
-    if (!/\.(sie|se|si)$/.test(filename)) {
+    if (!hasSIEFileExtension(file.name)) {
       return errorResponseFromCode('SIE_PARSE_INVALID_TYPE', log, {
         requestId,
         details: { filename: file.name },

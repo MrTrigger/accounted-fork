@@ -58,6 +58,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
 import { applyAccountOverride } from '@/lib/bookkeeping/account-override'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
+import { hasSIEFileExtension, SIE_FILE_EXTENSIONS_EN } from '@/lib/import/sie-file-extensions'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
@@ -19650,9 +19651,8 @@ export const tools: McpTool[] = [
     },
     async execute(args, companyId, userId, supabase) {
       const fileName = args.filename as string
-      const lower = fileName.toLowerCase()
-      if (!lower.endsWith('.se') && !lower.endsWith('.sie') && !lower.endsWith('.si')) {
-        throw codedError('VALIDATION_ERROR', 'filename must end in .se, .sie or .si')
+      if (!hasSIEFileExtension(fileName)) {
+        throw codedError('VALIDATION_ERROR', `filename must end in ${SIE_FILE_EXTENSIONS_EN}`)
       }
       const uploadId = crypto.randomUUID()
       const reservation = await createPendingDocumentUpload(supabase, companyId, userId, uploadId, fileName)

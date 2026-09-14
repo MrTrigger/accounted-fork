@@ -475,6 +475,27 @@ function parseTransactionLine(
 }
 
 /**
+ * How a voucher is identified back to the source file: "A12".
+ *
+ * A SIE4I voucher carries no number (`numberOmitted`, parsed as a placeholder
+ * 0) and often no series either, so the file's own order is the only handle a
+ * reader has on it and `ordinal` (1-based, the voucher's position among the
+ * file's #VER records) stands in: "#3", or "A#3" when only the number is
+ * blank. The "#" keeps these apart from real series+number references, so the
+ * result is unique per file either way. That uniqueness is load-bearing:
+ * sourceId keys the import RPC payload, the skipped list and the
+ * voucherNumberMapping audit trail, and every SIE4I voucher in a file would
+ * otherwise share the single key "0".
+ */
+export function formatVoucherRef(
+  voucher: { series: string; number: number; numberOmitted?: boolean },
+  ordinal: number
+): string {
+  const series = voucher.series.trim()
+  return voucher.numberOmitted ? `${series}#${ordinal}` : `${series}${voucher.number}`
+}
+
+/**
  * Parse a SIE file content string
  */
 export function parseSIEFile(content: string): ParsedSIEFile {
@@ -546,7 +567,7 @@ export function parseSIEFile(content: string): ParsedSIEFile {
             issues,
             'error',
             lineNum,
-            `Verifikation ${currentVoucher.series}${currentVoucher.number} balanserar inte (differens: ${total.toFixed(2)} kr)`,
+            `Verifikation ${formatVoucherRef(currentVoucher, vouchers.length + 1)} balanserar inte (differens: ${total.toFixed(2)} kr)`,
             'VER'
           )
         }
@@ -762,6 +783,13 @@ export function parseSIEFile(content: string): ParsedSIEFile {
           // #VER series number date "description" [regdate] [signature]
           // Some programs quote all fields, so strip quotes from number/date too
           const series = parseStringField(fields[1])
+          // SIE 4B: in 4I (subsystem import) files both series and number may
+          // be blank, because the receiving system assigns them. myWebLog and
+          // other payroll/POS exports write `#VER "" "" 20240115 "text"`.
+          // A blank number is therefore data, not a defect; `numberOmitted`
+          // marks it so nothing downstream mistakes the placeholder 0 for a
+          // real source number. A non-empty token that is not a number stays
+          // an error, and the date stays compulsory.
           const sourceNumber = parseStringField(fields[2])
           const number = sourceNumber === '' ? 0 : parseInt(sourceNumber, 10)
           const date = parseSIEDate(parseStringField(fields[3]))
@@ -1152,11 +1180,11 @@ export function validateSIEFile(parsed: ParsedSIEFile): ValidationResult {
 
   // Check for unbalanced vouchers
   const unbalancedVouchers: string[] = []
-  for (const voucher of parsed.vouchers) {
+  for (const [index, voucher] of parsed.vouchers.entries()) {
     const total = voucher.lines.reduce((sum, l) => sum + l.amount, 0)
     if (Math.abs(total) > 0.01) {
       unbalancedVouchers.push(
-        `${voucher.series}${voucher.number} (${voucher.date.toISOString().split('T')[0]}, diff: ${total.toFixed(2)} kr)`
+        `${formatVoucherRef(voucher, index + 1)} (${voucher.date.toISOString().split('T')[0]}, diff: ${total.toFixed(2)} kr)`
       )
     }
   }

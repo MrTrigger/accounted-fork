@@ -28,6 +28,7 @@ import { syncMappedAccounts } from './account-sync'
 import { defaultOpeningBalanceSeries } from './opening-balance-defaults'
 import {
   calculateFileHash,
+  formatVoucherRef,
   getEffectiveOpeningBalances,
   isBalanceSheetAccount,
   OPENING_BALANCE_DESCRIPTION_RE,
@@ -1471,7 +1472,18 @@ export async function importVouchers(
       // Note: lines with amount === 0 are silently dropped
     }
 
-    const voucherId = `${voucher.series}${voucher.number}`
+    // The voucher's position in the FILE, not in this call: a chunked import
+    // runs one call per voucher group, so voucherIndex restarts every group
+    // while startOrdinal carries the running offset.
+    const sourceOrdinal = (preparation?.startOrdinal ?? 0) + voucherIndex
+
+    // sourceId keys the RPC payload, the skipped list and the
+    // voucherNumberMapping audit trail, so it has to be unique per file.
+    // A SIE4I voucher has no series and no number (numberOmitted, parsed as a
+    // placeholder 0), which is why the ordinal stands in: without it every
+    // such voucher in the file would share the single key "0" and all but the
+    // last would be lost from the mapping and from the per-account movements.
+    const voucherId = formatVoucherRef(voucher, sourceOrdinal + 1)
     const voucherDate = formatDate(voucher.date)
 
     // Skip vouchers with unmapped accounts
@@ -1596,10 +1608,10 @@ export async function importVouchers(
 
     preparedVouchers.push({
       sourceId: voucherId,
-      sourceOrdinal: (preparation?.startOrdinal ?? 0) + voucherIndex,
+      sourceOrdinal,
       series: resolvedSeries,
       date: voucherDateStr,
-      description: voucher.description || `Import: ${voucher.series}${voucher.number}`,
+      description: voucher.description || `Import: ${voucherId}`,
       sourceSeries: rawSourceSeries,
       sourceNumber: rawSourceNumber,
       sourceType: isLikelyOpeningBalance ? 'opening_balance' : 'import',
@@ -3007,13 +3019,18 @@ export async function executeSIEImport(
       // matches the underlying DATE columns exactly and is cheap.
       const periodStart = resolvedPeriod.period_start as string
       const periodEnd = resolvedPeriod.period_end as string
-      const outOfRange = parsed.vouchers.filter((v) => {
-        const d = formatDate(v.date)
-        return d < periodStart || d > periodEnd
-      })
+      const outOfRange = parsed.vouchers
+        .map((voucher, index) => ({ voucher, ordinal: index + 1 }))
+        .filter(({ voucher }) => {
+          const d = formatDate(voucher.date)
+          return d < periodStart || d > periodEnd
+        })
 
       if (outOfRange.length > 0) {
-        const sample = outOfRange.slice(0, 3).map(v => `${v.series}${v.number} (${formatDate(v.date)})`).join(', ')
+        const sample = outOfRange
+          .slice(0, 3)
+          .map(({ voucher, ordinal }) => `${formatVoucherRef(voucher, ordinal)} (${formatDate(voucher.date)})`)
+          .join(', ')
         result.errors.push(
           `${outOfRange.length} verifikation${outOfRange.length === 1 ? '' : 'er'} har datum utanför räkenskapsåret ` +
             `${periodStart} till ${periodEnd}. Exempel: ${sample}${outOfRange.length > 3 ? '…' : ''}. ` +
