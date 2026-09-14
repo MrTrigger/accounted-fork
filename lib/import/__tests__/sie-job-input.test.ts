@@ -26,6 +26,34 @@ describe('SIE durable input boundaries', () => {
     expect(SIEJobMappingsSchema.parse(suggested).map(mapping => mapping.sourceAccount)).toEqual(['1930', '3001'])
   })
 
+  it('preserves a custom target account through submission and worker input validation', async () => {
+    vi.stubEnv('SIE_IMPORT_JOBS', 'true')
+    const source = '#RAR 0 20260101 20261231\n' + content.replaceAll('3001', '9999')
+    const customMappings = [mappings[0], {
+      ...mappings[1], sourceAccount: '9999', targetAccount: '9999', matchType: 'manual' as const,
+    }]
+    const fileHash = createHash('sha256').update(source).digest('hex')
+    const job = {
+      id: 'import-1', job_state: 'queued', file_hash: fileHash,
+      manifest: { input: { version: 1, sourceHash: fileHash, mappings: customMappings, options } },
+    } as unknown as SIEJob
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    enqueueMany([{ data: { id: 'period-1' } }, { data: null }, { data: job }])
+
+    await expect(submitSIEJob(supabase as unknown as SupabaseClient, 'company-1', 'user-1', source,
+      customMappings, options)).resolves.toEqual(job)
+    expect(supabase.rpc).toHaveBeenCalledWith('start_sie_import_job', expect.objectContaining({
+      p_company_id: 'company-1', p_actor: 'user-1',
+      p_manifest: expect.objectContaining({ input: expect.objectContaining({ mappings: customMappings }) }),
+    }))
+    expect(jobInput(job).mappings).toEqual(customMappings)
+  })
+
+  it('retains an empty target for accounts the import will treat as unmapped', () => {
+    const unmapped = { ...mappings[0], targetAccount: '', targetName: '' }
+    expect(SIEJobMappingsSchema.parse([unmapped])).toEqual([unmapped])
+  })
+
   it('preserves accepted mapping checkpoint positions when resuming older duplicate input', () => {
     const unique = Array.from({ length: 101 }, (_, index) => ({ ...mappings[0], sourceAccount: String(1000 + index) }))
     const acceptedMappings = [...unique.slice(0, 60), unique[0], ...unique.slice(60)]
