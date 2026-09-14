@@ -1297,6 +1297,7 @@
     "label_payment_terms": "Payment terms:",
     "def_email": "Email",
     "def_phone": "Phone",
+    "def_contact_person": "Contact person",
     "def_address": "Address",
     "def_customer_number": "Customer number",
     "def_org_number": "Org. no.",

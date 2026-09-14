@@ -1297,6 +1297,7 @@
     "label_payment_terms": "Betalningsvillkor:",
     "def_email": "E-post",
     "def_phone": "Telefon",
+    "def_contact_person": "Kontaktperson",
     "def_address": "Adress",
     "def_customer_number": "Kundnummer",
     "def_org_number": "Org.nr",
