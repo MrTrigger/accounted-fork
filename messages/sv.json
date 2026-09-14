@@ -590,12 +590,20 @@
     "sync_revoked": "Zettle avvisade anslutningen, så inga köp kunde hämtas. Anslut kontot igen.",
     "transaction_sync_title": "Köp från Zettle",
     "transaction_sync_description": "Hämta betalda köp och återbetalningar till Ordersidan varje natt. Du bokför köpen därifrån.",
-    "transaction_sync_backfill_note": "Vid första synkningen hämtas upp till 90 dagars historik.",
+    "transaction_sync_backfill_note": "Köp hämtas från och med dagen du kopplade kontot. Äldre köp hämtar du själv nedan.",
     "transaction_sync_last_synced": "Senast synkad {date}",
     "transaction_sync_never_synced": "Inte synkad ännu",
     "transaction_sync_enabled_toast": "Köpsynk aktiverad. Historiken hämtas vid nästa synkning.",
     "transaction_sync_disabled_toast": "Köpsynk avaktiverad.",
-    "transaction_sync_toggle_failed": "Kunde inte spara inställningen. Försök igen."
+    "transaction_sync_toggle_failed": "Kunde inte spara inställningen. Försök igen.",
+    "backfill_title": "Hämta äldre köp",
+    "backfill_description": "Synken hämtar köp från och med dagen du kopplade kontot, så att köp du redan bokfört via banken inte kommer in igen. Behöver du köp längre tillbaka, välj ett startdatum. Köp som redan finns på Ordersidan hämtas inte på nytt.",
+    "backfill_from_label": "Från och med datum",
+    "backfill_submit": "Hämta",
+    "backfill_running": "Hämtar…",
+    "backfill_missing_date": "Välj ett startdatum först.",
+    "backfill_done_title": "Äldre köp hämtade",
+    "backfill_failed_title": "Hämtningen misslyckades"
   },
   "settings_modal": {
     "title": "Inställningar",
