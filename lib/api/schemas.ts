@@ -64,7 +64,8 @@ export const SIEJobOptionsSchema = z.object({
 })
 export const SIEJobMappingsSchema = z.array(z.object({
   sourceAccount: z.string().min(1).max(40), sourceName: z.string().max(500),
-  targetAccount: z.string().regex(/^(?:[1-8]\d{3})?$/), targetName: z.string().max(500),
+  // Match the chart and worker's account-number rule, including custom accounts.
+  targetAccount: accountNumberSchema.or(z.literal('')), targetName: z.string().max(500),
   confidence: z.number().min(0).max(1), matchType: z.enum(['exact','name','class','manual','bas_range']),
   isOverride: z.boolean().default(false),
   defaultVatTreatment: z.enum(ACCOUNT_VAT_TREATMENTS).nullable().optional(),

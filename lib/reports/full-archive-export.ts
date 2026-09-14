@@ -1593,12 +1593,12 @@ async function buildSystemDoc(
     voucherSeriesQuery = voucherSeriesQuery.eq('fiscal_period_id', periods[0].id)
   }
 
-  const [accountsResult, voucherSeriesResult] = await Promise.all([
-    supabase
+  const [accounts, voucherSeriesResult] = await Promise.all([
+    fetchAllRows(({ from, to }) => supabase
       .from('chart_of_accounts')
-      .select('account_number, account_name, account_type, is_active')
+      .select('account_number, account_name, account_class, account_type, sru_code, description, is_active')
       .eq('company_id', companyId)
-      .order('account_number'),
+      .order('account_number').range(from, to)),
     voucherSeriesQuery,
   ])
 
@@ -1614,7 +1614,8 @@ async function buildSystemDoc(
     },
     kontoplan: {
       standard: 'BAS 2026',
-      accounts: accountsResult.data || [],
+      accounts,
+      sie_import_regler: 'SIE-importer kan bevara oanvända kontodefinitioner i klass 0 och 9. Konton med belopp måste mappas till konton 1000-8999, eftersom klass 0 och 9 inte stöds som ekonomiska rapportkonton. Källfil och kontomappningar bevaras i importarkivet.',
     },
     verifikationsserier: (voucherSeriesResult.data || []).map(
       (vs: { voucher_series: string; last_number: number; fiscal_period_id?: string }) => ({
