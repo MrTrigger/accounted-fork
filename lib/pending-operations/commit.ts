@@ -60,7 +60,7 @@ import {
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
-import { booksInvoicesOnIssue, cashPartialBlockReason, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
+import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
 import { propagateLegacyPayeeWrite } from '@/lib/cash-accounts/invoice-payee'
 import { createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
@@ -5450,7 +5450,12 @@ async function commitCreditInvoice(
   }
 
   let journalEntryId: string | null = null
-  if (completeCreditNote && accountingMethod === 'accrual') {
+  // Kontantmetoden skips only while the original is still UNPAID: a paid one
+  // was already booked by its payment verifikat (revenue + 26xx utgående
+  // moms), and leaving that un-reversed overstates both. Same helper the
+  // dashboard and the v1 route use (issue #2552). `original` still carries the
+  // pre-credit status, which is what the decision needs.
+  if (completeCreditNote && creditNoteNeedsJournalEntry(accountingMethod, original)) {
     try {
       const journalEntry = await createCreditNoteJournalEntry(
         supabase,

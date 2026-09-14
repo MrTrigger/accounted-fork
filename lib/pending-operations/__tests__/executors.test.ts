@@ -995,8 +995,17 @@ describe('commitPendingOperation: credit_invoice', () => {
     expect(createCreditNoteJournalEntry).toHaveBeenCalled()
   })
 
-  it('skips JE on cash accounting', async () => {
-    const original = makeInvoice({ id: 'inv-1', status: 'paid', document_type: 'invoice' })
+  it('skips JE on cash accounting while the original is still unpaid', async () => {
+    // Kontantmetoden books nothing at issue: an unpaid original never reached
+    // the ledger, so there is nothing for the credit note to reverse.
+    const original = makeInvoice({
+      id: 'inv-1',
+      status: 'sent',
+      document_type: 'invoice',
+      journal_entry_id: null,
+      paid_at: null,
+      paid_amount: null,
+    })
     const originalWithItems = { ...original, items: [] }
     const creditNoteRow = { ...original, id: 'cn-2', invoice_number: 'KR-F-2024001' }
     const completeCreditNote = { ...creditNoteRow, customer: null, items: [] }
@@ -1022,6 +1031,50 @@ describe('commitPendingOperation: credit_invoice', () => {
     expect(result.status).toBe('committed')
     expect(result.data).toMatchObject({ credit_note_id: 'cn-2', journal_entry_id: null })
     expect(createCreditNoteJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('books the reversal on cash accounting when the original was paid (#2552)', async () => {
+    // The payment verifikat already booked revenue + utgående moms, so the
+    // credit note must reverse them: the same call the dashboard makes.
+    const original = makeInvoice({
+      id: 'inv-1',
+      status: 'paid',
+      document_type: 'invoice',
+      journal_entry_id: 'je-orig',
+      paid_at: '2026-03-12',
+      paid_amount: 12500,
+    })
+    const originalWithItems = { ...original, items: [] }
+    const creditNoteRow = { ...original, id: 'cn-3', invoice_number: 'KR-F-2024001' }
+    const completeCreditNote = { ...creditNoteRow, customer: { name: 'Acme AB' }, items: [] }
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: originalWithItems, error: null })
+    enqueue({ data: creditNoteRow, error: null })
+    enqueue({ data: null, error: null }) // items insert
+    enqueue({ data: null, error: null }) // original -> credited
+    enqueue({ data: completeCreditNote, error: null })
+    enqueue({ data: { entity_type: 'enskild_firma', accounting_method: 'cash' }, error: null })
+    // original voucher lookup (original.journal_entry_id is set)
+    enqueue({ data: { voucher_series: 'A', voucher_number: 42 }, error: null })
+    enqueue({ data: null, error: null }) // journal_entry_id write-back
+    enqueue({ data: null, error: null }) // dispatcher update
+
+    vi.mocked(createCreditNoteJournalEntry).mockResolvedValueOnce({ id: 'je-cash' } as never)
+
+    const op = makePendingOp({
+      operation_type: 'credit_invoice',
+      params: { invoice_id: 'inv-1' },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(result.data).toMatchObject({ credit_note_id: 'cn-3', journal_entry_id: 'je-cash' })
+    expect(createCreditNoteJournalEntry).toHaveBeenCalledTimes(1)
+    // The reversal points back at the original verifikat (BFL 5 kap. 5 §).
+    expect(vi.mocked(createCreditNoteJournalEntry).mock.calls[0][6]).toBe('A-42')
   })
 
   it('auto-rejects when invoice is already credited (409)', async () => {
