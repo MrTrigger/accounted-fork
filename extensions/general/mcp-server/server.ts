@@ -1,3 +1,4 @@
+import { getSIEJob } from '@/lib/import/sie-jobs'
 import { UUID_RE } from '@/lib/invariants/uuid'
 import {
   ENTITY_TYPES,
@@ -145,7 +146,13 @@ import { buildLedgerContext } from '@/lib/agent-context/ledger-context'
 import { prompts, findPrompt } from './prompts'
 import { findSkill, loadAllSkills, toSummary, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
 import type { SkillTier } from './skills'
-import { RECOMMENDED_WORKFLOW_LOADOUTS, assertRecommendedLoadoutsValid } from './recommended-tools'
+import {
+  RECOMMENDED_WORKFLOW_LOADOUTS,
+  annotateLoadoutTools,
+  assertRecommendedLoadoutsValid,
+  type RecommendedToolClassification,
+} from './recommended-tools'
+import { SEARCH_ONLY_WRITE_NOTE, isDefaultCatalogTool, toolCallableVia } from './tool-reach'
 import {
   canonicalizeToolReferencesInText,
   projectToolReferences,
@@ -223,6 +230,7 @@ import {
 } from '@/lib/suppliers/match-supplier'
 import { assertNoPlaintextPersonnummer } from './staging-pii-guard'
 import { generateBalanceSheet } from '@/lib/reports/balance-sheet'
+import { withSIEExternalReport } from '@/lib/import/sie-period-read'
 import { generateGeneralLedger } from '@/lib/reports/general-ledger'
 // Account-keyed reconciliation (one engine, three doors): the same service
 // the dashboard routes and the v1 API call.
@@ -1329,7 +1337,7 @@ async function resolveJournalEntryRef(
 //
 // The staging pre-check runs the exact same countUnbookedInPeriod the commit
 // path (lockPeriod) enforces, imported from period-service so the two legal
-// guards cannot drift apart. See the DECISIONS.md 2026-07-26 lock-guard entry
+// guards cannot drift apart. See the DECISIONS.md archive 2026-07-26 lock-guard entry
 // for the predicate semantics.
 
 async function categorizeTransactionCore(
@@ -1758,9 +1766,10 @@ export function deriveToolMeta(t: { name: string; outputSchema?: Record<string, 
   }
 }
 
-export function isDefaultCatalogTool(tool: { catalogVisibility?: 'default' | 'search' }): boolean {
-  return tool.catalogVisibility !== 'search'
-}
+// isDefaultCatalogTool lives in tool-reach.ts (shared with recommended-tools.ts
+// without an import cycle); re-exported here so the bench and tests keep
+// importing it from the server module.
+export { isDefaultCatalogTool } from './tool-reach'
 
 /**
  * Inline SIE content above this length is refused: a model reproducing tens
@@ -2377,7 +2386,7 @@ interface VatCompletenessFinding {
 
 /**
  * Serialize findings for an agent. Unlike the web UI (which deliberately hides
- * the rule ids as visual noise, DECISIONS 2026-07-24), the machine surface
+ * the rule ids as visual noise, DECISIONS.md archive 2026-07-24), the machine surface
  * carries `code`: an agent needs a stable key to branch on, not prose.
  */
 function toCompletenessFindings(checks: VatDeclarationCheck[]): VatCompletenessFinding[] {
@@ -3528,13 +3537,13 @@ export const tools: McpTool[] = [
   {
     name: 'gnubok_search_tools',
     title: 'Search MCP Tools',
-    description: 'Search available tools by keyword and choose the returned schema detail level.',
+    description: 'Search tools by keyword; hits carry callable_via: tools_list, call_tool or none.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: 'Keywords matched against tool names and descriptions. Empty returns all tools.' },
-        detail: { type: 'string', enum: ['name', 'summary', 'full'], description: 'Detail level. name: just names. summary: name + description + scope (default). full: complete schema including inputSchema and outputSchema.' },
+        detail: { type: 'string', enum: ['name', 'summary', 'full'], description: 'name: just names. summary (default): + description, scope, callable_via. full: + inputSchema, outputSchema, annotations.' },
         scope: { type: 'string', description: 'Optional filter: only tools requiring this API key scope (e.g. "invoices:write").' },
         limit: { type: 'number', description: 'Max results, 1-50 (default 20).' },
       },
@@ -3632,6 +3641,15 @@ export const tools: McpTool[] = [
         if (detail === 'name') {
           return { name: toPublicToolName(t.name, namespace), scope: requiredScope }
         }
+        // Reach, not existence: a hit the client cannot invoke (search-only
+        // WRITE on a tools/list-only host) was reported as a missing tool four
+        // times (feedback seq 372962 and siblings). Response field, so it costs
+        // nothing in tools/list.
+        const callableVia = toolCallableVia(t)
+        const reach = {
+          callable_via: callableVia,
+          ...(callableVia === 'none' ? { note: SEARCH_ONLY_WRITE_NOTE } : {}),
+        }
         if (detail === 'full') {
           const meta = projectMcpPayload(
             { ...(deriveToolMeta(t) ?? {}), ...(t._meta ?? {}) },
@@ -3642,6 +3660,7 @@ export const tools: McpTool[] = [
               name: toPublicToolName(t.name, namespace),
               description: t.description,
               scope: requiredScope,
+              ...reach,
               inputSchema: projectToolInputSchema(t),
               ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
               annotations: t.annotations,
@@ -3656,6 +3675,7 @@ export const tools: McpTool[] = [
             name: toPublicToolName(t.name, namespace),
             description: t.description,
             scope: requiredScope,
+            ...reach,
           },
           namespace
         )
@@ -5137,7 +5157,7 @@ export const tools: McpTool[] = [
           type: 'array',
           items: { type: 'object' },
           description:
-            'Per-workflow tool loadouts, ordered by call sequence: each entry names a workflow, describes it, and lists the exact registry tools it needs. Deferred-loading harnesses batch-load a whole cluster in one call (ToolSearch select:a,b,c). Static; validated against the registry at module load.',
+            'Per-workflow tool loadouts, ordered by call sequence: each entry names a workflow, describes it, and lists its tools as {name, callable, blocked_by?, note?}: callable=false names the missing scope or a search-only write. Batch-load the callable names in one call (ToolSearch select:a,b,c).',
         },
         feedback_channel: {
           type: 'object',
@@ -5159,7 +5179,27 @@ export const tools: McpTool[] = [
       required: ['company', 'user_name', 'profile_summary', 'atoms', 'memory', 'recommended_tools'],
     },
     annotations: ANNOTATIONS_READ_ONLY,
-    async execute(_args, companyId, userId, supabase) {
+    async execute(args, companyId, userId, supabase) {
+      // Callability per recommended tool (feedback seq 372962): the loadouts
+      // are static, but whether THIS key on THIS client can invoke a tool
+      // depends on the key's scopes and on the catalog tier. The dispatcher
+      // injects __keyScopes (the same private marker gnubok_search_tools
+      // uses); a missing marker fails closed to "no scopes granted", so a
+      // direct execute() never vouches for a scoped tool on faith.
+      const rawKeyScopes = (args as Record<string, unknown>).__keyScopes
+      const grantedScopes = new Set<string>(
+        Array.isArray(rawKeyScopes) ? (rawKeyScopes as string[]) : []
+      )
+      const classifyRecommendedTool = (toolName: string): RecommendedToolClassification => {
+        // Loadouts are validated against the registry at module init, so the
+        // lookup cannot miss; the fallback only keeps the type total.
+        const target = tools.find((candidate) => candidate.name === toolName)
+        return {
+          required_scope: TOOL_SCOPE_MAP[toolName] ?? null,
+          callable_via: target ? toolCallableVia(target) : 'none',
+        }
+      }
+
       // Dimension registry is best-effort and cheap: one indexed read, skipped
       // output when empty (most companies never register dimensions: lazy
       // seeding means zero rows until first use). Errors never block the
@@ -5470,11 +5510,14 @@ export const tools: McpTool[] = [
         // Static per-workflow loadouts (issue #1098): lets a deferred-loading
         // harness batch-load a whole workflow cluster in one call. Validated
         // against the tool registry at module init (assertRecommendedLoadoutsValid).
+        // Each tool is flagged callable for this key and a tools/list-only
+        // client; blocked entries stay in the list with the reason, so the
+        // agent knows what exists and why it is out of reach.
         recommended_tools: RECOMMENDED_WORKFLOW_LOADOUTS.map((w) => ({
           workflow: w.workflow,
           description: w.description,
           skill: w.skill,
-          tools: [...w.tools],
+          tools: annotateLoadoutTools(w.tools, classifyRecommendedTool, grantedScopes),
         })),
         // The feedback tool was previously discoverable only by scanning
         // tools/list; agents that never scan never report. Surface it here,
@@ -5755,10 +5798,9 @@ export const tools: McpTool[] = [
 
       // Same document truth as the verifikat surface: the RPC keys "has
       // underlag" on document_attachments (current version) + waivers, never
-      // transactions.document_id: the two columns diverged historically
-      // (P1-3, dev_docs/mcp_optimization_plan.md) and this surface is the
-      // bank-driven SUBSET of gnubok_list_verifikat_without_documents by
-      // construction.
+      // transactions.document_id: the two columns diverged historically and
+      // this surface is the bank-driven SUBSET of
+      // gnubok_list_verifikat_without_documents by construction.
       const { data, error } = await supabase.rpc('transactions_without_documents', {
         p_company_id: companyId,
         p_since: since,
@@ -9299,9 +9341,10 @@ export const tools: McpTool[] = [
 
       // Paginated (fetchAllRows): PostgREST silently caps un-ranged selects at
       // 1000 rows and a full BAS 2026 chart holds ~1290 accounts. Paging is on
-      // the unique account_number (fetchAllRows ordering invariant); sort_order
-      // is fetched only to restore the BAS canonical display order afterwards,
-      // then stripped so the row shape stays unchanged.
+      // the unique account_number (fetchAllRows ordering invariant), and that
+      // is also the returned order: account_number IS the BAS sequence.
+      // sort_order is not (every seeded account carries 0), so it is neither
+      // fetched nor used.
       interface ChartAccountRow {
         account_number: string
         account_name: string
@@ -9311,14 +9354,13 @@ export const tools: McpTool[] = [
         normal_balance: string
         is_active: boolean
         description: string | null
-        sort_order: number | null
       }
-      let rows: ChartAccountRow[]
+      let accounts: ChartAccountRow[]
       try {
-        rows = await fetchAllRows<ChartAccountRow>(({ from, to }) => {
+        accounts = await fetchAllRows<ChartAccountRow>(({ from, to }) => {
           let query = supabase
             .from('chart_of_accounts')
-            .select('account_number, account_name, account_class, account_group, account_type, normal_balance, is_active, description, sort_order')
+            .select('account_number, account_name, account_class, account_group, account_type, normal_balance, is_active, description')
             .eq('company_id', companyId)
           if (activeOnly) query = query.eq('is_active', true)
           if (accountClass !== undefined) query = query.eq('account_class', accountClass)
@@ -9327,15 +9369,6 @@ export const tools: McpTool[] = [
       } catch (error) {
         throw dbError(error)
       }
-
-      // Postgres ordered by sort_order ascending with nulls last; keep that
-      // visible order, tie-breaking on account_number for determinism.
-      rows.sort(
-        (a, b) =>
-          (a.sort_order ?? Number.MAX_SAFE_INTEGER) - (b.sort_order ?? Number.MAX_SAFE_INTEGER) ||
-          a.account_number.localeCompare(b.account_number)
-      )
-      const accounts = rows.map(({ sort_order: _sortOrder, ...rest }) => rest)
 
       return { accounts, count: accounts.length }
     },
@@ -13774,12 +13807,12 @@ export const tools: McpTool[] = [
       }
 
       if (!supplierId) {
-        // Structured resolution failure instead of a dead end (P1-4,
-        // dev_docs/mcp_optimization_plan.md): a thrown error here stops the
-        // whole inbox pipeline for small ad hoc vendors. Return staged:false
-        // with near-miss candidates the agent can pass as supplier_id_override,
-        // or a create-supplier next hint when nothing is close. Fuzzy scores
-        // never auto-resolve: the agent/human confirms against the underlag.
+        // Structured resolution failure instead of a dead end: a thrown error
+        // here stops the whole inbox pipeline for small ad hoc vendors. Return
+        // staged:false with near-miss candidates the agent can pass as
+        // supplier_id_override, or a create-supplier next hint when nothing is
+        // close. Fuzzy scores never auto-resolve: the agent/human confirms
+        // against the underlag.
         const extractedName = supplierIdentity.name
         const extractedOrg = supplierIdentity.orgNumber
 
@@ -13957,6 +13990,19 @@ export const tools: McpTool[] = [
       const vatTreatment = (args.vat_treatment_override as string | undefined)
         ?? (invoiceExt?.vatTreatment as string | undefined)
         ?? 'standard_25'
+      // Omvänd skattskyldighet: the buyer self-assesses the VAT (2614/2645
+      // in the registration entry) and the seller must not charge any. When
+      // the underlag still carries VAT (feedback seq 366701: a foreign SaaS
+      // vendor billed 919.20 + 229.80 = 1149.00 and the agent overrode the
+      // treatment to reverse_charge), that VAT is neither deductible
+      // ingående moms nor part of the leverantörsskuld the books carry: the
+      // registration entry credits 2440 with the sum of the line nets, so
+      // staging the gross put 1149 in the reskontra against 919.20 in the GL
+      // and the later payment match could never settle. The payable is the
+      // net; the seller's VAT is surfaced in the preview, never booked.
+      // Paying it anyway or asking for a corrected invoice is a decision
+      // taken against the underlag, not one this tool makes.
+      const reverseCharge = vatTreatment === 'reverse_charge'
 
       // FX: a non-SEK invoice needs a rate before approve can post it (the
       // executor refuses with SI_FX_RATE_MISSING otherwise). Resolved through
@@ -14023,7 +14069,7 @@ export const tools: McpTool[] = [
 
       // Translate extracted line items into the supplier_invoice_items shape.
       // Priority: line_overrides → per-line accountSuggestion → supplier.default_expense_account → 4000.
-      const lineItems = lineItemsExt.map((li, idx) => {
+      const extractedLineItems = lineItemsExt.map((li, idx) => {
         const lineNumber = idx + 1
         const dimensions = resolvedDimBags[idx + 1]
         const lineTotal = Number(li.line_total ?? li.lineTotal ?? li.amount) || 0
@@ -14072,6 +14118,12 @@ export const tools: McpTool[] = [
         }
       })
 
+      // Under reverse charge no line carries seller VAT: the executor zeroes
+      // the item rows too, so the staged preview shows what will be written.
+      const lineItems = reverseCharge
+        ? extractedLineItems.map((li) => ({ ...li, vat_rate: 0, vat_amount: 0 }))
+        : extractedLineItems
+
       // Derive from the actual per-line VAT rather than trusting
       // totalsExt.vat: that header figure comes straight from OCR/agent-
       // supplied extracted_data and is never reconciled against lineItems.
@@ -14081,6 +14133,35 @@ export const tools: McpTool[] = [
       // whole 2641 posting on invoice.vat_amount > 0: a stale header meant
       // the correct per-line VAT was silently never booked.
       const vatAmount = lineItems.reduce((sum, li) => sum + li.vat_amount, 0)
+
+      // Reverse charge: the payable is the net the registration entry will
+      // carry on 2440, i.e. the sum of the line nets, never the document's
+      // gross. What the seller billed stays visible in the preview so the
+      // approver sees the gross next to what is registered.
+      const extractedVatHeader = roundOre(Number(totalsExt?.vat ?? totalsExt?.vatAmount) || 0)
+      const extractedLineVat = roundOre(extractedLineItems.reduce((sum, li) => sum + li.vat_amount, 0))
+      const sellerChargedVat = extractedVatHeader !== 0 ? extractedVatHeader : extractedLineVat
+      const lineNetSum = roundOre(lineItems.reduce((sum, li) => sum + li.line_total, 0))
+      const payableNet = lineNetSum !== 0
+        ? lineNetSum
+        : subtotal !== 0
+          ? roundOre(subtotal)
+          : roundOre(total - extractedVatHeader)
+      const payableRecomputed =
+        reverseCharge && (sellerChargedVat !== 0 || roundOre(total) !== payableNet)
+          ? {
+              reason: 'reverse_charge' as const,
+              extracted_subtotal: roundOre(subtotal),
+              extracted_vat: sellerChargedVat,
+              extracted_total: roundOre(total),
+              payable_total: payableNet,
+            }
+          : null
+      const payableWarning = !payableRecomputed
+        ? null
+        : sellerChargedVat !== 0
+          ? `Omvänd skattskyldighet: the seller charged VAT ${sellerChargedVat} on this invoice (document total ${roundOre(total)}), which a reverse-charge supply must not carry. Only the net ${payableNet} is registered as payable on 2440: the buyer self-assesses the VAT (2614/2645), and VAT the seller charged is not deductible ingående moms, so it is not booked. Paying the seller's VAT anyway or asking for a corrected invoice is a decision to take against the underlag, not one this tool makes.`
+          : `Omvänd skattskyldighet: the document total ${roundOre(total)} differs from the sum of the line nets ${payableNet}. The net is registered as payable on 2440 so the reskontra matches the registration entry; verify the lines against the underlag.`
 
       const params = {
         inbox_item_id: inboxItemId,
@@ -14092,9 +14173,9 @@ export const tools: McpTool[] = [
         currency,
         exchange_rate: exchangeRate,
         vat_treatment: vatTreatment,
-        subtotal: Math.round(subtotal * 100) / 100,
-        vat_amount: Math.round(vatAmount * 100) / 100,
-        total: Math.round(total * 100) / 100,
+        subtotal: reverseCharge ? payableNet : Math.round(subtotal * 100) / 100,
+        vat_amount: reverseCharge ? 0 : Math.round(vatAmount * 100) / 100,
+        total: reverseCharge ? payableNet : Math.round(total * 100) / 100,
         notes: (args.notes as string | undefined) ?? null,
         items: lineItems,
         ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
@@ -14129,6 +14210,7 @@ export const tools: McpTool[] = [
         subtotal: params.subtotal,
         vat_amount: params.vat_amount,
         total: params.total,
+        ...(payableRecomputed ? { payable_recomputed: payableRecomputed, warning: payableWarning } : {}),
         line_count: lineItems.length,
         items_preview: lineItems.slice(0, 5),
         // Echoed for every non-exact dimension resolution (resolve-don't-
@@ -19765,7 +19847,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_import_sie',
     keywords: ['sie', 'sie-fil', 'importera bokföring', 'byta system'],
     title: 'Import SIE File',
-    description: 'Stage SIE-file import (types 1-4, CP437/UTF-8/Latin-1). On commit creates fiscal period, opening balances, and journal entries. Always staged. Run gnubok_sie_preflight first; large files arrive byte-exact via gnubok_create_sie_upload (card/URL), NEVER retyped inline.',
+    description: 'Stage a durable SIE import (types 1-4). Approval submits a job; poll gnubok_sie_import_status until completed. Run gnubok_sie_preflight first. Upload large files through gnubok_create_sie_upload; never retype them.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -19905,15 +19987,31 @@ export const tools: McpTool[] = [
   },
 
   {
+    name:'gnubok_sie_import_status',title:'SIE Import Status',keywords:['sie','importstatus'],catalogVisibility:'search',
+    description:'Read durable SIE import progress, failure details and the final result. Poll after gnubok_import_sie or gnubok_undo_sie_import commits; accepted submission is not completed bookkeeping.',
+    inputSchema:{type:'object',additionalProperties:false,properties:{import_id:{type:'string',format:'uuid'}},required:['import_id']},
+    outputSchema:{type:'object',additionalProperties:false,properties:{
+      import_id:{type:'string'},state:{type:'string'},chunks_done:{type:'integer'},chunks_total:{type:'integer'},
+      vouchers_written:{type:'integer'},error_message:{type:['string','null']},result:{type:['object','null'],additionalProperties:true},
+    },required:['import_id','state','chunks_done','chunks_total','vouchers_written','error_message','result']},
+    annotations:ANNOTATIONS_READ_ONLY,
+    async execute(args,companyId,_userId,supabase) {
+      const job = await getSIEJob(supabase,companyId,args.import_id as string)
+      if (!job) throw new Error('SIE import not found')
+      return {import_id:job.id,state:job.job_state,chunks_done:job.chunks_done,chunks_total:job.chunks_total,
+        vouchers_written:job.transactions_count,error_message:job.error_message,result:job.job_result}
+    },
+  },
+  {
     name: 'gnubok_undo_sie_import',
     keywords: ['sie', 'ångra import'],
     title: 'Undo SIE Import',
-    description: 'Stage undo of a completed SIE import: hard-deletes its entries, detaches docs, resets voucher_sequences, marks the import \'undone\' for re-import. Use after a botched import. Period must be open. HIGH risk.',
+    description: 'Stage batch undo of a completed or unfinished durable SIE import. Approval queues storno, retaining documents and history. Poll gnubok_sie_import_status until undone. Period must be open. HIGH risk.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        import_id: { type: 'string', description: 'UUID of the sie_imports row to undo. Must be status=\'completed\'.' },
+        import_id: { type: 'string', description: 'UUID of the sie_imports row to undo. Must be a durable execution.' },
         reason: { type: 'string', maxLength: 500, description: 'Optional human-readable reason: shown in pending_operations review.' },
       },
       required: ['import_id'],
@@ -19941,12 +20039,13 @@ export const tools: McpTool[] = [
         transactions_count: number | null
         opening_balance_entry_id: string | null
         status: string
+        job_state: string | null
         fiscal_period_id: string | null
         imported_at: string | null
       }
       const { data, error: lookupErr } = await supabase
         .from('sie_imports')
-        .select('id, filename, fiscal_year_start, fiscal_year_end, transactions_count, opening_balance_entry_id, status, fiscal_period_id, imported_at')
+        .select('id, filename, fiscal_year_start, fiscal_year_end, transactions_count, opening_balance_entry_id, status, job_state, fiscal_period_id, imported_at')
         .eq('id', importId)
         .eq('company_id', companyId)
         .maybeSingle()
@@ -19958,7 +20057,7 @@ export const tools: McpTool[] = [
       if (!importRow) {
         throw new Error(`SIE-import hittades inte: ${importId}`)
       }
-      if (importRow.status !== 'completed') {
+      if (!importRow.job_state || ['undone','failed'].includes(importRow.job_state)) {
         throw new Error(`Bara slutförda importer kan ångras (nuvarande status: ${importRow.status}).`)
       }
 
@@ -19993,12 +20092,12 @@ export const tools: McpTool[] = [
             imported_at: importRow.imported_at,
           },
           reason: reason ?? null,
-          will: 'hard-delete the import\'s journal entries (transactions + opening balance), detach user-attached documents, reset voucher_sequences, and mark the sie_imports row as \'undone\' so the file can be re-imported',
+          will: 'Reverse exactly this batch with storno, retain documents and history, and release the period hold only when every undo checkpoint completes.',
         },
         actor,
         {
-          description: 'After commit, re-stage the SIE import with corrected mappings via gnubok_import_sie.',
-          tool: 'gnubok_import_sie',
+          description: 'Poll until undone before submitting a new execution with corrected mappings.',
+          tool: 'gnubok_sie_import_status',
         },
       )
     },
@@ -20239,8 +20338,9 @@ export const tools: McpTool[] = [
       // Optional inbox-direct booking. Validate at staging so the agent gets a
       // tight rejection signal: once staged, an already-booked inbox item
       // would only surface at commit time with a generic 409. The executor
-      // re-checks idempotently via UNIQUE constraint on
-      // invoice_inbox_items.created_journal_entry_id.
+      // re-checks with a compare-and-set on the item's null link columns
+      // (there is no UNIQUE on created_journal_entry_id: several inbox items
+      // may back one verifikat).
       const inboxItemId = (args.inbox_item_id as string | undefined) ?? null
       let inboxDocumentId: string | null = null
       if (inboxItemId) {
@@ -22849,8 +22949,8 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
                 ]
               : []),
             'Discovery:',
-            '• tools/list returns common tool schemas. Call gnubok_search_tools(query="…") for specialized tools: it ranks all capabilities; pass detail="name"|"summary"|"full" to control payload size. If your client cannot invoke a tool that is not in tools/list, reach any READ tool through gnubok_call_tool({tool, arguments}); writes must be named directly.',
-            '• gnubok_get_agent_briefing returns recommended_tools: ordered per-workflow tool loadouts (categorize_month, close_period, invoice_run, vat_declaration, payroll_month). If your harness defers tool loading, batch-load a whole workflow in one call (e.g. Claude Code ToolSearch select:a,b,c) instead of searching cluster by cluster.',
+            '• tools/list returns common tool schemas. Call gnubok_search_tools(query="…") for specialized tools: it ranks all capabilities; pass detail="name"|"summary"|"full" to control payload size. If your client cannot invoke a tool that is not in tools/list, reach any READ tool through gnubok_call_tool({tool, arguments}); a WRITE outside tools/list is then out of reach (the bridge refuses writes), so check callable_via on each search hit before planning around it.',
+            '• gnubok_get_agent_briefing returns recommended_tools: ordered per-workflow tool loadouts (categorize_month, close_period, invoice_run, vat_declaration, payroll_month). If your harness defers tool loading, batch-load a whole workflow in one call (e.g. Claude Code ToolSearch select:a,b,c) instead of searching cluster by cluster. Each loadout tool carries callable; when false, blocked_by and note say why (missing scope or search-only write).',
             `• This connection can work with every non-archived company the API-key user belongs to. Call gnubok_list_companies to discover company_id values. Omit company_id to use the API key default (${companyId ?? 'none yet: this account has no company. Create it with gnubok_create_company (preview first, then confirm=true); the "onboarding" skill walks the whole setup'}); when selecting another company, repeat company_id on every company-data call, including approval.`,
             '• MCP resources use the API key default company. For a selected non-default company, call gnubok_get_agent_briefing with company_id instead of relying on Accounted://company/current or other company-data resources.',
             '• When the user asks "how do I do X" or you\'re unsure of the correct sequence (month-end close, VAT review, year-end, invoicing, payroll), call gnubok_list_skills first: domain workflows are documented as loadable skills with tool references.',
@@ -23282,7 +23382,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
         const taskStartedAt = Date.now()
         emitAfterResponse(async () => {
           try {
-            const rawResult = await tool.execute(toolArgs, tenantId, userId, supabase, actor)
+            const rawResult = await withSIEExternalReport(supabase,tenantId,toolName,()=>tool.execute(toolArgs,tenantId,userId,supabase,actor))
             const canonicalResult = effectiveCompanyId
               ? addCompanyToTopLevelNext(rawResult, effectiveCompanyId)
               : rawResult
@@ -23356,13 +23456,17 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 
       const callStartedAt = Date.now()
       try {
-        // gnubok_search_tools needs the caller's scopes to filter results to
-        // what the API key can actually invoke. Inject privately via __keyScopes.
-        if (toolName === 'gnubok_search_tools') {
+        // gnubok_search_tools and gnubok_get_agent_briefing need the caller's
+        // scopes: search filters to what the API key can actually invoke, the
+        // briefing flags each recommended tool as callable or not. Inject
+        // privately via __keyScopes.
+        if (toolName === 'gnubok_search_tools' || toolName === 'gnubok_get_agent_briefing') {
           (toolArgs as Record<string, unknown>).__keyScopes = keyScopes
-          ;(toolArgs as Record<string, unknown>).__toolNamespace = toolNamespace
         }
-        const rawResult = await tool.execute(toolArgs, tenantId, userId, supabase, actor)
+        if (toolName === 'gnubok_search_tools') {
+          (toolArgs as Record<string, unknown>).__toolNamespace = toolNamespace
+        }
+        const rawResult = await withSIEExternalReport(supabase,tenantId,toolName,()=>tool.execute(toolArgs,tenantId,userId,supabase,actor))
         const canonicalResult = effectiveCompanyId
           ? addCompanyToTopLevelNext(rawResult, effectiveCompanyId)
           : rawResult

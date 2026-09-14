@@ -1,4 +1,5 @@
 import { z } from 'zod'
+
 import { ENTITY_TYPES } from '@/lib/company/entity-type'
 import { normaliseSwish, isValidSwish } from '@/lib/payments/swish'
 import { normalizeVatNumber } from '@/lib/vat/vat-number'
@@ -41,6 +42,44 @@ import {
 } from '@/lib/customers/personal-number-shape'
 import type { AuditAction, Currency, InvoiceDocumentType } from '@/types'
 import type { BankFileFormatId } from '@/lib/import/bank-file/types'
+
+export const SIEJobOptionsSchema = z.object({
+  createFiscalPeriod: z.boolean().default(true),
+  importOpeningBalances: z.boolean().default(true),
+  importTransactions: z.boolean().default(true),
+  voucherSeries: z.string().trim().min(1).max(16).optional(),
+  openingBalanceSeries: z.string().trim().min(1).max(16).optional(),
+  updateAccountNames: z.boolean().default(true),
+  markImportedNoDocRequired: z.boolean().default(false),
+  onExistingPeriod: z.enum(['block','replace']).default('block'),
+  supersedesImportId: z.string().uuid().optional(),
+})
+export const SIEJobMappingsSchema = z.array(z.object({
+  sourceAccount: z.string().min(1).max(40), sourceName: z.string().max(500),
+  targetAccount: z.string().regex(/^(?:[1-8]\d{3})?$/), targetName: z.string().max(500),
+  confidence: z.number().min(0).max(1), matchType: z.enum(['exact','name','class','manual','bas_range']),
+  isOverride: z.boolean().default(false),
+  defaultVatTreatment: z.enum(ACCOUNT_VAT_TREATMENTS).nullable().optional(),
+  defaultVatRate: z.number().min(0).max(100).nullable().optional(),
+  vatTreatmentSuggested: z.boolean().optional(), vatTreatmentReviewed: z.boolean().optional(),
+  requiresVatTreatmentReview: z.boolean().optional(),
+})).max(10_000).superRefine((mappings, ctx) => {
+  const sources = new Map<string, string>()
+  for (const [index, mapping] of mappings.entries()) {
+    const serialized = JSON.stringify(mapping)
+    const previous = sources.get(mapping.sourceAccount)
+    if (previous !== undefined && previous !== serialized) {
+      ctx.addIssue({ code: 'custom', path: [index, 'sourceAccount'],
+        message: `Konto ${mapping.sourceAccount} har motstridiga kontomappningar.` })
+    }
+    sources.set(mapping.sourceAccount, serialized)
+  }
+}).transform(mappings => {
+  // Repeated #KONTO definitions must not target the same metadata upsert row
+  // twice. Conflicting definitions are rejected before any import is queued.
+  return [...new Map(mappings.map(mapping => [mapping.sourceAccount, mapping])).values()]
+})
+export const SIEJobActionSchema = z.object({action:z.enum(['resume','undo'])})
 
 // ============================================================
 // Shared primitives
@@ -310,8 +349,11 @@ export const VoucherSequenceNextQuerySchema = z.object({
   date: isoDate.optional(),
 })
 
+// Mirrors chart_of_accounts_account_type_check. untaxed_reserves is the 21xx
+// group (obeskattade reserver); without it every 21xx account the Kontoplan
+// dialog derived was refused (#2514).
 export const AccountTypeSchema = z.enum([
-  'asset', 'equity', 'liability', 'revenue', 'expense',
+  'asset', 'equity', 'liability', 'untaxed_reserves', 'revenue', 'expense',
 ])
 
 export const NormalBalanceSchema = z.enum(['debit', 'credit'])
@@ -724,8 +766,7 @@ export const RotRutReclaimSchema = z.object({
   booking_date: isoDate,
 })
 
-// The beslutsfil JSON downloaded from Skatteverkets rot/rut e-tjänst
-// (dev_docs/skatteverket/husavdrag/exempel_beslut.json + ht.raml).
+// The beslutsfil JSON downloaded from Skatteverkets rot/rut e-tjänst.
 export const RotRutBeslutFileSchema = z.object({
   version: z.string(),
   // Utförarens orgnr, 12 digits with 16-prefix in SKV's file.
@@ -1572,8 +1613,8 @@ export const StrikeLinesSchema = z
 // ============================================================
 // Dimension registry schemas (kostnadsställe/projekt)
 // ============================================================
-// dev_docs/dimensions_implementation_plan.md §6. The registry tables
-// (dimensions/dimension_values) shipped in 20260702084500_dimensions_substrate.
+// The registry tables (dimensions/dimension_values) shipped in
+// 20260702084500_dimensions_substrate.
 
 /**
  * Object code for USER-CREATED dimension values: strict Fortnox format.
@@ -2208,13 +2249,6 @@ export const LinkTransactionJournalEntrySchema = z.object({
   invoice_id: uuid.optional(),
 })
 
-export const CreateTransactionFromDocumentSchema = z.object({
-  inbox_item_id: uuid,
-  amount: z.number().refine((n) => n !== 0, 'Amount must be non-zero'),
-  transaction_date: isoDate,
-  description: z.string().min(1).max(500),
-})
-
 /**
  * POST /api/transactions/[id]/match-rot-rut-payout: settle one or several
  * ROT/RUT begäran with the bank row that carried Skatteverkets utbetalning.
@@ -2548,7 +2582,7 @@ export const UpdateSettingsSchema = z.object({
   // AI agent flow
   ai_flow_enabled: z.boolean().optional(),
   // Dimensions (kostnadsställe/projekt): UI-visibility toggle only, never
-  // load-bearing for correctness (dev_docs/dimensions_implementation_plan.md §2).
+  // load-bearing for correctness.
   dimensions_enabled: z.boolean().optional(),
   // Körjournal (mileage log): UI-visibility toggle only, never load-bearing
   // for correctness (trips created via API/MCP work regardless).
@@ -2556,6 +2590,12 @@ export const UpdateSettingsSchema = z.object({
   // Kundorder (sales orders): UI-visibility toggle only, never load-bearing
   // for correctness (the pages and APIs work regardless).
   sales_orders_enabled: z.boolean().optional(),
+  // Invoice document type toggles (offert, proforma, återkommande,
+  // självfaktura): UI-visibility only, never load-bearing for correctness.
+  quotes_enabled: z.boolean().optional(),
+  proforma_enabled: z.boolean().optional(),
+  recurring_invoices_enabled: z.boolean().optional(),
+  self_billing_enabled: z.boolean().optional(),
   // Data analysis consent (#1346): gates cross-company analysis of this
   // company's bookkeeping outcomes. Flipped by a human in the settings UI
   // only; deliberately absent from the v1 REST / MCP settings pick lists.
@@ -2616,36 +2656,6 @@ export const CreateFiscalPeriodSchema = z.object({
     path: ['period_end'],
   }
 )
-
-// ============================================================
-// Mapping rule schemas
-// ============================================================
-
-export const CreateMappingRuleSchema = z.object({
-  rule_name: z.string().min(1, 'Rule name is required'),
-  rule_type: MappingRuleTypeSchema,
-  priority: z.number().int().min(0).optional(),
-  mcc_codes: z.array(z.string()).optional(),
-  merchant_pattern: z.string().optional(),
-  description_pattern: z.string().optional(),
-  amount_min: z.number().optional(),
-  amount_max: z.number().optional(),
-  debit_account: accountNumber,
-  credit_account: accountNumber,
-  vat_treatment: z.string().optional(),
-  risk_level: RiskLevelSchema.optional(),
-  default_private: z.boolean().optional(),
-  requires_review: z.boolean().optional(),
-  confidence_score: z.number().min(0).max(1).optional(),
-})
-
-export const EvaluateMappingRulesSchema = z.union([
-  z.object({ transaction_id: uuid }),
-  z.object({
-    description: z.string().optional(),
-    amount: z.number(),
-  }).passthrough(),
-])
 
 // ============================================================
 // Deadline schemas
@@ -2745,10 +2755,6 @@ export const BankLinkSchema = z
     message: 'Ange journal_entry_id eller allocations, inte båda.',
     path: ['journal_entry_id'],
   })
-
-export const BankUnlinkSchema = z.object({
-  transaction_id: uuid,
-})
 
 /**
  * Re-tag a mis-typed bank-account opening balance (a manual/import voucher that

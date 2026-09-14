@@ -971,6 +971,37 @@ describe('parseSIEFile: invalid date handling', () => {
 // --- Fix 4: Missing amount handling ---
 
 describe('parseSIEFile: missing amount handling', () => {
+  it.each(['IB', 'UB', 'RES', 'TRANS', 'RTRANS', 'BTRANS'].flatMap(tag =>
+    ['', '\"\"', 'not-a-number', '100abc', 'Infinity', '1e999'].map(amount => ({ tag, amount }))
+  ))('marks the omitted financial record without coercing $tag $amount to zero', ({ tag, amount }) => {
+    const balanceRecord = ['IB', 'UB', 'RES'].includes(tag)
+    const record = balanceRecord ? `#${tag} -1 1930 ${amount}` : `#${tag} 1930 {} ${amount}`
+    const result = parseSIEFile(balanceRecord ? record : `#VER A 1 20240115 "Test"\n{\n${record}\n}`)
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      severity: 'warning', code: 'invalid_amount', tag, account: '1930', ...(balanceRecord ? { yearIndex: -1 } : {}),
+    }))
+    expect([...result.openingBalances, ...result.closingBalances, ...result.resultBalances]).toHaveLength(0)
+    expect(result.vouchers.flatMap(voucher => voucher.lines)).toHaveLength(0)
+  })
+
+  it.each([
+    { token: '0', amount: 0 },
+    { token: '\"0\"', amount: 0 },
+    { token: '\"1234.50\"', amount: 1234.5 },
+    { token: '1234,50', amount: 1234.5 },
+    { token: '\"-1234,50\"', amount: -1234.5 },
+  ])('preserves supported monetary format $token in balance and active records', ({ token, amount }) => {
+    const result = parseSIEFile([
+      `#IB 0 1930 ${token}`, `#UB 0 1930 ${token}`, `#RES 0 3001 ${token}`,
+      '#VER A 1 20240115 "Test"', '{', `#TRANS 1930 {} ${token}`, `#TRANS 3001 {} ${-amount}`, '}',
+    ].join('\n'))
+    expect(result.issues.filter(issue => issue.code === 'invalid_amount')).toEqual([])
+    expect(result.openingBalances[0].amount).toBe(amount)
+    expect(result.closingBalances[0].amount).toBe(amount)
+    expect(result.resultBalances[0].amount).toBe(amount)
+    expect(result.vouchers[0].lines[0].amount).toBe(amount)
+  })
+
   it('skips #IB with missing amount and adds warning', () => {
     const content = [
       '#FLAGGA 0',

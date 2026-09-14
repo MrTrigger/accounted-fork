@@ -1,3 +1,4 @@
+vi.mock('@/lib/import/sie-jobs',()=>({submitSIEJob:vi.fn(),requestSIEJobAction:vi.fn()}))
 /**
  * Unit tests for the executors added to bring every declared op type up to a
  * callable state through `commitPendingOperation`. Tests run through the
@@ -15,6 +16,22 @@ import {
 } from '@/tests/helpers'
 import type { PendingOperation } from '@/types'
 import { decryptPersonnummer, encryptPersonnummer } from '@/lib/salary/personnummer'
+
+// The link_document_to_voucher inbox stamp reports through the logger, so
+// `warn` is the assertion surface. Same shape as bank-reconciliation.test.ts:
+// the REAL logger module is kept and only `warn` is swapped, so child() and
+// every other level stay real for the rest of this suite.
+const { logWarn } = vi.hoisted(() => ({ logWarn: vi.fn() }))
+vi.mock('@/lib/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/logger')>()
+  return {
+    ...actual,
+    createLogger: (module: string, base?: Parameters<typeof actual.createLogger>[1]) => ({
+      ...actual.createLogger(module, base),
+      warn: logWarn,
+    }),
+  }
+})
 
 vi.mock('@/lib/core/bookkeeping/period-service', async () => {
   const actual = await vi.importActual<typeof import('@/lib/core/bookkeeping/period-service')>(
@@ -121,7 +138,7 @@ vi.mock('@/lib/invoices/invoice-deliveries', () => ({
 import { commitPendingOperation } from '../commit'
 import { unlockPeriod } from '@/lib/core/bookkeeping/period-service'
 import { parseSIEFile } from '@/lib/import/sie-parser'
-import { executeSIEImport } from '@/lib/import/sie-import'
+import { submitSIEJob } from '@/lib/import/sie-jobs'
 import { commitAnnualPostings } from '@/lib/bokslut/assets/depreciation-engine'
 import { createCreditNoteJournalEntry } from '@/lib/bookkeeping/invoice-entries'
 import { createSupplierCreditNoteEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
@@ -811,16 +828,7 @@ describe('commitPendingOperation: create_transaction', () => {
 describe('commitPendingOperation: import_sie', () => {
   it('happy path: parses, imports, returns committed with summary', async () => {
     vi.mocked(parseSIEFile).mockReturnValueOnce({} as never)
-    vi.mocked(executeSIEImport).mockResolvedValueOnce({
-      success: true,
-      importId: 'imp-1',
-      fiscalPeriodId: 'fp-1',
-      openingBalanceEntryId: 'ob-1',
-      journalEntriesCreated: 5,
-      journalEntryIds: ['je-1', 'je-2', 'je-3', 'je-4', 'je-5'],
-      errors: [],
-      warnings: ['minor warning'],
-    })
+    vi.mocked(submitSIEJob).mockResolvedValueOnce({id:'imp-1',fiscal_period_id:'fp-1',job_state:'queued'} as never)
 
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
@@ -843,13 +851,12 @@ describe('commitPendingOperation: import_sie', () => {
     expect(result.status).toBe('committed')
     expect(result.data).toMatchObject({
       import_id: 'imp-1',
-      journal_entries_created: 5,
-      warnings: ['minor warning'],
+      accepted:true,state:'queued',status_tool:'gnubok_sie_import_status',
     })
-    expect(parseSIEFile).toHaveBeenCalledWith('#FLAGGA 0\n')
+    expect(parseSIEFile).not.toHaveBeenCalled()
     // Operations staged before update_account_names existed (params without
     // the key) must default to true: Boolean(undefined) would flip it off.
-    expect(executeSIEImport).toHaveBeenCalledWith(
+    expect(submitSIEJob).toHaveBeenCalledWith(
       expect.anything(),
       'company-1',
       'user-1',
@@ -859,18 +866,9 @@ describe('commitPendingOperation: import_sie', () => {
     )
   })
 
-  it('passes update_account_names: false through to executeSIEImport', async () => {
+  it('passes update_account_names: false through to submitSIEJob', async () => {
     vi.mocked(parseSIEFile).mockReturnValueOnce({} as never)
-    vi.mocked(executeSIEImport).mockResolvedValueOnce({
-      success: true,
-      importId: 'imp-2',
-      fiscalPeriodId: 'fp-1',
-      openingBalanceEntryId: null,
-      journalEntriesCreated: 1,
-      journalEntryIds: ['je-1'],
-      errors: [],
-      warnings: [],
-    })
+    vi.mocked(submitSIEJob).mockResolvedValueOnce({id:'imp-1',fiscal_period_id:'fp-1',job_state:'queued'} as never)
 
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
@@ -891,7 +889,7 @@ describe('commitPendingOperation: import_sie', () => {
 
     await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
 
-    expect(executeSIEImport).toHaveBeenCalledWith(
+    expect(submitSIEJob).toHaveBeenCalledWith(
       expect.anything(),
       'company-1',
       'user-1',
@@ -914,18 +912,9 @@ describe('commitPendingOperation: import_sie', () => {
     expect(parseSIEFile).not.toHaveBeenCalled()
   })
 
-  it('returns the executeSIEImport errors when success=false', async () => {
+  it('returns the submitSIEJob errors when success=false', async () => {
     vi.mocked(parseSIEFile).mockReturnValueOnce({} as never)
-    vi.mocked(executeSIEImport).mockResolvedValueOnce({
-      success: false,
-      importId: null,
-      fiscalPeriodId: null,
-      openingBalanceEntryId: null,
-      journalEntriesCreated: 0,
-      journalEntryIds: [],
-      errors: ['duplicate import'],
-      warnings: [],
-    })
+    vi.mocked(submitSIEJob).mockRejectedValueOnce(new Error('duplicate import'))
 
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
@@ -1422,6 +1411,10 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
     params: { document_id: 'doc-1', journal_entry_id: 'je-1' },
   }
 
+  beforeEach(() => {
+    logWarn.mockClear()
+  })
+
   it('auto-rejects 404 when document is not in the company', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
@@ -1461,7 +1454,7 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
       data: { id: 'doc-1', file_name: 'kvitto.pdf', journal_entry_id: 'je-1', journal_entry_line_id: null },
       error: null,
     })                                                                           // linkToJournalEntry: doc update
-    enqueue({ data: null, error: null })                                         // inbox stamp (best-effort)
+    enqueue({ data: [{ id: 'inbox-1' }], error: null })                         // inbox stamp: one row claimed
     enqueue({ data: null, error: null })                                         // dispatcher commit update
 
     const result = await commitPendingOperation(
@@ -1479,7 +1472,7 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
       data: { id: 'doc-1', file_name: 'faktura.pdf', journal_entry_id: 'je-1', journal_entry_line_id: null },
       error: null,
     })                                                                           // linkToJournalEntry: doc update
-    enqueue({ data: null, error: null })                                         // inbox stamp (best-effort)
+    enqueue({ data: [{ id: 'inbox-1' }], error: null })                         // inbox stamp: one row claimed
     enqueue({ data: null, error: null })                                         // dispatcher commit update
 
     const result = await commitPendingOperation(
@@ -1506,7 +1499,41 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
     ])
   })
 
-  it('inbox stamp is best-effort: a failed stamp never fails the committed link', async () => {
+  it('stamps a second document on the same voucher too: keyed on the document, never on the voucher being unclaimed', async () => {
+    // Invoice + payment confirmation on one verifikat (feedback seq 389343,
+    // 395894, 395931, 366701). The UNIQUE on created_journal_entry_id that
+    // made this stamp fail with 23505 is gone (migration 20260911120500), so
+    // the second document's inbox row is claimed exactly like the first.
+    const { supabase, enqueue, calls, findCall } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null })                              // CAS claim
+    enqueue({ data: { id: 'doc-2', journal_entry_id: null }, error: null })     // doc fetch
+    enqueue({ data: { id: 'je-1' }, error: null })                              // linkToJournalEntry: JE ownership
+    enqueue({
+      data: { id: 'doc-2', file_name: 'betalbekraftelse.pdf', journal_entry_id: 'je-1', journal_entry_line_id: null },
+      error: null,
+    })                                                                           // linkToJournalEntry: doc update
+    enqueue({ data: [{ id: 'inbox-2' }], error: null })                         // inbox stamp: second row claimed
+    enqueue({ data: null, error: null })                                         // dispatcher commit update
+
+    const result = await commitPendingOperation(
+      supabase as never, 'user-1', 'company-1',
+      makePendingOp({ ...baseOp, params: { document_id: 'doc-2', journal_entry_id: 'je-1' } }),
+    )
+    expect(result.status).toBe('committed')
+    expect(findCall('invoice_inbox_items', 'update')).toEqual([{ created_journal_entry_id: 'je-1' }])
+    const inboxFilters = calls
+      .filter((c) => c.table === 'invoice_inbox_items' && (c.method === 'eq' || c.method === 'is'))
+      .map((c) => c.args)
+    expect(inboxFilters).toEqual([
+      ['document_id', 'doc-2'],
+      ['company_id', 'company-1'],
+      ['created_journal_entry_id', null],
+      ['created_supplier_invoice_id', null],
+    ])
+    expect(logWarn).not.toHaveBeenCalled()
+  })
+
+  it('zero stamped rows (document not from the inbox, or row already claimed) logs a warning naming both ids; the link stays committed', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null })                              // CAS claim
     enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null })     // doc fetch
@@ -1515,7 +1542,7 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
       data: { id: 'doc-1', file_name: 'faktura.pdf', journal_entry_id: 'je-1', journal_entry_line_id: null },
       error: null,
     })                                                                           // linkToJournalEntry: doc update
-    enqueue({ data: null, error: { code: '23505', message: 'duplicate key value' } }) // inbox stamp: samlingsverifikat already claimed
+    enqueue({ data: [], error: null })                                           // inbox stamp: no row matched
     enqueue({ data: null, error: null })                                         // dispatcher commit update
 
     const result = await commitPendingOperation(
@@ -1523,6 +1550,38 @@ describe('commitPendingOperation: link_document_to_voucher', () => {
     )
     expect(result.status).toBe('committed')
     expect(result.data).toMatchObject({ document_id: 'doc-1', journal_entry_id: 'je-1' })
+    expect(logWarn).toHaveBeenCalledTimes(1)
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/No inbox item stamped after document link/),
+      { documentId: 'doc-1', journalEntryId: 'je-1' },
+    )
+  })
+
+  it('inbox stamp is best-effort: a failed stamp is logged and never fails the committed link', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null })                              // CAS claim
+    enqueue({ data: { id: 'doc-1', journal_entry_id: null }, error: null })     // doc fetch
+    enqueue({ data: { id: 'je-1' }, error: null })                              // linkToJournalEntry: JE ownership
+    enqueue({
+      data: { id: 'doc-1', file_name: 'faktura.pdf', journal_entry_id: 'je-1', journal_entry_line_id: null },
+      error: null,
+    })                                                                           // linkToJournalEntry: doc update
+    enqueue({ data: null, error: { code: '42501', message: 'permission denied for table invoice_inbox_items' } }) // inbox stamp failed
+    enqueue({ data: null, error: null })                                         // dispatcher commit update
+
+    const result = await commitPendingOperation(
+      supabase as never, 'user-1', 'company-1', makePendingOp(baseOp),
+    )
+    expect(result.status).toBe('committed')
+    expect(result.data).toMatchObject({ document_id: 'doc-1', journal_entry_id: 'je-1' })
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to mark inbox item handled after document link/),
+      {
+        documentId: 'doc-1',
+        journalEntryId: 'je-1',
+        error: 'permission denied for table invoice_inbox_items',
+      },
+    )
   })
 
   it('auto-rejects 409 when linkToJournalEntry throws a period-lock error', async () => {
