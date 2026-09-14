@@ -2,9 +2,16 @@
 
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { useCompany } from '@/contexts/CompanyContext'
+import { useCapability, useCompany } from '@/contexts/CompanyContext'
 import { useBranding } from '@/lib/branding/brand-context'
+import { CAPABILITY } from '@/lib/entitlements/keys'
+import { useFetch } from '@/lib/hooks/use-fetch'
 import { useFormat } from '@/lib/hooks/use-format'
+import type { AiClient } from '@/lib/onboarding/ai-clients'
+import { pickFirstAiTask } from '@/lib/worklist/ai-task'
+import type { WorklistCounts } from '@/lib/worklist/types'
+import { AttGoraAiCta } from '@/components/dashboard/AttGoraAiCta'
+import { Button } from '@/components/ui/button'
 import { InkText } from '@/components/onboarding/journey/ink'
 import { Confetti } from '../ui/Confetti'
 import { AiCard } from '../ui/AiCard'
@@ -20,15 +27,41 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
   const { appName } = useBranding()
   const { formatDateLong } = useFormat()
   const { findings, state, loadFindings } = ctx
+  const hasAi = useCapability(CAPABILITY.ai)
+  const [preferredClient, setPreferredClient] = useState<AiClient>()
+  const { data: worklist, loading, error, refetch } = useFetch<{ data: WorklistCounts }, WorklistCounts>(
+    '/api/worklist/counts',
+    { select: (body) => body.data },
+  )
+  const connected = findings?.ai.connected ?? []
+  const connectionKey = connected.join(',')
+  const task = worklist && !error ? pickFirstAiTask(worklist.counts, { hasAi }) : null
+  const hasHandoff = connected.length > 0 && task !== null
+
+  // Refresh the same queue Hem uses when OAuth finishes or the user returns
+  // from their agent. Do not keep offering work they have already completed.
+  useEffect(() => {
+    if (connectionKey) refetch()
+  }, [connectionKey, refetch])
+  useEffect(() => {
+    window.addEventListener('focus', refetch)
+    return () => window.removeEventListener('focus', refetch)
+  }, [refetch])
 
   // The OAuth sign-in happens in another tab. Poll the findings while this
   // step is on screen so the client's row turns green the moment the token
   // route has minted its key; stop once all three are connected.
   const allConnected = (findings?.ai.connected.length ?? 0) >= 3
   useEffect(() => {
-    if (allConnected) return
-    const id = window.setInterval(() => { void loadFindings() }, AI_POLL_MS)
-    return () => window.clearInterval(id)
+    const refresh = () => {
+      if (document.visibilityState !== 'hidden') void loadFindings()
+    }
+    window.addEventListener('focus', refresh)
+    const id = allConnected ? null : window.setInterval(refresh, AI_POLL_MS)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      if (id !== null) window.clearInterval(id)
+    }
   }, [allConnected, loadFindings])
   const b = findings?.books
   const rows: [string, string][] = [
@@ -47,7 +80,7 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
   if (next) rows.push([t('card_next'), `${t(`deadline_${next.type}`)} ${formatDateLong(next.dueDate)}`])
 
   return (
-    <div className="jny-qstep" style={{ position: 'relative' }}>
+    <div className="jny-qstep bks-done" style={{ position: 'relative' }}>
       <Confetti />
       <h1 className="jny-qtitle">
         <InkText text={t('done_title', { name: company?.name?.split(' ')[0] ?? '' })} />
@@ -62,11 +95,36 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
           ))}
         </dl>
       </div>
-      <AiCard findings={findings} />
+      <AiCard findings={findings} onConnect={setPreferredClient} showPrompts={!hasHandoff} />
+      {connected.length > 0 && (
+        <div aria-live="polite" aria-busy={loading}>
+          {error ? (
+            <div className="aihandoff">
+              <p className="aihandoff-note">{t('ai_handoff_failed')}</p>
+              <Button type="button" variant="ghost" size="sm" onClick={refetch} disabled={loading}>
+                {t('ai_handoff_retry')}
+              </Button>
+            </div>
+          ) : loading && !worklist ? (
+            <p className="aihandoff aihandoff-note" role="status">{t('ai_handoff_loading')}</p>
+          ) : task ? (
+            <AttGoraAiCta
+              clients={connected}
+              task={task}
+              onboarding
+              preferredClient={preferredClient}
+              onOpen={() => onLeave('done')}
+              disabled={leaving}
+            />
+          ) : (
+            <p className="aihandoff aihandoff-note">{t('ai_handoff_empty')}</p>
+          )}
+        </div>
+      )}
       <div className="jny-qactions">
-        <button type="button" className="jny-btn" disabled={leaving} onClick={() => onLeave('done')}>
+        <Button type="button" variant={hasHandoff ? 'ghost' : 'default'} disabled={leaving} onClick={() => onLeave('done')}>
           {t('open_app', { appName })}
-        </button>
+        </Button>
       </div>
     </div>
   )

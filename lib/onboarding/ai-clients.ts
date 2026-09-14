@@ -1,6 +1,8 @@
-import type { SupabaseClient } from '@supabase/supabase-js'
-import { OAUTH_MCP_KEY_NAME } from '@/lib/auth/api-keys'
 import { claudeConnectorLink, sideDoorServerUrl, type SideDoor } from '@/lib/onboarding/checklist'
+
+// Browser-safe on purpose: client components import this file. The
+// database read lives in ai-clients.server.ts (lib/auth/api-keys pulls in
+// node:crypto, which must not reach the client bundle).
 
 /**
  * The three AI clients the product connects to over MCP, in display order.
@@ -33,21 +35,10 @@ export function connectedAiClients(rows: { client: string | null }[]): AiClient[
   return AI_CLIENTS.map((c) => c.id).filter((id) => seen.has(id))
 }
 
-/**
- * The connection follows the person, not the company: the key's company_id
- * is whatever was active at sign-in (or null for a companyless signup), so
- * the lookup is by user. Revoked keys do not count. A failed read answers
- * an empty list rather than throwing: the readout only decorates a button.
- */
-export async function loadConnectedAiClients(supabase: SupabaseClient, userId: string): Promise<AiClient[]> {
-  const { data, error } = await supabase
-    .from('api_keys')
-    .select('client')
-    .eq('user_id', userId)
-    .eq('name', OAUTH_MCP_KEY_NAME)
-    .is('revoked_at', null)
-  if (error || !data) return []
-  return connectedAiClients(data as { client: string | null }[])
+/** Prefer the client just connected, but never offer an unverified connection. */
+export function pickConnectedAiClient(clients: AiClient[], preferred?: AiClient): AiClient | null {
+  if (preferred && clients.includes(preferred)) return preferred
+  return AI_CLIENTS.find((client) => clients.includes(client.id))?.id ?? null
 }
 
 /**

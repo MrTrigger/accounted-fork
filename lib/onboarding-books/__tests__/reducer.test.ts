@@ -5,8 +5,36 @@ const ALL = { hasMigration: true, hasBanking: true, hasSkatteverket: true }
 const NONE = { hasMigration: false, hasBanking: false, hasSkatteverket: false }
 
 function entry(over: Partial<BooksEntry> = {}): BooksEntry {
-  return { station: null, provider: null, landedFromProvider: false, selectAccounts: null, skvConnected: false, ...over }
+  return { station: null, provider: null, landedFromProvider: false, selectAccounts: null, skvConnected: false, resumeImportId: null, hasBooks: false, ...over }
 }
+
+describe('initialState from the server', () => {
+  it('follows a running import job before anything the query string says', () => {
+    const s = initialState(entry({ resumeImportId: 'job-1', provider: 'fortnox', landedFromProvider: true, hasBooks: true }))
+    expect(s.step).toBe('resume')
+    expect(s.path).toBe('migration')
+  })
+
+  it('opens on the genomlysning when the books are already here', () => {
+    const s = initialState(entry({ hasBooks: true }))
+    expect(s.step).toBe('insight')
+    expect(s.imported).toBe(true)
+  })
+
+  it('a callback landing still wins: the bank and Skatteverket returns are mid-act', () => {
+    expect(initialState(entry({ hasBooks: true, station: 'bank' })).step).toBe('bank')
+    expect(initialState(entry({ resumeImportId: 'job-1', station: 'skv' })).step).toBe('skv')
+  })
+
+  it('a provider round trip still lands on the provider step, books or not', () => {
+    expect(initialState(entry({ hasBooks: true, landedFromProvider: true })).step).toBe('provider')
+  })
+
+  it('back from the resume step returns to the source list', () => {
+    const s = booksReducer(initialState(entry({ resumeImportId: 'job-1' })), { type: 'GO_BACK' })
+    expect(s.step).toBe('source')
+  })
+})
 
 describe('initialState', () => {
   it('starts at the source question', () => {

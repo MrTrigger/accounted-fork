@@ -7,7 +7,7 @@ import { COMPANY_PICKED_COOKIE } from '@/lib/company/context'
 import { isCockpitLandingRole } from '@/lib/company/home-domain'
 import { OAUTH_MCP_KEY_NAME } from '@/lib/auth/api-keys'
 import { claudeStepDone } from '@/lib/onboarding/checklist'
-import { loadConnectedAiClients } from '@/lib/onboarding/ai-clients'
+import { loadConnectedAiClients } from '@/lib/onboarding/ai-clients.server'
 import { createServiceClient } from '@/lib/supabase/server'
 import {
   getDashboardAuthContext,

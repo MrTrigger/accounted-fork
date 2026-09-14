@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { resolveMissingUnderlagEntries } from '@/lib/bookkeeping/missing-underlag'
-import { loadConnectedAiClients, type AiClient } from '@/lib/onboarding/ai-clients'
+import type { AiClient } from '@/lib/onboarding/ai-clients'
+import { loadConnectedAiClients } from '@/lib/onboarding/ai-clients.server'
 
 /**
  * Genomlysning: what the books act (issue #2438) can say about a company

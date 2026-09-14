@@ -30,7 +30,7 @@ function SwedishFlag() {
 }
 export function SourceStep({ ctx }: { ctx: BooksCtx }) {
   const t = useTranslations('books')
-  const { dispatch, flags, findings } = ctx
+  const { dispatch, flags } = ctx
   const providers = flags.hasMigration ? BRANCH_PROVIDERS : []
 
   return (
@@ -48,22 +48,6 @@ export function SourceStep({ ctx }: { ctx: BooksCtx }) {
         <Pill index={providers.length + 1} text onClick={() => dispatch({ type: 'PICK_FRESH', flags })}>
           {t('source_fresh')}
         </Pill>
-      </div>
-      <div className="jny-qactions" style={{ flexDirection: 'column', gap: 10 }}>
-        {findings && findings.books.entries > 0 ? (
-          // A reload after an import: the books are already here, the
-          // shortest path is the verdict, not another upload.
-          <button
-            type="button"
-            className="jny-btn"
-            onClick={() => {
-              dispatch({ type: 'IMPORTED' })
-              dispatch({ type: 'TO_INSIGHT' })
-            }}
-          >
-            {t('source_existing', { count: findings.books.entries })} {t('to_insight')}
-          </button>
-        ) : null}
       </div>
       <div className="trust" aria-label={t('trust_line')}>
         <p className="trust-line">{t('trust_line')}</p>

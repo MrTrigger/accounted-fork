@@ -56,6 +56,18 @@ export interface TheaterApi {
   registerStage(cfg: RegisterStageConfig): void
   /** Retarget the live feed's total (the real count arrived mid-run). */
   setFeedTotal(total: number): void
+  /**
+   * Hold the landed count at what the import job has actually written.
+   * Particles keep flowing (the work is real), the number only advances
+   * when the worker reports another chunk; pulse() releases it at the end.
+   */
+  setFeedCap(cap: number): void
+  /**
+   * The step is over: no more idle flows, no breathing, and once the last
+   * ring and spark have faded the frame loop stops on a still tree. The
+   * canvas keeps its final frame; stop() still tears everything down.
+   */
+  settle(): void
   stop(): void
 }
 
@@ -362,6 +374,8 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
     perParticle: 8,
     feedUntil: 0,
     feedTotal: 0,
+    feedCap: Infinity,
+    doneAt: 0,
     timers: [] as number[],
     alive: true,
     last: 0,
@@ -405,7 +419,7 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
     feedVouchers: (ms, total) => {
       eng.feedTotal = total
       if (reduced) {
-        eng.landed = total
+        eng.landed = Math.min(total, eng.feedCap)
         onCount(eng.landed)
         return
       }
@@ -414,13 +428,29 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
     },
     spawnCounterparties: () => spawnKind('outer', 60),
     pulse: () => {
+      // The import is done: release the count and end the feed, so the
+      // particles settle instead of flowing for the rest of the window.
       eng.pulse = performance.now()
+      eng.feedUntil = eng.pulse
+      eng.feedCap = Infinity
       eng.landed = eng.feedTotal || eng.landed
       onCount(eng.landed)
     },
     setFeedTotal: (total) => {
       eng.feedTotal = total
       eng.perParticle = Math.max(1, Math.round(total / 160))
+    },
+    settle: () => {
+      eng.doneAt = performance.now()
+      eng.feedUntil = eng.doneAt
+    },
+    setFeedCap: (cap) => {
+      eng.feedCap = Math.max(0, cap)
+      if (eng.landed > eng.feedCap) eng.landed = eng.feedCap
+      if (reduced) {
+        eng.landed = Math.min(eng.feedTotal, eng.feedCap)
+        onCount(eng.landed)
+      }
     },
     registerStage: (cfg) => {
       // The provider joins the tree as a source node; its invoices ride to
@@ -562,6 +592,8 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
     ctx.globalAlpha = 1
     // Verifikat: born at the hub, they run the spine to their account and land there.
     const feeding = now < eng.feedUntil
+    // Settled: the pulse rings get 900 ms, then the tree goes still.
+    const done = eng.doneAt > 0 && now - eng.doneAt > 900
     eng.spawnAcc += dt * 45
     const spawnN = Math.floor(eng.spawnAcc)
     eng.spawnAcc -= spawnN
@@ -578,7 +610,7 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
     const quietN = Math.floor(eng.quietAcc)
     eng.quietAcc -= quietN
     for (let qn = 0; qn < quietN; qn++) {
-      if (feeding || t <= 2.5 || eng.flow.length >= 40 || reduced) break
+      if (feeding || done || t <= 2.5 || eng.flow.length >= 40 || reduced) break
       const outer = nodes.filter((n) => n.kind === 'outer' && n.born != null)
       if (!outer.length) break
       const o = outer[Math.floor(Math.random() * outer.length)]
@@ -589,7 +621,7 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
       f.p += f.v * dt
       if (f.p >= 1) {
         if (!f.quiet) {
-          eng.landed = Math.min(eng.feedTotal, eng.landed + eng.perParticle)
+          eng.landed = Math.min(eng.feedTotal, eng.feedCap, eng.landed + eng.perParticle)
           if (now - eng.lastCount > 120) { eng.lastCount = now; onCount(eng.landed) }
           f.b.hit = now
           if (eng.rings.length < 60) eng.rings.push({ n: f.b, t0: now })
@@ -628,7 +660,7 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
       const q = local(n)
       const splat = p < 1 ? 1 + 0.35 * Math.sin(p * Math.PI) : 1
       const hit = n.hit ? Math.max(0, 1 - (now - n.hit) / 500) : 0
-      const breathe = 1 + 0.08 * Math.sin(now / 2400 + n.ph) + 0.35 * hit
+      const breathe = (done ? 1 : 1 + 0.08 * Math.sin(now / 2400 + n.ph)) + 0.35 * hit
       const r = n.r * p * k * 1.5 * splat * breathe
       ctx.fillStyle = C.ink
       ctx.globalAlpha = n.kind === 'outer' ? 0.55 : 0.9
@@ -833,6 +865,10 @@ export function createTheater(opts: TheaterOptions): TheaterApi {
         ctx.fillText(line2, bx + 8, by + 27)
       }
     }
+    // Still frame: nothing left in motion, or four seconds past settle
+    // whatever is left. The frame just drawn stays on the canvas.
+    const quietNow = !eng.flow.length && !eng.rings.length && !eng.sparks.length
+    if (done && (quietNow || now - eng.doneAt > 4000)) { eng.raf = 0; return }
     eng.raf = requestAnimationFrame(draw)
   }
   eng.raf = requestAnimationFrame(draw)

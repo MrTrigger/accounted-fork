@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aiChatLink, aiConnectAction, connectedAiClients } from '../ai-clients'
+import { aiChatLink, aiConnectAction, connectedAiClients, pickConnectedAiClient } from '../ai-clients'
 
 describe('connectedAiClients', () => {
   it('reads the three clients off live OAuth keys, in display order, once each', () => {
@@ -21,6 +21,21 @@ describe('aiChatLink', () => {
     expect(aiChatLink('claude', prompt)).toBe(`https://claude.ai/new?q=${encodeURIComponent(prompt)}`)
     expect(aiChatLink('chatgpt', prompt)).toBe(`https://chatgpt.com/?q=${encodeURIComponent(prompt)}`)
     expect(aiChatLink('grok', prompt)).toBe(`https://grok.com/?q=${encodeURIComponent(prompt)}`)
+  })
+})
+
+describe('pickConnectedAiClient', () => {
+  it('hands off to the client just connected even when another was already connected', () => {
+    expect(pickConnectedAiClient(['claude', 'chatgpt'], 'chatgpt')).toBe('chatgpt')
+  })
+
+  it('never treats a connect click as a completed authorization', () => {
+    expect(pickConnectedAiClient([], 'grok')).toBeNull()
+    expect(pickConnectedAiClient(['claude'], 'grok')).toBe('claude')
+  })
+
+  it('falls back to display order if the preferred connection is revoked', () => {
+    expect(pickConnectedAiClient(['grok', 'chatgpt'], 'claude')).toBe('chatgpt')
   })
 })
 

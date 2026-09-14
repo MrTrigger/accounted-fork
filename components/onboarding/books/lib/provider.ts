@@ -1,5 +1,7 @@
 'use client'
 
+import { waitForSIEJob } from '@/lib/import/sie-job-client'
+import type { SIEJob } from '@/lib/import/sie-job-contract'
 import { useEffect, useRef } from 'react'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 
@@ -122,7 +124,7 @@ export interface SieImportOutcome {
   warnings: string[]
 }
 
-export async function providerImportSie(rawContent: string, mappings: ProviderMapping[], voucherSeries: string | null): Promise<SieImportOutcome> {
+export async function providerImportSie(rawContent: string, mappings: ProviderMapping[], voucherSeries: string | null, onProgress?: (job: SIEJob) => void): Promise<SieImportOutcome> {
   const res = await fetch(`${ARCIM}/import-sie`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -134,6 +136,19 @@ export async function providerImportSie(rawContent: string, mappings: ProviderMa
   })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) throw fail(json, `HTTP ${res.status}`)
+  // SIE import backbone (2026-09-11): the handler admits a durable job and
+  // answers 202 with its id; the ledger is written by the worker. Wait for
+  // the terminal state here so the step keeps its one-call contract. A
+  // failed or paused job throws with the job's own message.
+  if (res.status === 202 && typeof json.importId === 'string') {
+    const result = await waitForSIEJob(json.importId, onProgress)
+    return {
+      success: result.success,
+      journalEntriesCreated: result.journalEntriesCreated ?? 0,
+      errors: result.errors ?? [],
+      warnings: result.warnings ?? [],
+    }
+  }
   return json as SieImportOutcome
 }
 

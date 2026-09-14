@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
+import { jobProgress, type JobPhase } from '../lib/job-progress'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { useCompanySettings } from '@/components/settings/useSettings'
 import { BRANCH_PROVIDERS } from '@/lib/onboarding-journey/branch'
@@ -64,6 +65,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const [accountsN, setAccountsN] = useState(0)
   const [regText, setRegText] = useState('')
   const [importError, setImportError] = useState<string | null>(null)
+  const [jobPhase, setJobPhase] = useState<JobPhase | null>(null)
   const apiRef = useRef<TheaterApi | null>(null)
   const timers = useRef<number[]>([])
   const at = useCallback((ms: number, fn: () => void) => { timers.current.push(window.setTimeout(fn, ms)) }, [])
@@ -161,7 +163,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const lines: TheaterLine[] = [
     { title: t('th_read_from', { company: companyName, provider: provName }), sub: t('fact_years', { count: years.length }), tone: 'ok' },
     { title: t('th_map'), sub: created ? t('th_map_sub_new', { count: accountsN, created }) : t('th_map_sub_known', { count: accountsN }) },
-    { title: t('th_write'), sub: t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: total.toLocaleString('sv-SE') }) },
+    { title: t('th_write'), sub: jobPhase === 'preparing' ? t('th_write_preparing', { total: total.toLocaleString('sv-SE') }) : jobPhase === 'checking' ? t('th_write_checking') : t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: total.toLocaleString('sv-SE') }) },
     { title: t('th_registers'), sub: regText },
     { title: t('th_balance'), sub: importError ?? t('th_balance_sub'), tone: importError ? 'err' : 'ok' },
   ]
@@ -205,14 +207,26 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
         const mappings = data.mappings.map((m) => (m.targetAccount ? m : { ...m, targetAccount: m.sourceAccount, targetName: m.sourceName, matchType: 'exact', confidence: 1, isOverride: true }))
         await new Promise((r) => at(1600, () => r(null)))
         setShown(3)
-        apiRef.current?.feedVouchers(Math.min(30000, Math.max(2600, data.rawContent.length * 6000)), Math.max(1, voucherTotal))
+        // The feed runs for as long as the job does; the count is held at
+        // what the worker has actually written (setFeedCap) so the line
+        // moves with the import instead of finishing a minute early.
+        apiRef.current?.feedVouchers(15 * 60_000, Math.max(1, voucherTotal))
+        apiRef.current?.setFeedCap(0)
+        setJobPhase('preparing')
         const importedAccounts: string[] = data.parsed.accounts.map((a) => a.number)
+        let writtenBefore = 0
         for (let i = 0; i < data.rawContent.length; i++) {
           const yearLabel = data.fileStatuses?.[i]?.fiscalYear
-          const result = await providerImportSie(data.rawContent[i], mappings, voucherSeries)
+          const result = await providerImportSie(data.rawContent[i], mappings, voucherSeries, (job) => {
+            const { written, phase } = jobProgress(job)
+            setJobPhase(phase)
+            apiRef.current?.setFeedCap(Math.min(voucherTotal, writtenBefore + written))
+          })
           if (!result.success) throw new Error(`${yearLabel ? `${t('year')} ${yearLabel}: ` : ''}${result.errors.join(' ') || t('provider_failed')}`)
+          writtenBefore += result.journalEntriesCreated ?? 0
           void invalidateReferenceData(['ref:accounts', 'ref:fiscal-periods'])
         }
+        setJobPhase(null)
         apiRef.current?.pulse()
         dispatch({ type: 'IMPORTED', accounts: importedAccounts })
         at(400, () => apiRef.current?.spawnCounterparties())
@@ -242,12 +256,15 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
       }
       await providerAccept(consentId)
       setShown(5)
+      apiRef.current?.settle()
       void loadFindings()
       await new Promise((r) => at(900, () => r(null)))
       setPhase('imported')
     } catch (err) {
       setImportError(err instanceof Error ? err.message : t('provider_failed'))
+      setJobPhase(null)
       setShown(5)
+      apiRef.current?.settle()
       setPhase('imported')
     } finally {
       dispatch({ type: 'SET_WORKING', working: false })
@@ -380,7 +397,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
 
       {phase === 'imported' && !importError ? (
         <div style={{ marginTop: 22 }}>
-          <InsightPanel ctx={ctx} base={300} />
+          <InsightPanel ctx={ctx} base={300} summary />
         </div>
       ) : null}
 

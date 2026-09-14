@@ -103,6 +103,10 @@
 
 /* momskoder in Genomlysning */
 .vatwrap { max-width: 520px; margin: 8px auto 0; text-align: left; padding-left: 26px; font-size: 12.5px; color: hsl(var(--muted-foreground)); }
+.insight-summary { max-width: 560px; margin: 0 auto; text-align: center; opacity: 0; animation: bksFadeIn 400ms var(--ease-out) 200ms forwards; }
+.insight-headline { margin: 0; font-size: 14px; line-height: 1.5; color: hsl(var(--foreground) / 0.85); }
+.insight-meta { margin: 6px 0 0; display: flex; justify-content: center; align-items: center; gap: 14px; font-size: 12.5px; }
+.insight-attn { color: hsl(var(--warning, 38 80% 45%)); }
 .vat { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; animation: jnyQIn 300ms var(--ease-out); }
 .vat li { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
 .vat .acc { flex: 1; color: hsl(var(--foreground)); min-width: 180px; }
@@ -257,7 +261,7 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 .th-line .sub { font-size: 12.5px; }
 
 /* the end: a few paper flecks, then the door */
-.confetti { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+.confetti { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
 .done-sub { font-size: 13px; color: hsl(var(--muted-foreground)); margin: 0 0 8px; }
 
 /* ── Ändra rows: label left, one control right; a stacked row puts its choices on their own line ── */
@@ -332,6 +336,20 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 .airow .n { flex: 1; }
 .airow .jny-btn { padding: 6px 16px; font-size: 12.5px; }
 .aidone { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 500; color: hsl(var(--success)); background: hsl(var(--success) / 0.1); animation: bksFadeIn 300ms var(--ease-out) forwards; }
+
+/* A verified connection pays off with the first live task from Att gora. */
+.aihandoff { max-width: 440px; margin: 24px auto 0; text-align: center; animation: bksFadeIn 300ms var(--ease-out) both; }
+.aihandoff-lead { margin: 0 0 12px; font-family: var(--font-display); font-size: 21px; line-height: 1.3; }
+.aihandoff-task { margin: 0 0 12px; font-size: 14px; line-height: 1.5; }
+.aihandoff-note { font-size: 13px; line-height: 1.6; color: hsl(var(--muted-foreground)); }
+.aihandoff .aihandoff-note { margin: 12px 0 0; }
+.aihandoff a, .aihandoff button, .bks-done .jny-qactions button, .bks-done .airow .jny-btn { min-height: 44px; }
+.aihandoff a, .aihandoff button { font-size: 13px; }
+.aihandoff a { white-space: normal; height: auto; text-align: center; }
+.aihandoff a[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.bks-done .jny-qactions { margin-top: 16px; }
+.bks .jny-pt { width: min(150px, 18vw); }
+.bks .jny-journey, .bks .jny-canvas { max-width: 100%; }
 
 /* ── reduced motion: every rule lands on its end state at once ────── */
 @media (prefers-reduced-motion: reduce) {

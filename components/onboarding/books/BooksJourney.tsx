@@ -13,6 +13,7 @@ import type { BooksCtx } from './context'
 import { SourceStep } from './steps/SourceStep'
 import { SieStep } from './steps/SieStep'
 import { ProviderStep } from './steps/ProviderStep'
+import { ResumeStep } from './steps/ResumeStep'
 import { InsightStep } from './steps/InsightStep'
 import { BankStep } from './steps/BankStep'
 import { SkvStep } from './steps/SkvStep'
@@ -31,6 +32,9 @@ interface BooksJourneyProps {
   skvConnected: boolean
   /** ?bank_error= or ?skv_error= text from a callback. */
   landedError: string | null
+  /** See BooksEntry.resumeImportId / hasBooks: read server-side on every load. */
+  resumeImportId: string | null
+  hasBooks: boolean
   hasMigration: boolean
   hasBanking: boolean
   hasSkatteverket: boolean
@@ -58,13 +62,16 @@ export default function BooksJourney(props: BooksJourneyProps) {
       landedFromProvider: props.landedFromProvider,
       selectAccounts: props.selectAccounts,
       skvConnected: props.skvConnected,
+      resumeImportId: props.resumeImportId,
+      hasBooks: props.hasBooks,
     }),
-    [props.initialStation, props.initialProvider, props.landedFromProvider, props.selectAccounts, props.skvConnected],
+    [props.initialStation, props.initialProvider, props.landedFromProvider, props.selectAccounts, props.skvConnected, props.resumeImportId, props.hasBooks],
   )
   const [state, dispatch] = useReducer(booksReducer, entry, initialState)
   const [findings, setFindings] = useState<BooksFindings | null>(null)
   const [loadingFindings, setLoadingFindings] = useState(false)
   const [leaving, setLeaving] = useState(false)
+  const [leaveError, setLeaveError] = useState(false)
   const station = stationOf(state.step)
 
   /* ── findings: the verdict every station ends on ─────────────────── */
@@ -92,14 +99,18 @@ export default function BooksJourney(props: BooksJourneyProps) {
     async (outcome: 'done' | 'skipped') => {
       if (leaving) return
       setLeaving(true)
+      setLeaveError(false)
       try {
-        await fetch('/api/onboarding/books/exit', {
+        const response = await fetch('/api/onboarding/books/exit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(state.path ? { outcome, path: state.path } : { outcome }),
         })
+        if (!response.ok) throw new Error('Onboarding exit failed')
       } catch {
-        // The cookie expires on its own; Hem opens either way.
+        setLeaveError(true)
+        setLeaving(false)
+        return
       }
       router.push('/')
       router.refresh()
@@ -158,6 +169,8 @@ export default function BooksJourney(props: BooksJourneyProps) {
         return <SieStep ctx={ctx} />
       case 'provider':
         return <ProviderStep ctx={ctx} />
+      case 'resume':
+        return <ResumeStep ctx={ctx} importId={props.resumeImportId ?? ''} />
       case 'insight':
         return <InsightStep ctx={ctx} />
       case 'bank':
@@ -185,6 +198,7 @@ export default function BooksJourney(props: BooksJourneyProps) {
         </div>
         <div className="bks-qarea" ref={areaRef} key={state.step}>
           {renderStep()}
+          {leaveError && <p className="mt-4 text-center text-sm text-destructive" role="alert">{t('exit_failed')}</p>}
         </div>
       </div>
     </div>

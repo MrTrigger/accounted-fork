@@ -19,7 +19,11 @@ import type { BooksFindings } from '@/lib/onboarding/findings'
  * OAuth sign-in (findings.ai.connected, polled by the Done step) shows a
  * green Ansluten mark instead of its button.
  */
-export function AiCard({ findings }: { findings: BooksFindings | null }) {
+export function AiCard({ findings, onConnect, showPrompts = true }: {
+  findings: BooksFindings | null
+  onConnect?: (client: AiClient) => void
+  showPrompts?: boolean
+}) {
   const t = useTranslations('books')
   const { appName } = useBranding()
   const { locale, formatDateLong } = useFormat()
@@ -42,6 +46,7 @@ export function AiCard({ findings }: { findings: BooksFindings | null }) {
   }
 
   function connect(client: AiClient) {
+    onConnect?.(client)
     const action = aiConnectAction(client, { origin: window.location.origin, appName })
     if (action.copy) void navigator.clipboard?.writeText(action.copy).catch(() => {})
     window.open(action.open, '_blank', 'noopener')
@@ -57,7 +62,7 @@ export function AiCard({ findings }: { findings: BooksFindings | null }) {
       <p className="aihead">{t('ai_head')}</p>
       {/* The card speaks: one bubble above it, one out of each side, each a prompt in quotes. */}
       <div className="aistage">
-        {prompts.map((p, i) => {
+        {showPrompts && prompts.map((p, i) => {
           const text = promptText(p.key, p.params)
           return (
             <span key={p.key} className={`aislot ${SLOTS[i] ?? 'is-top'}`}>

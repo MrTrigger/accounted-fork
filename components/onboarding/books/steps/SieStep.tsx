@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useTranslations } from 'next-intl'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
+import { waitForSIEJob } from '@/lib/import/sie-job-client'
+import { jobProgress, type JobPhase } from '../lib/job-progress'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { useCompanySettings } from '@/components/settings/useSettings'
 import { BRANCH_PROVIDERS } from '@/lib/onboarding-journey/branch'
@@ -69,6 +71,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const [model, setModel] = useState<TheaterModelInput | null>(null)
   const [shown, setShown] = useState(0)
   const [tick, setTick] = useState(0)
+  const [jobPhase, setJobPhase] = useState<JobPhase | null>(null)
   const [written, setWritten] = useState(0)
   const [fileIdx, setFileIdx] = useState(0)
   const [created, setCreated] = useState(0)
@@ -175,7 +178,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
   const lines: TheaterLine[] = [
     { title: t('th_read', { company: company ?? '' }), sub: t('fact_years', { count: nYears }), tone: 'ok' },
     { title: t('th_map'), sub: unmapped.length ? t('th_map_sub_new', { count: totalAccounts, created: created || unmapped.length }) : t('th_map_sub_known', { count: totalAccounts }) },
-    { title: t('th_write'), sub: ordered.length > 1 ? t('th_write_sub_files', { i: Math.min(fileIdx + 1, ordered.length), n: ordered.length, tick: tick.toLocaleString('sv-SE'), total: totalVouchers.toLocaleString('sv-SE') }) : t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: totalVouchers.toLocaleString('sv-SE') }) },
+    { title: t('th_write'), sub: jobPhase === 'preparing' ? t('th_write_preparing', { total: totalVouchers.toLocaleString('sv-SE') }) : jobPhase === 'checking' ? t('th_write_checking') : ordered.length > 1 ? t('th_write_sub_files', { i: Math.min(fileIdx + 1, ordered.length), n: ordered.length, tick: tick.toLocaleString('sv-SE'), total: totalVouchers.toLocaleString('sv-SE') }) : t('th_write_sub', { tick: tick.toLocaleString('sv-SE'), total: totalVouchers.toLocaleString('sv-SE') }) },
     { title: t('th_parties'), sub: model ? t('th_parties_sub', { count: model.counterparties.length }) : '' },
     { title: t('th_balance'), sub: importError ?? t('th_balance_sub'), tone: importError ? 'err' : 'ok' },
   ]
@@ -225,7 +228,11 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       }
       await new Promise((r) => at(2400, () => r(null)))
       setShown(3)
-      apiRef.current?.feedVouchers(Math.min(24000, Math.max(2600, totalVouchers * 4)), totalVouchers)
+      // Runs for as long as the job does; the count is held at what the
+      // worker has actually written (setFeedCap), see ProviderStep.
+      apiRef.current?.feedVouchers(15 * 60_000, Math.max(1, totalVouchers))
+      apiRef.current?.setFeedCap(0)
+      setJobPhase('preparing')
       let writtenSoFar = 0
       const importedAccounts: string[] = []
       for (let i = 0; i < ordered.length; i++) {
@@ -247,7 +254,17 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
         }))
         const res = await fetch('/api/import/sie/execute', { method: 'POST', body: fd })
         const data = await res.json().catch(() => ({}))
-        const result = (res.ok ? data.result : data?.error?.details?.result) as { success?: boolean; journalEntriesCreated?: number; errors?: string[] } | undefined
+        // SIE import backbone (2026-09-11): execute admits a durable job and
+        // answers 202 with its id; wait for the worker's terminal state. A
+        // failed or paused job throws with the job's own message.
+        const jobId = res.status === 202 ? (data?.data?.importId as string | undefined) : undefined
+        const result = (jobId
+          ? await waitForSIEJob(jobId, (job) => {
+              const { written, phase } = jobProgress(job)
+              setJobPhase(phase)
+              apiRef.current?.setFeedCap(Math.min(totalVouchers, writtenSoFar + written))
+            })
+          : (res.ok ? data.result : data?.error?.details?.result)) as { success?: boolean; journalEntriesCreated?: number; errors?: string[] } | undefined
         if (!res.ok && !result) throw new Error(getErrorMessage(data))
         if (!result?.success) throw new Error(result?.errors?.length ? result.errors.join(' ') : getErrorMessage(data))
         writtenSoFar += result.journalEntriesCreated ?? 0
@@ -255,12 +272,14 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
         for (const a of p.accounts) importedAccounts.push(a.number)
         void invalidateReferenceData(['ref:accounts', 'ref:fiscal-periods'])
       }
+      setJobPhase(null)
       apiRef.current?.pulse()
       setTick(totalVouchers)
       setShown(4)
       apiRef.current?.spawnCounterparties()
       await new Promise((r) => at(1300, () => r(null)))
       setShown(5)
+      apiRef.current?.settle()
       dispatch({ type: 'IMPORTED', accounts: importedAccounts })
       void loadFindings()
       await new Promise((r) => at(900, () => r(null)))
@@ -269,7 +288,9 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
       setReg(sieFirst ? 'card' : 'pick')
     } catch (err) {
       setImportError(err instanceof Error ? err.message : t('sie_failed'))
+      setJobPhase(null)
       setShown(5)
+      apiRef.current?.settle()
       setPhase('imported')
       dispatch({ type: 'SET_WORKING', working: false })
     }
@@ -501,7 +522,7 @@ export function SieStep({ ctx }: { ctx: BooksCtx }) {
 
       {canContinue ? (
         <div style={{ marginTop: 22 }}>
-          <InsightPanel ctx={ctx} base={300} />
+          <InsightPanel ctx={ctx} base={300} summary />
         </div>
       ) : null}
 

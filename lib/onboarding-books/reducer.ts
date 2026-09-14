@@ -6,7 +6,7 @@
  * straight into the right phase from the URL.
  */
 
-export type BooksStep = 'source' | 'sie' | 'provider' | 'insight' | 'bank' | 'skv' | 'done'
+export type BooksStep = 'source' | 'sie' | 'provider' | 'resume' | 'insight' | 'bank' | 'skv' | 'done'
 export type BooksStation = 0 | 1 | 2 | 3
 export type SourcePath = 'migration' | 'fresh' | null
 export type BankPhase = 'pick' | 'connecting' | 'authed' | 'fetching' | 'connected'
@@ -64,6 +64,7 @@ const STATION_OF: Record<BooksStep, BooksStation> = {
   source: 0,
   sie: 0,
   provider: 0,
+  resume: 0,
   insight: 0,
   bank: 1,
   skv: 2,
@@ -94,6 +95,10 @@ export interface BooksEntry {
   selectAccounts: string | null
   /** ?skv_connected=true from the Skatteverket callback. */
   skvConnected: boolean
+  /** An import job still running or paused on the server (lib/onboarding-books/resume). */
+  resumeImportId: string | null
+  /** Posted entries already exist: the books are here, whatever the browser remembers. */
+  hasBooks: boolean
 }
 
 export function initialState(entry: BooksEntry): BooksState {
@@ -118,10 +123,15 @@ export function initialState(entry: BooksEntry): BooksState {
   if (entry.station === 'skv') {
     return { ...base, step: 'skv', skvPhase: entry.skvConnected ? 'back' : 'open' }
   }
+  // The server's word beats the query string from here: a running import
+  // is followed, existing books open on the genomlysning (founder direction
+  // 2026-09-14: a reload must never restart at "Var fanns bokföringen?").
+  if (entry.resumeImportId) return { ...base, step: 'resume', path: 'migration' }
   if (entry.landedFromProvider || (entry.provider && !SIE_FIRST_PROVIDERS.has(entry.provider))) {
     return { ...base, step: 'provider', path: 'migration' }
   }
   if (entry.provider) return { ...base, step: 'sie', path: 'migration' }
+  if (entry.hasBooks) return { ...base, step: 'insight', path: 'migration', imported: true }
   return base
 }
 
@@ -192,6 +202,7 @@ export function booksReducer(state: BooksState, action: BooksAction): BooksState
       switch (state.step) {
         case 'sie':
         case 'provider':
+        case 'resume':
         case 'insight':
           return { ...state, step: 'source', provider: null, working: false }
         case 'bank':
