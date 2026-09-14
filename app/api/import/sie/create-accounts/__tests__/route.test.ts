@@ -97,6 +97,30 @@ describe('POST /api/import/sie/create-accounts', () => {
       .then(response => expect(response.status).toBe(400))
   })
 
+  it.each(['999', '193000'])('identifies rejected source account %s with localized mapping guidance', async number => {
+    const response = await POST(createMockRequest('/api/import/sie/create-accounts', {
+      method: 'POST', body: { accounts: [{ number: '1930', name: 'Bank' }, { number, name: 'Source' }] },
+    }), emptyParams)
+    expect(response.status).toBe(400)
+    const { error } = await response.json()
+    expect(error.details.issues[0]).toMatchObject({ field: 'accounts.1.number', sourceAccount: number })
+    expect(error.message).toBe(`Källkonto ${number}: Kontot kunde inte skapas. Välj ett målkonto med exakt fyra siffror i kontomappningen.`)
+    expect(error.message_en).toBe(`Source account ${number}: The account could not be created. Select a target account with exactly four digits in the account mapping step.`)
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  it.each(['9'.repeat(41), '<script>alert(1)</script>', 1930])('does not echo unbounded or non-string account metadata: %j', async number => {
+    const response = await POST(createMockRequest('/api/import/sie/create-accounts', {
+      method: 'POST', body: { accounts: [{ number, name: 'Source' }] },
+    }), emptyParams)
+    const { error } = await response.json()
+    expect(response.status).toBe(400)
+    expect(error.details.issues[0]).not.toHaveProperty('sourceAccount')
+    expect(error.message).not.toContain(String(number))
+    expect(error.message_en).not.toContain(String(number))
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
   it('returns 400 for malformed JSON before chart writes', async () => {
     const response = await POST(new Request('https://example.test/api/import/sie/create-accounts', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken',

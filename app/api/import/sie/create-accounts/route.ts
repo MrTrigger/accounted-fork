@@ -60,7 +60,19 @@ export const POST = withRouteContext(
     try {
       const body = await request.json()
       const checked = SIECreateAccountsSchema.safeParse(body)
-      if (!checked.success) return errorResponse(checked.error, log, { requestId })
+      if (!checked.success) {
+        return errorResponse(checked.error, log, { requestId, details: {
+          issues: checked.error.issues.map(issue => {
+            const number = issue.path[0] === 'accounts' && typeof issue.path[1] === 'number' &&
+              issue.path[2] === 'number' && Array.isArray(body?.accounts)
+              ? body.accounts[issue.path[1]]?.number : undefined
+            return {
+              field: issue.path.join('.'), message: issue.message, code: issue.code,
+              ...(typeof number === 'string' && /^\d{1,40}$/.test(number) ? { sourceAccount: number } : {}),
+            }
+          }),
+        } })
+      }
       const { accounts } = checked.data
 
       // Prepare accounts for upsert (idempotent, safe to retry)

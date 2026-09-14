@@ -466,7 +466,11 @@ export function getErrorMessage(
               ? item.sourceAccount : null
             if (item.message === ACCOUNT_NUMBER_MESSAGE) {
               const label = source ? (locale === 'en' ? `Source account ${source}` : `Källkonto ${source}`) : field
-              const message = field.endsWith('targetAccount')
+              const message = /^accounts\.\d+\.number$/.test(field)
+                ? locale === 'en'
+                  ? 'The account could not be created. Select a target account with exactly four digits in the account mapping step.'
+                  : 'Kontot kunde inte skapas. Välj ett målkonto med exakt fyra siffror i kontomappningen.'
+                : field.endsWith('targetAccount')
                 ? locale === 'en'
                   ? 'The target account must have exactly four digits. Select an account in the account mapping step.'
                   : 'Målkontot måste ha exakt fyra siffror. Välj ett konto i kontomappningen.'
