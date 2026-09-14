@@ -119,7 +119,7 @@ describe('SIE durable input boundaries', () => {
     if (stage !== 'new') enqueueMany([
       { data: { payload: [{ parsed: { ...parsed, vouchers: [] }, voucherGroups: 1, metadataGroups: 0,
         hasCurrentYearIb: false, sourceSeries: ['A'], openingBalanceVoucherCandidate: false }] } },
-      { data: [] }, { data: [] }, { data: { payload: [parsed.vouchers] } },
+      { data: [] }, { data: [] }, { data: { payload: [JSON.parse(JSON.stringify(parsed.vouchers))] } },
     ])
     supabase.storage.from('sie-files').download.mockResolvedValue({ data: new Blob([source]), error: null })
     await expect(prepareSIEJob(supabase as unknown as SupabaseClient, job, Infinity)).rejects.toMatchObject({

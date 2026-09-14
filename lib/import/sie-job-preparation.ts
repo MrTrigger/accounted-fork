@@ -228,9 +228,10 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
     if (Date.now() > deadline) return false
     const raw = await readCheckpoint<SIEVoucher[]>(supabase,job,SIE_CHECKPOINTS.snapshot+1+group)
     if (!raw) throw new Error('SIE source group missing')
-    validateSIEReportingMappings({...snapshot.parsed,vouchers:raw},accountMap,input.options)
+    const vouchers = raw.map(reviveVoucher)
+    validateSIEReportingMappings({...snapshot.parsed,vouchers},accountMap,input.options)
     const prepared = input.options.importTransactions ? await importVouchers(supabase,job.company_id,
-      job.execution_actor_id ?? job.user_id,job.fiscal_period_id,{...snapshot.parsed,vouchers:raw.map(reviveVoucher)},
+      job.execution_actor_id ?? job.user_id,job.fiscal_period_id,{...snapshot.parsed,vouchers},
       accountMap,input.options.voucherSeries ?? 'B',job.id,{startOrdinal:sourceOrdinal,only:true,
         hasCurrentYearIb:snapshot.hasCurrentYearIb,accountIds}) : null
     const entries = prepared?.preparedEntries ?? []
