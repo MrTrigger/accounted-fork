@@ -37,7 +37,7 @@ import { bookResidualAndLink, ReconciliationResidualError } from '@/lib/reconcil
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { validateVatNumber } from '@/lib/vat/vies-client'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
 } from '@/lib/customers/personal-number-shape'
@@ -49,6 +49,7 @@ import { resolveDefaultPaymentTerms } from '@/lib/customers/default-payment-term
 import {
   normalizeVatRateToDecimal,
   normalizeVatRateToFraction,
+  treatmentDeductsInputVat,
 } from '@/lib/vat/supplier-invoice-line-checks'
 import {
   createInvoicePaymentJournalEntry,
@@ -59,7 +60,7 @@ import {
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
-import { booksInvoicesOnIssue, cashPartialBlockReason, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
+import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
 import { propagateLegacyPayeeWrite } from '@/lib/cash-accounts/invoice-payee'
 import { createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
@@ -159,6 +160,7 @@ import {
   exceedsInvoiceEmailRecipientLimit,
   invoiceEmailRecipientCount,
   resolveInvoiceEmailRecipients,
+  resolveInvoiceReplyTo,
 } from '@/lib/invoices/email-recipients'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { convertToInvoice } from '@/lib/invoices/convert-to-invoice'
@@ -215,6 +217,8 @@ import { deleteDraftInvoice } from '@/lib/invoices/delete-draft-invoice'
 import { isEditableInvoiceDraft } from '@/lib/invoices/is-editable-draft'
 import { replaceInvoiceItems } from '@/lib/invoices/replace-invoice-items'
 import { applyRecurringScheduleUpdate } from '@/lib/invoices/apply-recurring-schedule-update'
+import { toRecurringScheduleItemRow } from '@/lib/invoices/recurring-schedule-items'
+import { periodPlaceholderProblem } from '@/lib/invoices/recurring-placeholders'
 import { BulkBookInboxSchema, OpeningBalancesBulkSchema } from '@/lib/api/schemas'
 import { ensureArticleNumber } from '@/lib/articles/ensure-article-number'
 import { isValidRevenueAccount } from '@/lib/articles/validate-revenue-account'
@@ -534,19 +538,16 @@ async function commitCreateCustomer(
     return { error: 'customer_number must be a string of at most 32 characters', status: 400 }
   }
 
-  // Same GDPR guard as CreateCustomerSchema: identifiers are only masked on
-  // customer_type='individual' rows, so a personnummer stored as a business
-  // org_number would be shown unmasked everywhere.
+  // Same guard as CreateCustomerSchema: a Swedish enskild firma's org number
+  // IS its owner's personnummer, so swedish_business accepts one (the lists
+  // mask it); only a foreign business, which cannot have one, refuses it.
   let orgNumber = (params.org_number as string) || null
-  if (
-    orgNumber &&
-    params.customer_type !== 'individual' &&
-    looksLikeSwedishPersonalNumber(orgNumber)
-  ) {
+  if (isPersonalNumberOrgNumberDisallowed(params.customer_type as string, orgNumber)) {
     return {
       error:
-        'org_number ser ut som ett personnummer. Skapa kunden som privatperson '
-        + '(customer_type=individual) i stället, så maskeras numret i listor.',
+        'org_number ser ut som ett personnummer, vilket ett utländskt företag inte kan ha. '
+        + 'Välj kundtypen svenskt företag (customer_type=swedish_business) för en enskild firma, '
+        + 'eller privatperson (customer_type=individual) och skicka numret som personal_number.',
       status: 400,
     }
   }
@@ -919,6 +920,7 @@ async function commitCreateRecurringSchedule(
       your_reference: validated.your_reference ?? null,
       our_reference: validated.our_reference ?? null,
       notes: validated.notes ?? null,
+      period_start: validated.period_start ?? null,
       auto_send: validated.auto_send,
       default_dimensions: validated.default_dimensions ?? {},
       next_run_date: nextRunDate,
@@ -931,16 +933,7 @@ async function commitCreateRecurringSchedule(
     return { error: insertError?.message ?? 'Failed to insert recurring schedule', status: 500 }
   }
 
-  const itemRows = validated.items.map((item, idx) => ({
-    schedule_id: schedule.id,
-    sort_order: idx,
-    description: item.description,
-    quantity: item.quantity,
-    unit: item.unit,
-    unit_price: item.unit_price,
-    vat_rate: item.vat_rate ?? null,
-    dimensions: item.dimensions ?? {},
-  }))
+  const itemRows = validated.items.map((item, idx) => toRecurringScheduleItemRow(schedule.id, item, idx))
 
   const { error: itemsError } = await supabase
     .from('recurring_invoice_schedule_items')
@@ -999,13 +992,27 @@ async function commitUpdateRecurringSchedule(
 
   const { data: existing, error: existingError } = await supabase
     .from('recurring_invoice_schedules')
-    .select('id, status, auto_send, customer_id, day_of_month, interval_months, next_run_date')
+    .select('id, status, auto_send, customer_id, day_of_month, interval_months, next_run_date, notes, period_start, items:recurring_invoice_schedule_items(description)')
     .eq('id', scheduleId)
     .eq('company_id', companyId)
     .maybeSingle()
 
   if (existingError) return { error: existingError.message, status: 500 }
   if (!existing) return { error: 'Recurring schedule not found', status: 404 }
+
+  // Same rule as PATCH /api/invoices/recurring/[id]: period placeholders in
+  // the texts that will be in effect need a period_start in effect.
+  const storedDescriptions = ((existing as { items?: Array<{ description: string }> | null }).items ?? [])
+    .map((item) => item.description)
+  const periodProblem = periodPlaceholderProblem({
+    notes: fieldChanges.notes !== undefined ? fieldChanges.notes : (existing as { notes?: string | null }).notes,
+    itemDescriptions: items ? items.map((item) => item.description) : storedDescriptions,
+    periodStart:
+      fieldChanges.period_start !== undefined
+        ? fieldChanges.period_start
+        : (existing as { period_start?: string | null }).period_start,
+  })
+  if (periodProblem) return { error: periodProblem, status: 400 }
 
   // Turning auto_send on (or moving the schedule to another customer) needs
   // the target customer checked: email when auto_send is effectively on
@@ -3045,7 +3052,6 @@ async function commitSendInvoice(
     configuredBcc: company.invoice_email_bcc_addresses,
     customerCc: customer.invoice_email_cc_addresses,
     customerBcc: customer.invoice_email_bcc_addresses,
-    legacyCc: company.email || userEmail,
   })
   if (exceedsInvoiceEmailRecipientLimit(recipients)) {
     return {
@@ -3162,7 +3168,8 @@ async function commitSendInvoice(
     isCreditNote,
   })
 
-  const emailData = { invoice: renderableInvoice, customer, company: company as CompanySettings }
+  const replyTo = resolveInvoiceReplyTo(company as CompanySettings, userEmail)
+  const emailData = { invoice: renderableInvoice, customer, company: company as CompanySettings, replyTo }
   const subject = generateInvoiceEmailSubject(emailData)
   const html = generateInvoiceEmailHtml(emailData)
   const text = generateInvoiceEmailText(emailData)
@@ -3181,7 +3188,7 @@ async function commitSendInvoice(
       subject,
       html,
       text,
-      replyTo: company.email || undefined,
+      replyTo,
       fromName: company.company_name,
       from: await resolveInvoiceSender(supabase, companyId, company.company_name),
       filename,
@@ -4877,6 +4884,11 @@ async function commitCreateSupplierInvoiceFromInbox(
   }
 
   const reverseCharge = vatTreatment === 'reverse_charge'
+  // Treatments under which no seller VAT may reach the books: reverse charge
+  // (the buyer self-assesses on 2614/2645) and exempt / export, where the
+  // supplier charged no Swedish moms at all so there is nothing deductible
+  // (issue #2553). Both take the same header and item treatment below.
+  const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
   // Omvänd skattskyldighet: the registration entry credits 2440 with the sum
   // of the line nets (the fiktiv 2614/2645 pair nets to zero), so that sum is
   // the only payable the reskontra can carry. Staging registers the net since
@@ -4885,10 +4897,13 @@ async function commitCreateSupplierInvoiceFromInbox(
   // reported invoice) and would leave remaining_amount 1149 against 919.20 in
   // the GL: never trust a staged header under reverse charge. VAT the seller
   // charged on a reverse-charge invoice is not deductible and is not booked.
+  // An exempt or export op is the same shape: the items below carry no VAT,
+  // so a staged header that still carries some would leave the reskontra
+  // above what the registration entry credits on 2440.
   const itemNetSum = rawItems.reduce((sum, item) => sum + (finite(item.line_total) ?? 0), 0)
-  const subtotalRounded = reverseCharge ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
-  const vatAmountRounded = reverseCharge ? 0 : Math.round(vatAmount * 100) / 100
-  const totalRounded = reverseCharge ? subtotalRounded : Math.round(total * 100) / 100
+  const subtotalRounded = noDeductibleSellerVat ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
+  const vatAmountRounded = noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100
+  const totalRounded = noDeductibleSellerVat ? subtotalRounded : Math.round(total * 100) / 100
   // Fed the already-rounded figures so a SEK invoice (rate 1) gets
   // total_sek === total to the öre instead of the two roundings disagreeing on
   // an exact-half value. The old `exchangeRate ? … : null` guard left all three
@@ -4991,12 +5006,18 @@ async function commitCreateSupplierInvoiceFromInbox(
   // the registration JE's 2614/2645 self-assessed leg lines up with rutor
   // 20-24 / 48 instead of double-counting input VAT into 2641. Tampered
   // params can't smuggle non-zero VAT into the items table.
+  //
+  // Exempt and export invoices take the same zeroing (issue #2553): the
+  // supplier charged no Swedish moms, so a rate that came from OCR, from a
+  // stale staged op or from the column's own 0.25 default has nothing to
+  // deduct behind it. The engine refuses to book 2641 for these treatments
+  // either way; storing 0 keeps the row honest about what the underlag says.
   const itemInserts = rawItems.map((item, idx) => {
     // Normalize percent-shaped rates (25 -> 0.25) and snap to the statutory
     // set: rows staged before the issue #310 fix (or tampered params) carry
     // percent integers, and inserting one books 2500 % VAT downstream.
-    const vatRate = reverseCharge ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
-    const vatAmt = reverseCharge ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
+    const vatRate = noDeductibleSellerVat ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
+    const vatAmt = noDeductibleSellerVat ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
     return {
       supplier_invoice_id: invoice.id,
       sort_order: idx,
@@ -5435,7 +5456,12 @@ async function commitCreditInvoice(
   }
 
   let journalEntryId: string | null = null
-  if (completeCreditNote && accountingMethod === 'accrual') {
+  // Kontantmetoden skips only while the original is still UNPAID: a paid one
+  // was already booked by its payment verifikat (revenue + 26xx utgående
+  // moms), and leaving that un-reversed overstates both. Same helper the
+  // dashboard and the v1 route use (issue #2552). `original` still carries the
+  // pre-credit status, which is what the decision needs.
+  if (completeCreditNote && creditNoteNeedsJournalEntry(accountingMethod, original)) {
     try {
       const journalEntry = await createCreditNoteJournalEntry(
         supabase,

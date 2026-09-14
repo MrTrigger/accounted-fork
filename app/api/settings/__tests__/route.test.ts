@@ -410,6 +410,60 @@ describe('PUT /api/settings', () => {
     ])
   })
 
+  it('rejects a reply-address change from a regular member', async () => {
+    enqueueMany([
+      { data: { entity_type: 'aktiebolag', onboarding_complete: true } },
+      { data: { role: 'member' }, error: null },
+    ])
+
+    const response = await PUT(createMockRequest('/api/settings', {
+      method: 'PUT',
+      body: { invoice_email_reply_to: 'svar@example.com' },
+    }), { params: Promise.resolve({}) })
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
+
+    expect(status).toBe(403)
+    expect(body.error.code).toBe('FORBIDDEN')
+  })
+
+  it('saves and clears the reply address for an admin', async () => {
+    enqueueMany([
+      { data: { entity_type: 'aktiebolag', onboarding_complete: true } },
+      { data: { role: 'admin' } },
+      { data: { id: 's1', invoice_email_reply_to: 'svar@example.com' } },
+      { data: null, count: 5 },
+    ])
+    const saved = await PUT(createMockRequest('/api/settings', {
+      method: 'PUT',
+      body: { invoice_email_reply_to: ' svar@example.com ' },
+    }), { params: Promise.resolve({}) })
+    expect((await parseJsonResponse<{ data: { invoice_email_reply_to: string } }>(saved)).body.data.invoice_email_reply_to)
+      .toBe('svar@example.com')
+
+    enqueueMany([
+      { data: { entity_type: 'aktiebolag', onboarding_complete: true } },
+      { data: { role: 'admin' } },
+      { data: { id: 's1', invoice_email_reply_to: null } },
+      { data: null, count: 5 },
+    ])
+    const cleared = await PUT(createMockRequest('/api/settings', {
+      method: 'PUT',
+      body: { invoice_email_reply_to: null },
+    }), { params: Promise.resolve({}) })
+    expect((await parseJsonResponse(cleared)).status).toBe(200)
+  })
+
+  it('rejects a malformed reply address', async () => {
+    enqueueMany([
+      { data: { entity_type: 'aktiebolag', onboarding_complete: true } },
+    ])
+    const response = await PUT(createMockRequest('/api/settings', {
+      method: 'PUT',
+      body: { invoice_email_reply_to: 'svara till mig' },
+    }), { params: Promise.resolve({}) })
+    expect((await parseJsonResponse(response)).status).toBe(400)
+  })
+
   it('rejects invoice payment instruction changes from a regular member', async () => {
     enqueueMany([
       { data: { entity_type: 'aktiebolag', onboarding_complete: true } },

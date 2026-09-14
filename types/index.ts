@@ -536,11 +536,13 @@ export interface CompanySettings {
 
   // Editable invoice email texts. null = all defaults.
   invoice_email_texts: InvoiceEmailTexts | null
-  // Fixed invoice-email recipients. null means the company has not configured
-  // the setting yet and keeps the historical automatic CC fallback. [] is an
-  // explicit choice to send no copies.
+  // Fixed invoice-email recipients. null and [] both mean no fixed copies
+  // (the company-email fallback ended with migration 20260914110000).
   invoice_email_cc_addresses?: string[] | null
   invoice_email_bcc_addresses?: string[] | null
+  // Reply-To for customer-facing invoice mail. null falls back to the company
+  // email, then to the sending user (resolveInvoiceReplyTo).
+  invoice_email_reply_to?: string | null
 
   // Automation
   send_invoice_reminders: boolean
@@ -1682,7 +1684,12 @@ export interface RecurringInvoiceSchedule {
   currency: Currency
   your_reference: string | null
   our_reference: string | null
+  // May use {månad}, {år}, {periodstart} ... (lib/invoices/recurring-placeholders.ts),
+  // substituted when the invoice is spawned.
   notes: string | null
+  // First day of the billing period the next generated invoice covers;
+  // advanced by interval_months after every run. null = no period.
+  period_start?: string | null
 
   // Dimension bag {sie_dim_no: code} copied onto every generated invoice's
   // default_dimensions at spawn time.
@@ -1709,6 +1716,10 @@ export interface RecurringInvoiceScheduleItem {
   id: string
   schedule_id: string
   sort_order: number
+  // 'text' = free-text/blank row copied onto the invoice as a text row
+  // (description only, no amounts). Rows from before the column default to
+  // 'product'.
+  line_type?: 'product' | 'text'
   description: string
   quantity: number
   unit: string

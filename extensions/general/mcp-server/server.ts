@@ -58,12 +58,14 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
 import { applyAccountOverride } from '@/lib/bookkeeping/account-override'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
+import { hasSIEFileExtension, SIE_FILE_EXTENSIONS_EN } from '@/lib/import/sie-file-extensions'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { dbError, errorCauseTag } from '@/lib/errors/db-error'
 import { getStructuredError } from '@/lib/errors/get-structured-error'
 import { applySettlementAccount } from '@/lib/bookkeeping/mapping-engine'
+import { creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildTransactionEntryLines, createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
 import { upsertCounterpartyTemplate, findCounterpartyTemplatesBatch, formatCounterpartyName } from '@/lib/bookkeeping/counterparty-templates'
@@ -118,9 +120,10 @@ import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { expandParty } from '@/lib/parties/party-api'
 import { listForCompany as listCashAccountsForCompany } from '@/lib/cash-accounts/service'
 import {
-  looksLikeSwedishPersonalNumber,
+  isPersonalNumberOrgNumberDisallowed,
   normalizeReroutedPersonalNumber,
   orgNumberHoldsPersonalNumber,
+  orgNumberIsPersonalIdentifier,
   personalNumberDigits,
 } from '@/lib/customers/personal-number-shape'
 import {
@@ -163,7 +166,10 @@ import {
   type McpToolNamespace,
 } from './tool-namespace'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
-import { normalizeVatRateToDecimal } from '@/lib/vat/supplier-invoice-line-checks'
+import {
+  normalizeVatRateToDecimal,
+  treatmentDeductsInputVat,
+} from '@/lib/vat/supplier-invoice-line-checks'
 import {
   COUNTRY_CONSISTENCY_MESSAGES,
   checkCountryConsistency,
@@ -6215,22 +6221,27 @@ export const tools: McpTool[] = [
       }
       rows.sort((a, b) => a.name.localeCompare(b.name, 'sv') || a.id.localeCompare(b.id))
 
-      // GDPR art. 5.1 c, same rule as the v1 list: an individual's
-      // personnummer never leaves this tool raw. personal_number is stored as
-      // ciphertext and is exposed only as personal_number_masked
-      // (********-1234); a legacy individual row that still carries the
-      // personnummer in org_number (written before the write paths started
-      // moving it into personal_number) shows it masked the same way, and its
-      // org_number is nulled rather than listed.
+      // GDPR art. 5.1 c, same rule as the v1 list: a natural person's
+      // identity number never leaves this tool raw. personal_number is stored
+      // as ciphertext and is exposed only as personal_number_masked
+      // (********-1234). An org_number that IS a personnummer is nulled and
+      // masked the same way: that covers a Swedish enskild firma (its org
+      // number is the owner's personnummer) and the legacy individual rows
+      // written before the write paths started moving it into personal_number.
+      // gnubok_get_customer, a deliberate drill-in to one record, still
+      // returns the full value.
       const customers = rows.map(({ personal_number, ...customer }) => {
-        if (customer.customer_type !== 'individual') return customer
-        const legacyInOrgNumber = orgNumberHoldsPersonalNumber(customer.customer_type, customer.org_number)
+        const orgNumberIsPersonal = orgNumberIsPersonalIdentifier(
+          customer.customer_type,
+          customer.org_number,
+        )
+        if (customer.customer_type !== 'individual' && !orgNumberIsPersonal) return customer
         return {
           ...customer,
-          org_number: legacyInOrgNumber ? null : customer.org_number,
+          org_number: orgNumberIsPersonal ? null : customer.org_number,
           personal_number_masked:
             maskStoredCustomerPersonalNumber(personal_number)
-            ?? (legacyInOrgNumber ? maskCustomerPersonalNumber(customer.org_number) : null),
+            ?? (orgNumberIsPersonal ? maskCustomerPersonalNumber(customer.org_number) : null),
         }
       })
 
@@ -6256,7 +6267,9 @@ export const tools: McpTool[] = [
         },
         customer_number: { type: 'string', maxLength: 32 },
         email: { type: 'string', description: 'Email address' },
-        org_number: { type: 'string', description: 'Swedish org number (business types). A personnummer belongs in personal_number.' },
+        // Kept no longer than the sentence it replaced: the tool catalog is
+        // within ~5 tokens of its payload-size ceiling (payload-size.bench).
+        org_number: { type: 'string', description: 'Swedish org number (business types). An enskild firma\'s is its personnummer.' },
         personal_number: { type: 'string', description: 'Personnummer for customer_type=individual. Encrypted at staging, masked on read.' },
         vat_number: { type: 'string', description: 'EU VAT number' },
         payment_terms: { type: 'number', description: 'Days. Default: the company setting, else 30.' },
@@ -6300,21 +6313,22 @@ export const tools: McpTool[] = [
         throw new Error('customer_number must be at most 32 characters.')
       }
 
-      // Identifiers. A personnummer belongs in personal_number on an
-      // individual and nowhere else. The business-type guard mirrors
-      // CreateCustomerSchema (nothing masks org_number, GDPR art. 5.1 c); a
-      // personnummer-shaped org_number on an individual is the personnummer
-      // submitted in the wrong field, which is all an agent COULD do before
-      // this tool had a personal_number input, so it is moved rather than
-      // refused. Everything is checked here, at staging, so the user never
-      // approves an operation that then fails at commit.
+      // Identifiers. A Swedish enskild firma's org number IS its owner's
+      // personnummer, so swedish_business accepts one (the list tool masks
+      // it); only a foreign business, which cannot have one, refuses it, the
+      // same predicate CreateCustomerSchema uses. A personnummer-shaped
+      // org_number on an individual is the personnummer submitted in the wrong
+      // field, which is all an agent COULD do before this tool had a
+      // personal_number input, so it is moved rather than refused. Everything
+      // is checked here, at staging, so the user never approves an operation
+      // that then fails at commit.
       const orgNumberArg = typeof args.org_number === 'string' ? args.org_number.trim() : ''
       const personalNumberArg = typeof args.personal_number === 'string' ? args.personal_number.trim() : ''
-      if (orgNumberArg && customerType !== 'individual' && looksLikeSwedishPersonalNumber(orgNumberArg)) {
+      if (isPersonalNumberOrgNumberDisallowed(customerType, orgNumberArg)) {
         throw new Error(
-          'org_number looks like a Swedish personal identity number (personnummer). Create the customer with '
-          + 'customer_type "individual" and pass the number as personal_number instead, so it is stored encrypted '
-          + 'and masked in lists.',
+          'org_number looks like a Swedish personal identity number (personnummer), which a foreign business '
+          + 'cannot have. Use customer_type "swedish_business" for a Swedish enskild firma, or "individual" with '
+          + 'the number passed as personal_number for a private person.',
         )
       }
       if (personalNumberArg && customerType !== 'individual') {
@@ -6532,11 +6546,11 @@ export const tools: McpTool[] = [
       if (error) throw dbError(error)
       if (!current) throw new Error('Customer not found.')
 
-      // Same guard as gnubok_create_customer and the REST PATCH route: only
-      // individual rows get their identifiers masked on read (GDPR art.
-      // 5.1 c), so a personnummer on a business customer is refused. Checked
-      // against the type the row will END UP with, so a simultaneous type
-      // change cannot smuggle one through.
+      // Same guard as gnubok_create_customer and the REST PATCH route: the
+      // personal_number column exists for privatpersoner only (a business
+      // keeps its identifier in org_number, an enskild firma included).
+      // Checked against the type the row will END UP with, so a simultaneous
+      // type change cannot smuggle one through.
       const effectiveCustomerType = (parsed.data.changes.customer_type ?? current.customer_type) as string
       if (personalNumber && effectiveCustomerType !== 'individual') {
         throw new Error('personal_number is only allowed for customer_type "individual".')
@@ -14003,6 +14017,11 @@ export const tools: McpTool[] = [
       // Paying it anyway or asking for a corrected invoice is a decision
       // taken against the underlag, not one this tool makes.
       const reverseCharge = vatTreatment === 'reverse_charge'
+      // Exempt (undantagen omsättning, ML 10 kap) and export purchases carry
+      // no Swedish moms either, so nothing on them is deductible ingående
+      // moms (issue #2553). The executor zeroes the same fields; staging
+      // mirrors it so the preview shows what will actually be written.
+      const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
 
       // FX: a non-SEK invoice needs a rate before approve can post it (the
       // executor refuses with SI_FX_RATE_MISSING otherwise). Resolved through
@@ -14118,9 +14137,10 @@ export const tools: McpTool[] = [
         }
       })
 
-      // Under reverse charge no line carries seller VAT: the executor zeroes
-      // the item rows too, so the staged preview shows what will be written.
-      const lineItems = reverseCharge
+      // Under reverse charge, and under exempt / export, no line carries
+      // deductible seller VAT: the executor zeroes the item rows too, so the
+      // staged preview shows what will be written.
+      const lineItems = noDeductibleSellerVat
         ? extractedLineItems.map((li) => ({ ...li, vat_rate: 0, vat_amount: 0 }))
         : extractedLineItems
 
@@ -14148,20 +14168,26 @@ export const tools: McpTool[] = [
           ? roundOre(subtotal)
           : roundOre(total - extractedVatHeader)
       const payableRecomputed =
-        reverseCharge && (sellerChargedVat !== 0 || roundOre(total) !== payableNet)
+        noDeductibleSellerVat && (sellerChargedVat !== 0 || roundOre(total) !== payableNet)
           ? {
-              reason: 'reverse_charge' as const,
+              reason: (reverseCharge ? 'reverse_charge' : vatTreatment) as string,
               extracted_subtotal: roundOre(subtotal),
               extracted_vat: sellerChargedVat,
               extracted_total: roundOre(total),
               payable_total: payableNet,
             }
           : null
+      // The reverse-charge copy names the self-assessment; exempt and export
+      // have no self-assessed leg at all, so their copy says the plainer
+      // thing: nothing on the invoice is deductible ingående moms (#2553).
+      const treatmentLabel = reverseCharge ? 'Omvänd skattskyldighet' : `vat_treatment '${vatTreatment}'`
       const payableWarning = !payableRecomputed
         ? null
-        : sellerChargedVat !== 0
+        : reverseCharge && sellerChargedVat !== 0
           ? `Omvänd skattskyldighet: the seller charged VAT ${sellerChargedVat} on this invoice (document total ${roundOre(total)}), which a reverse-charge supply must not carry. Only the net ${payableNet} is registered as payable on 2440: the buyer self-assesses the VAT (2614/2645), and VAT the seller charged is not deductible ingående moms, so it is not booked. Paying the seller's VAT anyway or asking for a corrected invoice is a decision to take against the underlag, not one this tool makes.`
-          : `Omvänd skattskyldighet: the document total ${roundOre(total)} differs from the sum of the line nets ${payableNet}. The net is registered as payable on 2440 so the reskontra matches the registration entry; verify the lines against the underlag.`
+          : sellerChargedVat !== 0
+            ? `${treatmentLabel}: the underlag carries VAT ${sellerChargedVat} (document total ${roundOre(total)}), but a supply under this treatment carries no Swedish moms, so none of it is deductible ingående moms and none is booked on 2641. Only the net ${payableNet} is registered as payable on 2440. If the supplier really did charge Swedish moms, the treatment is wrong: re-run with the right vat_treatment_override.`
+            : `${treatmentLabel}: the document total ${roundOre(total)} differs from the sum of the line nets ${payableNet}. The net is registered as payable on 2440 so the reskontra matches the registration entry; verify the lines against the underlag.`
 
       const params = {
         inbox_item_id: inboxItemId,
@@ -14173,9 +14199,9 @@ export const tools: McpTool[] = [
         currency,
         exchange_rate: exchangeRate,
         vat_treatment: vatTreatment,
-        subtotal: reverseCharge ? payableNet : Math.round(subtotal * 100) / 100,
-        vat_amount: reverseCharge ? 0 : Math.round(vatAmount * 100) / 100,
-        total: reverseCharge ? payableNet : Math.round(total * 100) / 100,
+        subtotal: noDeductibleSellerVat ? payableNet : Math.round(subtotal * 100) / 100,
+        vat_amount: noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100,
+        total: noDeductibleSellerVat ? payableNet : Math.round(total * 100) / 100,
         notes: (args.notes as string | undefined) ?? null,
         items: lineItems,
         ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
@@ -19113,13 +19139,13 @@ export const tools: McpTool[] = [
     name: 'gnubok_credit_invoice',
     keywords: ['kreditfaktura', 'kreditera', 'kundfaktura'],
     title: 'Credit Customer Invoice (Kreditfaktura)',
-    description: 'Stage credit note (kreditfaktura) for a customer invoice: KR- prefixed mirror invoice + reverses original JE (accrual). Original must be sent/paid/overdue and not already credited.',
+    description: 'Stage credit note (kreditfaktura) for a customer invoice: KR- mirror + reverses the original JE once the sale reached the ledger (kontantmetoden: at payment). Original must be sent/paid/overdue, not credited.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        invoice_id: { type: 'string', description: 'UUID of the invoice to credit' },
-        reason: { type: 'string', description: 'Optional reason note (Swedish, shown on the credit note)' },
+        invoice_id: { type: 'string', description: 'Invoice to credit' },
+        reason: { type: 'string', description: 'Reason note (Swedish), shown on the credit note' },
       },
       required: ['invoice_id'],
     },
@@ -19130,10 +19156,20 @@ export const tools: McpTool[] = [
       const reason = args.reason as string | undefined
       if (!id) throw new Error('invoice_id is required')
 
-      const { data: inv } = await supabase
-        .from('invoices')
-        .select('id, invoice_number, document_type, status, total, currency, customer:customers(name)')
-        .eq('id', id).eq('company_id', companyId).single()
+      // The booked-ness fields decide whether approval will post a verifikat:
+      // the preview must say which, so the agent never promises "nothing is
+      // booked" for a paid kontantmetod invoice (issue #2552).
+      const [{ data: inv }, { data: settings }] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('id, invoice_number, document_type, status, total, currency, journal_entry_id, paid_at, paid_amount, customer:customers(name)')
+          .eq('id', id).eq('company_id', companyId).single(),
+        supabase
+          .from('company_settings')
+          .select('accounting_method')
+          .eq('company_id', companyId)
+          .maybeSingle(),
+      ])
 
       if (!inv) throw new Error('Invoice not found')
       if (inv.document_type && inv.document_type !== 'invoice') {
@@ -19144,6 +19180,11 @@ export const tools: McpTool[] = [
         throw new Error('Endast skickade, betalda eller förfallna fakturor kan krediteras')
       }
 
+      const postsJournalEntry = creditNoteNeedsJournalEntry(
+        (settings as { accounting_method?: string | null } | null)?.accounting_method || 'accrual',
+        inv,
+      )
+
       return stagePendingOperation(supabase, companyId, userId, 'credit_invoice',
         `Kreditera faktura ${inv.invoice_number}`,
         { invoice_id: id, reason },
@@ -19153,11 +19194,16 @@ export const tools: McpTool[] = [
           total: inv.total,
           currency: inv.currency,
           reason: reason || null,
-          method: 'creates KR- mirror invoice + reverses original JE (accrual)',
+          posts_journal_entry: postsJournalEntry,
+          method: postsJournalEntry
+            ? 'creates KR- mirror invoice + reverses the original JE (debit 30xx + 26xx, credit 1510)'
+            : 'creates KR- mirror invoice only: the kontantmetod original is unpaid and was never booked',
         },
         actor,
         {
-          description: 'After approval the credit note posts and the kundfordring is cleared. If a refund is owed to the customer, book the outbound payment when it leaves the bank.',
+          description: postsJournalEntry
+            ? 'After approval the credit note posts and the kundfordring is cleared. If a refund is owed to the customer, book the outbound payment when it leaves the bank.'
+            : 'After approval the credit note is created without a verifikat: the unpaid kontantmetod original never reached the ledger, so there is nothing to reverse.',
           tool: 'gnubok_get_ar_ledger',
         }
       )
@@ -19650,9 +19696,8 @@ export const tools: McpTool[] = [
     },
     async execute(args, companyId, userId, supabase) {
       const fileName = args.filename as string
-      const lower = fileName.toLowerCase()
-      if (!lower.endsWith('.se') && !lower.endsWith('.sie') && !lower.endsWith('.si')) {
-        throw codedError('VALIDATION_ERROR', 'filename must end in .se, .sie or .si')
+      if (!hasSIEFileExtension(fileName)) {
+        throw codedError('VALIDATION_ERROR', `filename must end in ${SIE_FILE_EXTENSIONS_EN}`)
       }
       const uploadId = crypto.randomUUID()
       const reservation = await createPendingDocumentUpload(supabase, companyId, userId, uploadId, fileName)
@@ -21741,6 +21786,7 @@ export const tools: McpTool[] = [
         currency: { type: 'string' },
         auto_send: { type: 'boolean' },
         next_run_date: { type: 'string' },
+        period_start: { type: ['string', 'null'], description: 'First day of the billing period the next invoice covers; null = no period' },
         last_run_at: { type: ['string', 'null'] },
         last_invoice_id: { type: ['string', 'null'], description: 'Most recently generated invoice' },
         last_run_warning: { type: ['string', 'null'] },
@@ -21755,6 +21801,7 @@ export const tools: McpTool[] = [
           items: {
             type: 'object',
             properties: {
+              line_type: { type: 'string', enum: ['product', 'text'] },
               description: { type: 'string' },
               quantity: { type: 'number' },
               unit: { type: 'string' },
@@ -21776,7 +21823,7 @@ export const tools: McpTool[] = [
       let query = supabase
         .from('recurring_invoice_schedules')
         .select(
-          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, auto_send, default_dimensions, next_run_date, last_run_at, last_invoice_id, last_run_warning, generated_count, customer:customers(name), items:recurring_invoice_schedule_items(description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
+          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, auto_send, default_dimensions, next_run_date, period_start, last_run_at, last_invoice_id, last_run_warning, generated_count, customer:customers(name), items:recurring_invoice_schedule_items(line_type, description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
           { count: 'exact' },
         )
         .eq('company_id', companyId)
@@ -21798,6 +21845,7 @@ export const tools: McpTool[] = [
           .slice()
           .sort((a, b) => Number(a.sort_order) - Number(b.sort_order))
           .map((it) => ({
+            line_type: it.line_type ?? 'product',
             description: it.description,
             quantity: it.quantity,
             unit: it.unit,
@@ -21820,6 +21868,7 @@ export const tools: McpTool[] = [
           currency: row.currency,
           auto_send: row.auto_send,
           next_run_date: row.next_run_date,
+          period_start: row.period_start ?? null,
           last_run_at: row.last_run_at ?? null,
           last_invoice_id: row.last_invoice_id ?? null,
           last_run_warning: row.last_run_warning ?? null,
@@ -21879,7 +21928,11 @@ export const tools: McpTool[] = [
         currency: { type: 'string', enum: ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK'], description: 'Default SEK.' },
         your_reference: { type: 'string' },
         our_reference: { type: 'string' },
-        notes: { type: 'string' },
+        notes: { type: 'string', description: 'Printed on every generated invoice. Placeholders in notes and line descriptions are substituted when each invoice is created: {månad} {nästa månad} {föregående månad} {år} (month names in the customer language) and, when period_start is set, {periodstart} {periodslut} (last day of the period) {nästa periodstart}.' },
+        period_start: {
+          type: 'string',
+          description: 'YYYY-MM-DD first day of the billing period the first invoice covers. Advances by interval_months after every run. Required when {periodstart}/{periodslut}/{nästa periodstart} are used.',
+        },
         auto_send: {
           type: 'boolean',
           description: 'Default false: invoices are created as drafts for manual review. true emails every generated invoice to the customer with no further approval; requires the customer to have an email address.',
@@ -21900,7 +21953,8 @@ export const tools: McpTool[] = [
           items: {
             type: 'object',
             properties: {
-              description: { type: 'string' },
+              line_type: { type: 'string', enum: ['product', 'text'], description: "Default product. text = free-text or blank row copied onto every invoice as a text row (description only, may be empty; quantity/unit/unit_price ignored, never booked). At least one product row is required." },
+              description: { type: 'string', description: 'May use the placeholders listed under notes.' },
               quantity: { type: 'number' },
               unit: { type: 'string', description: 'st, tim, dag, mån. Default st.' },
               unit_price: { type: 'number', description: 'Price per unit excl. VAT.' },
@@ -21959,6 +22013,7 @@ export const tools: McpTool[] = [
         'your_reference',
         'our_reference',
         'notes',
+        'period_start',
         'auto_send',
         'start_date',
       ]) {
@@ -22082,7 +22137,11 @@ export const tools: McpTool[] = [
         currency: { type: 'string', enum: ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK'] },
         your_reference: { type: ['string', 'null'], description: 'Null clears the field.' },
         our_reference: { type: ['string', 'null'], description: 'Null clears the field.' },
-        notes: { type: ['string', 'null'], description: 'Null clears the field.' },
+        notes: { type: ['string', 'null'], description: 'Null clears the field. Placeholders in notes and line descriptions are substituted when each invoice is created: {månad} {nästa månad} {föregående månad} {år} (month names in the customer language) and, when period_start is set, {periodstart} {periodslut} (last day of the period) {nästa periodstart}.' },
+        period_start: {
+          type: ['string', 'null'],
+          description: 'YYYY-MM-DD first day of the billing period the NEXT invoice covers; advances by interval_months after every run. Null clears it (then the period placeholders must not be used).',
+        },
         auto_send: {
           type: 'boolean',
           description: 'true emails every generated invoice with no further approval (requires customer email). false returns to draft-only.',
@@ -22108,7 +22167,8 @@ export const tools: McpTool[] = [
           items: {
             type: 'object',
             properties: {
-              description: { type: 'string' },
+              line_type: { type: 'string', enum: ['product', 'text'], description: 'Default product. text = free-text/blank row (description only, no amounts). At least one product row is required.' },
+              description: { type: 'string', description: 'May use the placeholders listed under notes.' },
               quantity: { type: 'number' },
               unit: { type: 'string', description: 'st, tim, dag, mån. Default st.' },
               unit_price: { type: 'number', description: 'Price per unit excl. VAT.' },
@@ -22164,6 +22224,7 @@ export const tools: McpTool[] = [
         'your_reference',
         'our_reference',
         'notes',
+        'period_start',
         'auto_send',
         'status',
         'next_run_date',
@@ -22192,7 +22253,7 @@ export const tools: McpTool[] = [
       const { data: current, error } = await supabase
         .from('recurring_invoice_schedules')
         .select(
-          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, your_reference, our_reference, notes, auto_send, default_dimensions, next_run_date, customer:customers(name, email), items:recurring_invoice_schedule_items(description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
+          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, your_reference, our_reference, notes, period_start, auto_send, default_dimensions, next_run_date, customer:customers(name, email), items:recurring_invoice_schedule_items(line_type, description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
         )
         .eq('id', parsed.data.schedule_id)
         .eq('company_id', companyId)

@@ -219,6 +219,15 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
         'Every line carries one non-negative side: move a negative debit to credit_amount (and vice versa) before retrying.',
     },
   },
+  JOURNAL_LINE_BOTH_SIDES_NONZERO: {
+    httpStatus: 400,
+    message_sv: 'En verifikationsrad kan inte ha både debet och kredit nollskilda.',
+    message_en: 'A journal entry line cannot have both debit and credit non-zero.',
+    remediation: {
+      description:
+        'Every line carries one side: net the two amounts onto the larger side, or split the line in two, before retrying.',
+    },
+  },
   FISCAL_PERIOD_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Räkenskapsperioden kunde inte hittas.',
@@ -2308,8 +2317,8 @@ const SIE_IMPORT: Record<string, StructuredErrorEntry> = {
   },
   SIE_PARSE_INVALID_TYPE: {
     httpStatus: 400,
-    message_sv: 'Filtypen stöds inte. Ladda upp en fil med ändelsen .sie eller .se.',
-    message_en: 'Unsupported file type; upload a .sie or .se file.',
+    message_sv: 'Filtypen stöds inte. Ladda upp en fil med ändelsen .se, .sie eller .si.',
+    message_en: 'Unsupported file type; upload a .se, .sie or .si file.',
   },
   SIE_PARSE_FILE_TOO_LARGE: {
     httpStatus: 400,
@@ -3084,9 +3093,9 @@ const ARTICLE: Record<string, StructuredErrorEntry> = {
   CUSTOMER_ORG_NUMBER_IS_PERSONAL: {
     httpStatus: 400,
     message_sv:
-      'Organisationsnumret ser ut som ett personnummer. Spara kunden som privatperson i stället, så lagras numret skyddat och maskeras i listor.',
+      'Organisationsnumret ser ut som ett personnummer, vilket ett utländskt företag inte kan ha. Välj kundtypen Svenskt företag för en enskild firma, eller Privatperson för en privatperson.',
     message_en:
-      'The org number looks like a Swedish personal identity number. Save the customer as an individual instead, so the number is stored protected and masked in lists.',
+      'The org number looks like a Swedish personal identity number, which a foreign business cannot have. Choose the customer type Swedish business for a sole trader, or Individual for a private person.',
   },
   CUSTOMER_COUNTRY_MISMATCH: {
     httpStatus: 400,
