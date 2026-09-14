@@ -29,7 +29,10 @@ When this is done, the following is true for every company on Accounted:
    settings checks against registrations and decisions, year-end notes with sources.
 7. Agents read all of it through six tools with stable ids and citations, and curate it by
    proposing changes that people (or a deterministic policy) apply. Nothing an agent does
-   touches the journal.
+   touches the journal. This covers receipts and invoices too: an agent that opens a verifikat
+   gets every attachment as a record (fields with page and text span, the page text, the
+   links), and from a document it reaches the verifikat it supports. The phase 1 backfill
+   gives documents already in the archive their page text.
 8. Underlag stays the queue for what must become a verifikat. Arkiv is the place that grows.
 9. Every step that changes how documents are treated (schema, model, prompt, rule) is an
    event in the same log the behandlingshistorik report reads.
