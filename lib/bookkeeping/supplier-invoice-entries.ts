@@ -38,6 +38,17 @@ const log = createLogger('supplier-invoice-entries')
 export const SI_FX_RATE_MISSING = 'SI_FX_RATE_MISSING' as const
 
 /**
+ * BAS account credited for a supplier payment when the caller names none.
+ * 1930 Företagskonto is the default business bank account in the BAS chart.
+ *
+ * Every surface that books or previews a supplier payment resolves the credit
+ * account the same way: an explicit account wins, otherwise this. Named here
+ * so no route re-spells '1930' and quietly drifts from the generators, which
+ * are the only place that fallback may be decided. Issue #2550.
+ */
+export const DEFAULT_SUPPLIER_PAYMENT_ACCOUNT = '1930' as const
+
+/**
  * Raised when a booking path is asked to translate a foreign-currency supplier
  * invoice that has no usable exchange rate.
  *
@@ -296,7 +307,7 @@ export async function createSupplierInvoicePaymentEntry(
   supplierName?: string,
   paymentAccount?: string
 ): Promise<JournalEntry | null> {
-  const creditAccount = paymentAccount || '1930'
+  const creditAccount = paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
   if (!fiscalPeriodId) {
     log.warn('No open fiscal period found for payment date:', paymentDate)
@@ -407,7 +418,7 @@ export async function createSupplierInvoiceCashEntry(
   // behaviour is byte-identical to before.
   settledBankSek?: number
 ): Promise<JournalEntry | null> {
-  const creditAccount = paymentAccount || '1930'
+  const creditAccount = paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
   if (!fiscalPeriodId) {
     log.warn('No open fiscal period found for payment date:', paymentDate)
