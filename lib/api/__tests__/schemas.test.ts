@@ -997,6 +997,70 @@ describe('CreateSupplierInvoiceSchema', () => {
     )
     expect(result.success).toBe(true)
   })
+
+  // Issue #2553: the per-item vat_amount ceiling assumes 25 % when a line
+  // omits vat_rate; only the parent sees the vat_treatment that actually
+  // decides the rate.
+  describe('vat_treatment cross-field rules', () => {
+    for (const treatment of ['exempt', 'export'] as const) {
+      it(`rejects a non-zero vat_rate under vat_treatment '${treatment}'`, () => {
+        const result = CreateSupplierInvoiceSchema.safeParse(
+          validSupplierInvoice({
+            vat_treatment: treatment,
+            items: [validSupplierInvoiceItem({ vat_rate: 0.25 })],
+          })
+        )
+        expect(result.success).toBe(false)
+        expect(result.error?.issues.some((i) => i.path.join('.') === 'items.0.vat_rate')).toBe(true)
+      })
+
+      it(`rejects a non-zero vat_amount under vat_treatment '${treatment}'`, () => {
+        const result = CreateSupplierInvoiceSchema.safeParse(
+          validSupplierInvoice({
+            vat_treatment: treatment,
+            items: [validSupplierInvoiceItem({ vat_amount: 1250 })],
+          })
+        )
+        expect(result.success).toBe(false)
+        expect(result.error?.issues.some((i) => i.path.join('.') === 'items.0.vat_amount')).toBe(true)
+      })
+
+      it(`accepts a ${treatment} invoice whose lines carry no VAT at all`, () => {
+        const result = CreateSupplierInvoiceSchema.safeParse(
+          validSupplierInvoice({ vat_treatment: treatment })
+        )
+        expect(result.success).toBe(true)
+      })
+    }
+
+    it('caps a manual vat_amount at the reduced_12 rate when the line omits vat_rate', () => {
+      // 5000 x 0.12 = 600; the item-level check alone would allow up to 1250.
+      const over = CreateSupplierInvoiceSchema.safeParse(
+        validSupplierInvoice({
+          vat_treatment: 'reduced_12',
+          items: [validSupplierInvoiceItem({ vat_amount: 1250 })],
+        })
+      )
+      expect(over.success).toBe(false)
+      const ok = CreateSupplierInvoiceSchema.safeParse(
+        validSupplierInvoice({
+          vat_treatment: 'reduced_12',
+          items: [validSupplierInvoiceItem({ vat_amount: 600 })],
+        })
+      )
+      expect(ok.success).toBe(true)
+    })
+
+    it('leaves standard_25 alone', () => {
+      const result = CreateSupplierInvoiceSchema.safeParse(
+        validSupplierInvoice({
+          vat_treatment: 'standard_25',
+          items: [validSupplierInvoiceItem({ vat_rate: 0.25, vat_amount: 1250 })],
+        })
+      )
+      expect(result.success).toBe(true)
+    })
+  })
 })
 
 describe('CreateSupplierInvoiceItemSchema', () => {

@@ -162,7 +162,10 @@ import {
   type McpToolNamespace,
 } from './tool-namespace'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
-import { normalizeVatRateToDecimal } from '@/lib/vat/supplier-invoice-line-checks'
+import {
+  normalizeVatRateToDecimal,
+  treatmentDeductsInputVat,
+} from '@/lib/vat/supplier-invoice-line-checks'
 import {
   COUNTRY_CONSISTENCY_MESSAGES,
   checkCountryConsistency,
@@ -14002,6 +14005,11 @@ export const tools: McpTool[] = [
       // Paying it anyway or asking for a corrected invoice is a decision
       // taken against the underlag, not one this tool makes.
       const reverseCharge = vatTreatment === 'reverse_charge'
+      // Exempt (undantagen omsättning, ML 10 kap) and export purchases carry
+      // no Swedish moms either, so nothing on them is deductible ingående
+      // moms (issue #2553). The executor zeroes the same fields; staging
+      // mirrors it so the preview shows what will actually be written.
+      const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
 
       // FX: a non-SEK invoice needs a rate before approve can post it (the
       // executor refuses with SI_FX_RATE_MISSING otherwise). Resolved through
@@ -14117,9 +14125,10 @@ export const tools: McpTool[] = [
         }
       })
 
-      // Under reverse charge no line carries seller VAT: the executor zeroes
-      // the item rows too, so the staged preview shows what will be written.
-      const lineItems = reverseCharge
+      // Under reverse charge, and under exempt / export, no line carries
+      // deductible seller VAT: the executor zeroes the item rows too, so the
+      // staged preview shows what will be written.
+      const lineItems = noDeductibleSellerVat
         ? extractedLineItems.map((li) => ({ ...li, vat_rate: 0, vat_amount: 0 }))
         : extractedLineItems
 
@@ -14147,20 +14156,26 @@ export const tools: McpTool[] = [
           ? roundOre(subtotal)
           : roundOre(total - extractedVatHeader)
       const payableRecomputed =
-        reverseCharge && (sellerChargedVat !== 0 || roundOre(total) !== payableNet)
+        noDeductibleSellerVat && (sellerChargedVat !== 0 || roundOre(total) !== payableNet)
           ? {
-              reason: 'reverse_charge' as const,
+              reason: (reverseCharge ? 'reverse_charge' : vatTreatment) as string,
               extracted_subtotal: roundOre(subtotal),
               extracted_vat: sellerChargedVat,
               extracted_total: roundOre(total),
               payable_total: payableNet,
             }
           : null
+      // The reverse-charge copy names the self-assessment; exempt and export
+      // have no self-assessed leg at all, so their copy says the plainer
+      // thing: nothing on the invoice is deductible ingående moms (#2553).
+      const treatmentLabel = reverseCharge ? 'Omvänd skattskyldighet' : `vat_treatment '${vatTreatment}'`
       const payableWarning = !payableRecomputed
         ? null
-        : sellerChargedVat !== 0
+        : reverseCharge && sellerChargedVat !== 0
           ? `Omvänd skattskyldighet: the seller charged VAT ${sellerChargedVat} on this invoice (document total ${roundOre(total)}), which a reverse-charge supply must not carry. Only the net ${payableNet} is registered as payable on 2440: the buyer self-assesses the VAT (2614/2645), and VAT the seller charged is not deductible ingående moms, so it is not booked. Paying the seller's VAT anyway or asking for a corrected invoice is a decision to take against the underlag, not one this tool makes.`
-          : `Omvänd skattskyldighet: the document total ${roundOre(total)} differs from the sum of the line nets ${payableNet}. The net is registered as payable on 2440 so the reskontra matches the registration entry; verify the lines against the underlag.`
+          : sellerChargedVat !== 0
+            ? `${treatmentLabel}: the underlag carries VAT ${sellerChargedVat} (document total ${roundOre(total)}), but a supply under this treatment carries no Swedish moms, so none of it is deductible ingående moms and none is booked on 2641. Only the net ${payableNet} is registered as payable on 2440. If the supplier really did charge Swedish moms, the treatment is wrong: re-run with the right vat_treatment_override.`
+            : `${treatmentLabel}: the document total ${roundOre(total)} differs from the sum of the line nets ${payableNet}. The net is registered as payable on 2440 so the reskontra matches the registration entry; verify the lines against the underlag.`
 
       const params = {
         inbox_item_id: inboxItemId,
@@ -14172,9 +14187,9 @@ export const tools: McpTool[] = [
         currency,
         exchange_rate: exchangeRate,
         vat_treatment: vatTreatment,
-        subtotal: reverseCharge ? payableNet : Math.round(subtotal * 100) / 100,
-        vat_amount: reverseCharge ? 0 : Math.round(vatAmount * 100) / 100,
-        total: reverseCharge ? payableNet : Math.round(total * 100) / 100,
+        subtotal: noDeductibleSellerVat ? payableNet : Math.round(subtotal * 100) / 100,
+        vat_amount: noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100,
+        total: noDeductibleSellerVat ? payableNet : Math.round(total * 100) / 100,
         notes: (args.notes as string | undefined) ?? null,
         items: lineItems,
         ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0

@@ -2,6 +2,10 @@ import { z } from 'zod'
 import { ENTITY_TYPES } from '@/lib/company/entity-type'
 import { normaliseSwish, isValidSwish } from '@/lib/payments/swish'
 import { normalizeVatNumber } from '@/lib/vat/vat-number'
+import {
+  defaultVatRateForTreatment,
+  treatmentDeductsInputVat,
+} from '@/lib/vat/supplier-invoice-line-checks'
 import { ACCOUNT_VAT_TREATMENTS } from '@/lib/vat/account-vat-treatment'
 import {
   accountNumberSchema,
@@ -1387,6 +1391,56 @@ export const CreateSupplierInvoiceSchema = z.object({
   // items[].dimensions merge over it per expense line.
   default_dimensions: DimensionsBagSchema.optional(),
   items: z.array(CreateSupplierInvoiceItemSchema).min(1, 'At least one item is required'),
+}).superRefine((invoice, ctx) => {
+  // The per-item vat_amount ceiling can only assume 25 % when a line omits
+  // vat_rate: the invoice's vat_treatment, which actually decides the rate,
+  // is visible one level up (issue #2553). Two rules follow from it.
+  const treatment = invoice.vat_treatment
+  const deducts = treatmentDeductsInputVat(treatment)
+  const treatmentRate = defaultVatRateForTreatment(treatment)
+  invoice.items.forEach((item, index) => {
+    const lineTotal = item.amount != null
+      ? item.amount
+      : (item.quantity ?? 1) * (item.unit_price ?? 0)
+
+    // 1. exempt / export: the supplier charges no Swedish moms (an exempt
+    //    supply is undantagen, ML 10 kap; an export purchase carries none
+    //    either), so no line may claim a rate or an amount. Without this the
+    //    line passed validation and the 0.25 column default booked input VAT
+    //    on 2641 that was never invoiced.
+    if (!deducts) {
+      if ((item.vat_rate ?? 0) !== 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, 'vat_rate'],
+          message: `vat_treatment '${treatment}' carries no Swedish VAT: vat_rate must be 0 or omitted`,
+        })
+      }
+      if ((item.vat_amount ?? 0) !== 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, 'vat_amount'],
+          message: `vat_treatment '${treatment}' carries no Swedish VAT: vat_amount must be 0 or omitted`,
+        })
+      }
+      return
+    }
+
+    // 2. A line that omits vat_rate is booked at the treatment's rate, so
+    //    that is the ceiling its manual vat_amount override has to respect:
+    //    on a reduced_12 invoice the item-level check would otherwise wave
+    //    through a 25 % override.
+    if (item.vat_amount == null || item.vat_rate != null) return
+    const maxVat = Math.round(lineTotal * treatmentRate * 100) / 100
+    // Same 1-öre POS tolerance as the item-level refine.
+    if (item.vat_amount > maxVat + 0.01) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['items', index, 'vat_amount'],
+        message: `vat_amount cannot exceed line_total × the vat_treatment rate (${treatmentRate})`,
+      })
+    }
+  })
 })
 
 // Pre-submit duplicate lookup for the supplier-invoice editor. Mirrors the
