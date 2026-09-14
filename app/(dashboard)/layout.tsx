@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { cookies, headers } from 'next/headers'
 import DashboardNav from '@/components/dashboard/DashboardNav'
+import { DashboardRouteShell } from '@/components/dashboard/DashboardRouteShell'
 import { MainContainer } from '@/components/dashboard/MainContainer'
 import CompanyTabSync from '@/components/dashboard/CompanyTabSync'
 import AnalyticsIdentify from '@/components/AnalyticsIdentify'
@@ -19,7 +20,6 @@ import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider, type ByraTeamRef } from '@/contexts/CompanyContext'
 import { ReferenceDataSeed } from '@/components/providers/ReferenceDataSeed'
 import OnboardingBackdrop from '@/components/onboarding/OnboardingBackdrop'
-import { BOOKS_PATH } from '@/lib/onboarding/books-gate'
 import { getCompanyEntitlements } from '@/lib/entitlements/has-capability'
 import { getAiStatus } from '@/lib/ai'
 import { getDashboardNavFlags } from '@/lib/dashboard/nav-flags'
@@ -522,28 +522,6 @@ export default async function DashboardLayout({
     !activeCompanyHomed &&
     !SIGNPOST_ALLOWED_PATHS.some((p) => pathname.startsWith(p))
 
-  // The books act (issue #2438) is the journey's second act: it needs the
-  // company context and reference data the wizards read, but none of the
-  // dashboard chrome. Bare shell: backdrop plus the page, no nav, no panel.
-  if (pathname.startsWith(BOOKS_PATH)) {
-    return (
-      <CompanyProvider value={companyContextValue}>
-        <ReferenceDataSeed
-          companyId={companyId}
-          fiscalPeriods={seedFiscalPeriods ?? []}
-          cashAccounts={seedCashAccounts ?? []}
-          settings={settingsError ? undefined : settings}
-        >
-          <SessionTimeoutController />
-          <div className="relative min-h-dvh bg-background">
-            <OnboardingBackdrop />
-            <div className="relative z-10">{children}</div>
-          </div>
-        </ReferenceDataSeed>
-      </CompanyProvider>
-    )
-  }
-
   return (
     <CompanyProvider value={companyContextValue}>
       <ReferenceDataSeed
@@ -553,6 +531,14 @@ export default async function DashboardLayout({
         settings={settingsError ? undefined : settings}
       >
       <SessionTimeoutController />
+      <DashboardRouteShell
+        onboarding={
+          <div className="relative min-h-dvh bg-background">
+            <OnboardingBackdrop />
+            <main id="main-content" className="relative z-10">{children}</main>
+          </div>
+        }
+      >
       <AgentSheetProvider
         identity={{
           displayName: agentProfileIdentity?.display_name ?? null,
@@ -650,6 +636,7 @@ export default async function DashboardLayout({
           />
         )}
       </AgentSheetProvider>
+      </DashboardRouteShell>
       </ReferenceDataSeed>
     </CompanyProvider>
   )
