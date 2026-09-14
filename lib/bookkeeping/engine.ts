@@ -16,6 +16,7 @@ import {
   withUnusedVoucherAllocation,
   JournalEntryNotBalancedError,
   JournalLineNegativeAmountError,
+  JournalLineBothSidesNonZeroError,
   JournalEntryNotFoundError,
 } from '@/lib/bookkeeping/errors'
 import {
@@ -97,17 +98,32 @@ export function validateBalance(lines: CreateJournalEntryLineInput[]): {
 }
 
 /**
- * Refuse any line whose debit_amount or credit_amount is below zero. The
- * balance check cannot catch this (a negative debit nets like a credit), so
- * it is the engine's job to keep the one-non-negative-side invariant that the
- * DB CHECK `journal_entry_lines_amounts_non_negative` mirrors.
+ * Enforce the one-side invariant every journal line carries: exactly one of
+ * debit_amount / credit_amount is above zero, and neither is below zero.
+ *
+ * `validateBalance` above sums the two columns and can see neither half of
+ * this, which is why the engine has to:
+ *
+ *   - a negative debit nets like a credit, so the totals still match. The
+ *     row is stored, but every reader assumes one non-negative side: the
+ *     verifikat page hides it and the visible sums disagree.
+ *   - a line with BOTH sides above zero cancels itself. The totals still
+ *     match, so the entry posts as a nollverifikat; storno then reverses the
+ *     line on its net, lands on {0, 0} and dies on the voucher trigger's
+ *     "has zero total", leaving the entry uncorrectable (issue #2551).
+ *
+ * The DB CHECKs `journal_entry_lines_amounts_non_negative` and
+ * `journal_entry_lines_single_side` mirror the two halves.
  */
-export function assertLinesNonNegative(lines: CreateJournalEntryLineInput[]): void {
+export function assertLinesWellFormed(lines: CreateJournalEntryLineInput[]): void {
   for (const line of lines) {
     const debit = line.debit_amount || 0
     const credit = line.credit_amount || 0
     if (debit < 0 || credit < 0) {
       throw new JournalLineNegativeAmountError(line.account_number, debit, credit)
+    }
+    if (debit > 0 && credit > 0) {
+      throw new JournalLineBothSidesNonZeroError(line.account_number, debit, credit)
     }
   }
 }
@@ -290,7 +306,7 @@ export async function createDraftEntry(
   input: CreateJournalEntryInput
 ): Promise<JournalEntry> {
   // Validate sides and balance
-  assertLinesNonNegative(input.lines)
+  assertLinesWellFormed(input.lines)
   const balance = validateBalance(input.lines)
   if (!balance.valid) {
     throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
@@ -491,7 +507,7 @@ export async function updateDraftEntry(
   }
 
   // Same side and balance gates as createDraftEntry.
-  assertLinesNonNegative(input.lines)
+  assertLinesWellFormed(input.lines)
   const balance = validateBalance(input.lines)
   if (!balance.valid) {
     throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
@@ -927,7 +943,7 @@ export async function replaceOpeningBalanceEntry(
     )
   }
 
-  assertLinesNonNegative(input.lines)
+  assertLinesWellFormed(input.lines)
   const balance = validateBalance(input.lines)
   if (!balance.valid) {
     throw new JournalEntryNotBalancedError(

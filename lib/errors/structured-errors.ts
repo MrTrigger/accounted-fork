@@ -219,6 +219,15 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
         'Every line carries one non-negative side: move a negative debit to credit_amount (and vice versa) before retrying.',
     },
   },
+  JOURNAL_LINE_BOTH_SIDES_NONZERO: {
+    httpStatus: 400,
+    message_sv: 'En verifikationsrad kan inte ha både debet och kredit nollskilda.',
+    message_en: 'A journal entry line cannot have both debit and credit non-zero.',
+    remediation: {
+      description:
+        'Every line carries one side: net the two amounts onto the larger side, or split the line in two, before retrying.',
+    },
+  },
   FISCAL_PERIOD_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Räkenskapsperioden kunde inte hittas.',
