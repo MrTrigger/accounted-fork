@@ -217,6 +217,8 @@ import { deleteDraftInvoice } from '@/lib/invoices/delete-draft-invoice'
 import { isEditableInvoiceDraft } from '@/lib/invoices/is-editable-draft'
 import { replaceInvoiceItems } from '@/lib/invoices/replace-invoice-items'
 import { applyRecurringScheduleUpdate } from '@/lib/invoices/apply-recurring-schedule-update'
+import { toRecurringScheduleItemRow } from '@/lib/invoices/recurring-schedule-items'
+import { periodPlaceholderProblem } from '@/lib/invoices/recurring-placeholders'
 import { BulkBookInboxSchema, OpeningBalancesBulkSchema } from '@/lib/api/schemas'
 import { ensureArticleNumber } from '@/lib/articles/ensure-article-number'
 import { isValidRevenueAccount } from '@/lib/articles/validate-revenue-account'
@@ -918,6 +920,7 @@ async function commitCreateRecurringSchedule(
       your_reference: validated.your_reference ?? null,
       our_reference: validated.our_reference ?? null,
       notes: validated.notes ?? null,
+      period_start: validated.period_start ?? null,
       auto_send: validated.auto_send,
       default_dimensions: validated.default_dimensions ?? {},
       next_run_date: nextRunDate,
@@ -930,16 +933,7 @@ async function commitCreateRecurringSchedule(
     return { error: insertError?.message ?? 'Failed to insert recurring schedule', status: 500 }
   }
 
-  const itemRows = validated.items.map((item, idx) => ({
-    schedule_id: schedule.id,
-    sort_order: idx,
-    description: item.description,
-    quantity: item.quantity,
-    unit: item.unit,
-    unit_price: item.unit_price,
-    vat_rate: item.vat_rate ?? null,
-    dimensions: item.dimensions ?? {},
-  }))
+  const itemRows = validated.items.map((item, idx) => toRecurringScheduleItemRow(schedule.id, item, idx))
 
   const { error: itemsError } = await supabase
     .from('recurring_invoice_schedule_items')
@@ -998,13 +992,27 @@ async function commitUpdateRecurringSchedule(
 
   const { data: existing, error: existingError } = await supabase
     .from('recurring_invoice_schedules')
-    .select('id, status, auto_send, customer_id, day_of_month, interval_months, next_run_date')
+    .select('id, status, auto_send, customer_id, day_of_month, interval_months, next_run_date, notes, period_start, items:recurring_invoice_schedule_items(description)')
     .eq('id', scheduleId)
     .eq('company_id', companyId)
     .maybeSingle()
 
   if (existingError) return { error: existingError.message, status: 500 }
   if (!existing) return { error: 'Recurring schedule not found', status: 404 }
+
+  // Same rule as PATCH /api/invoices/recurring/[id]: period placeholders in
+  // the texts that will be in effect need a period_start in effect.
+  const storedDescriptions = ((existing as { items?: Array<{ description: string }> | null }).items ?? [])
+    .map((item) => item.description)
+  const periodProblem = periodPlaceholderProblem({
+    notes: fieldChanges.notes !== undefined ? fieldChanges.notes : (existing as { notes?: string | null }).notes,
+    itemDescriptions: items ? items.map((item) => item.description) : storedDescriptions,
+    periodStart:
+      fieldChanges.period_start !== undefined
+        ? fieldChanges.period_start
+        : (existing as { period_start?: string | null }).period_start,
+  })
+  if (periodProblem) return { error: periodProblem, status: 400 }
 
   // Turning auto_send on (or moving the schedule to another customer) needs
   // the target customer checked: email when auto_send is effectively on

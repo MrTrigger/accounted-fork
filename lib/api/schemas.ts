@@ -46,6 +46,10 @@ import {
 } from '@/lib/customers/personal-number-shape'
 import type { AuditAction, Currency, InvoiceDocumentType } from '@/types'
 import type { BankFileFormatId } from '@/lib/import/bank-file/types'
+import {
+  mentionsPeriodPlaceholder,
+  PERIOD_PLACEHOLDER_REQUIRES_START_MESSAGE,
+} from '@/lib/invoices/recurring-placeholders'
 
 export const SIEJobOptionsSchema = z.object({
   createFiscalPeriod: z.boolean().default(true),
@@ -926,21 +930,54 @@ export const CreateSelfBillingInvoiceSchema = z.object({
 // executeRecurringSchedule gates on getPermittedVatRates, not on the default.
 // A rate outside 0/6/12/25 is rejected here: there is no such Swedish rate, and
 // the buyer could not deduct ingående moms on it.
-export const RecurringScheduleItemSchema = z.object({
-  description: z.string().min(1, 'Item description is required'),
-  quantity: z.number().positive('Quantity must be positive'),
-  unit: z.string().min(1, 'Unit is required').default('st'),
-  unit_price: z.number(),
-  vat_rate: z
-    .union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)])
-    .nullable()
-    .optional(),
-  // Copied onto the generated invoice_items.dimensions; merges over the
-  // schedule's default_dimensions on that item's revenue line.
-  dimensions: DimensionsBagSchema.optional(),
-})
+export const RecurringScheduleItemSchema = z
+  .object({
+    // 'text' = free-text or blank spacer row copied onto every generated
+    // invoice as a text row: description only (may be empty), amounts
+    // ignored. Defaults to 'product'.
+    line_type: z.enum(['product', 'text']).optional(),
+    description: z.string().max(2000),
+    quantity: z.number(),
+    unit: z.string().default('st'),
+    unit_price: z.number(),
+    vat_rate: z
+      .union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)])
+      .nullable()
+      .optional(),
+    // Copied onto the generated invoice_items.dimensions; merges over the
+    // schedule's default_dimensions on that item's revenue line.
+    dimensions: DimensionsBagSchema.optional(),
+  })
+  .superRefine((item, ctx) => {
+    if (item.line_type === 'text') return
+    if (item.description.trim().length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['description'], message: 'Item description is required' })
+    }
+    if (item.quantity <= 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['quantity'], message: 'Quantity must be positive' })
+    }
+    if (item.unit.trim().length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['unit'], message: 'Unit is required' })
+    }
+  })
 
-export const CreateRecurringScheduleSchema = z.object({
+// A schedule needs something to bill: text rows alone make an empty invoice.
+function requireBillableRecurringLine(
+  items: ReadonlyArray<{ line_type?: string }> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  if (items && !items.some((item) => item.line_type !== 'text')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['items'],
+      message: 'At least one billable (non-text) line is required',
+    })
+  }
+}
+
+// Object form kept separate so callers that need .strict() (the MCP staged
+// params) can add it before the refinement; the refined form is the API's.
+export const CreateRecurringScheduleObjectSchema = z.object({
   customer_id: uuid,
   name: z.string().min(1, 'Schedule name is required').max(200),
   day_of_month: z.number().int().min(1).max(31),
@@ -962,10 +999,34 @@ export const CreateRecurringScheduleSchema = z.object({
   // phase of a quarterly/yearly schedule ("bill in February"); must be on the
   // schedule grid (day = day_of_month clamped) and not in the past.
   start_date: isoDate.optional(),
+  // First day of the billing period the first generated invoice covers.
+  // Unlocks {periodstart}/{periodslut}/{nästa periodstart} in notes and line
+  // descriptions; advanced by interval_months after every run.
+  period_start: isoDate.nullable().optional(),
   items: z.array(RecurringScheduleItemSchema).min(1, 'At least one item is required'),
 })
 
-export const UpdateRecurringScheduleSchema = z.object({
+export function refineCreateRecurringSchedule(
+  data: z.infer<typeof CreateRecurringScheduleObjectSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  requireBillableRecurringLine(data.items, ctx)
+  if (
+    !data.period_start
+    && mentionsPeriodPlaceholder([data.notes, ...data.items.map((item) => item.description)])
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['period_start'],
+      message: PERIOD_PLACEHOLDER_REQUIRES_START_MESSAGE,
+    })
+  }
+}
+
+export const CreateRecurringScheduleSchema =
+  CreateRecurringScheduleObjectSchema.superRefine(refineCreateRecurringSchedule)
+
+export const UpdateRecurringScheduleObjectSchema = z.object({
   customer_id: uuid.optional(),
   name: z.string().min(1).max(200).optional(),
   day_of_month: z.number().int().min(1).max(31).optional(),
@@ -987,9 +1048,24 @@ export const UpdateRecurringScheduleSchema = z.object({
   next_run_date: isoDate.optional(),
   // Replaces the whole bag if provided ({} clears all tags). Omit to keep.
   default_dimensions: DimensionsBagSchema.optional(),
+  // null clears the period (the period placeholders then must not be used).
+  period_start: isoDate.nullable().optional(),
   // Replace all items if provided. Omit to keep existing items unchanged.
   items: z.array(RecurringScheduleItemSchema).min(1).optional(),
 })
+
+export function refineUpdateRecurringSchedule(
+  data: z.infer<typeof UpdateRecurringScheduleObjectSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  requireBillableRecurringLine(data.items, ctx)
+}
+
+// The period-placeholder rule for updates needs the stored row (a partial
+// update may only touch notes); the routes and the MCP executor check it
+// with assertPeriodPlaceholdersResolvable after merging with the row.
+export const UpdateRecurringScheduleSchema =
+  UpdateRecurringScheduleObjectSchema.superRefine(refineUpdateRecurringSchedule)
 
 export const MarkInvoicePaidSchema = z.object({
   payment_date: isoDate.optional(),

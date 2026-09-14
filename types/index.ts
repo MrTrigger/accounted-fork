@@ -1684,7 +1684,12 @@ export interface RecurringInvoiceSchedule {
   currency: Currency
   your_reference: string | null
   our_reference: string | null
+  // May use {månad}, {år}, {periodstart} ... (lib/invoices/recurring-placeholders.ts),
+  // substituted when the invoice is spawned.
   notes: string | null
+  // First day of the billing period the next generated invoice covers;
+  // advanced by interval_months after every run. null = no period.
+  period_start?: string | null
 
   // Dimension bag {sie_dim_no: code} copied onto every generated invoice's
   // default_dimensions at spawn time.
@@ -1711,6 +1716,10 @@ export interface RecurringInvoiceScheduleItem {
   id: string
   schedule_id: string
   sort_order: number
+  // 'text' = free-text/blank row copied onto the invoice as a text row
+  // (description only, no amounts). Rows from before the column default to
+  // 'product'.
+  line_type?: 'product' | 'text'
   description: string
   quantity: number
   unit: string

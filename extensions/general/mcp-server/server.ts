@@ -21786,6 +21786,7 @@ export const tools: McpTool[] = [
         currency: { type: 'string' },
         auto_send: { type: 'boolean' },
         next_run_date: { type: 'string' },
+        period_start: { type: ['string', 'null'], description: 'First day of the billing period the next invoice covers; null = no period' },
         last_run_at: { type: ['string', 'null'] },
         last_invoice_id: { type: ['string', 'null'], description: 'Most recently generated invoice' },
         last_run_warning: { type: ['string', 'null'] },
@@ -21800,6 +21801,7 @@ export const tools: McpTool[] = [
           items: {
             type: 'object',
             properties: {
+              line_type: { type: 'string', enum: ['product', 'text'] },
               description: { type: 'string' },
               quantity: { type: 'number' },
               unit: { type: 'string' },
@@ -21821,7 +21823,7 @@ export const tools: McpTool[] = [
       let query = supabase
         .from('recurring_invoice_schedules')
         .select(
-          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, auto_send, default_dimensions, next_run_date, last_run_at, last_invoice_id, last_run_warning, generated_count, customer:customers(name), items:recurring_invoice_schedule_items(description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
+          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, auto_send, default_dimensions, next_run_date, period_start, last_run_at, last_invoice_id, last_run_warning, generated_count, customer:customers(name), items:recurring_invoice_schedule_items(line_type, description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
           { count: 'exact' },
         )
         .eq('company_id', companyId)
@@ -21843,6 +21845,7 @@ export const tools: McpTool[] = [
           .slice()
           .sort((a, b) => Number(a.sort_order) - Number(b.sort_order))
           .map((it) => ({
+            line_type: it.line_type ?? 'product',
             description: it.description,
             quantity: it.quantity,
             unit: it.unit,
@@ -21865,6 +21868,7 @@ export const tools: McpTool[] = [
           currency: row.currency,
           auto_send: row.auto_send,
           next_run_date: row.next_run_date,
+          period_start: row.period_start ?? null,
           last_run_at: row.last_run_at ?? null,
           last_invoice_id: row.last_invoice_id ?? null,
           last_run_warning: row.last_run_warning ?? null,
@@ -21924,7 +21928,11 @@ export const tools: McpTool[] = [
         currency: { type: 'string', enum: ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK'], description: 'Default SEK.' },
         your_reference: { type: 'string' },
         our_reference: { type: 'string' },
-        notes: { type: 'string' },
+        notes: { type: 'string', description: 'Printed on every generated invoice. Placeholders in notes and line descriptions are substituted when each invoice is created: {månad} {nästa månad} {föregående månad} {år} (month names in the customer language) and, when period_start is set, {periodstart} {periodslut} (last day of the period) {nästa periodstart}.' },
+        period_start: {
+          type: 'string',
+          description: 'YYYY-MM-DD first day of the billing period the first invoice covers. Advances by interval_months after every run. Required when {periodstart}/{periodslut}/{nästa periodstart} are used.',
+        },
         auto_send: {
           type: 'boolean',
           description: 'Default false: invoices are created as drafts for manual review. true emails every generated invoice to the customer with no further approval; requires the customer to have an email address.',
@@ -21945,7 +21953,8 @@ export const tools: McpTool[] = [
           items: {
             type: 'object',
             properties: {
-              description: { type: 'string' },
+              line_type: { type: 'string', enum: ['product', 'text'], description: "Default product. text = free-text or blank row copied onto every invoice as a text row (description only, may be empty; quantity/unit/unit_price ignored, never booked). At least one product row is required." },
+              description: { type: 'string', description: 'May use the placeholders listed under notes.' },
               quantity: { type: 'number' },
               unit: { type: 'string', description: 'st, tim, dag, mån. Default st.' },
               unit_price: { type: 'number', description: 'Price per unit excl. VAT.' },
@@ -22004,6 +22013,7 @@ export const tools: McpTool[] = [
         'your_reference',
         'our_reference',
         'notes',
+        'period_start',
         'auto_send',
         'start_date',
       ]) {
@@ -22127,7 +22137,11 @@ export const tools: McpTool[] = [
         currency: { type: 'string', enum: ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK'] },
         your_reference: { type: ['string', 'null'], description: 'Null clears the field.' },
         our_reference: { type: ['string', 'null'], description: 'Null clears the field.' },
-        notes: { type: ['string', 'null'], description: 'Null clears the field.' },
+        notes: { type: ['string', 'null'], description: 'Null clears the field. Placeholders in notes and line descriptions are substituted when each invoice is created: {månad} {nästa månad} {föregående månad} {år} (month names in the customer language) and, when period_start is set, {periodstart} {periodslut} (last day of the period) {nästa periodstart}.' },
+        period_start: {
+          type: ['string', 'null'],
+          description: 'YYYY-MM-DD first day of the billing period the NEXT invoice covers; advances by interval_months after every run. Null clears it (then the period placeholders must not be used).',
+        },
         auto_send: {
           type: 'boolean',
           description: 'true emails every generated invoice with no further approval (requires customer email). false returns to draft-only.',
@@ -22153,7 +22167,8 @@ export const tools: McpTool[] = [
           items: {
             type: 'object',
             properties: {
-              description: { type: 'string' },
+              line_type: { type: 'string', enum: ['product', 'text'], description: 'Default product. text = free-text/blank row (description only, no amounts). At least one product row is required.' },
+              description: { type: 'string', description: 'May use the placeholders listed under notes.' },
               quantity: { type: 'number' },
               unit: { type: 'string', description: 'st, tim, dag, mån. Default st.' },
               unit_price: { type: 'number', description: 'Price per unit excl. VAT.' },
@@ -22209,6 +22224,7 @@ export const tools: McpTool[] = [
         'your_reference',
         'our_reference',
         'notes',
+        'period_start',
         'auto_send',
         'status',
         'next_run_date',
@@ -22237,7 +22253,7 @@ export const tools: McpTool[] = [
       const { data: current, error } = await supabase
         .from('recurring_invoice_schedules')
         .select(
-          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, your_reference, our_reference, notes, auto_send, default_dimensions, next_run_date, customer:customers(name, email), items:recurring_invoice_schedule_items(description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
+          'id, name, status, customer_id, day_of_month, interval_months, send_hour, payment_terms_days, currency, your_reference, our_reference, notes, period_start, auto_send, default_dimensions, next_run_date, customer:customers(name, email), items:recurring_invoice_schedule_items(line_type, description, quantity, unit, unit_price, vat_rate, dimensions, sort_order)',
         )
         .eq('id', parsed.data.schedule_id)
         .eq('company_id', companyId)
