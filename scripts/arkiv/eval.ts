@@ -190,7 +190,7 @@ async function run() {
   const prevPath = join(dir, '.out', 'results.json')
   const prev = new Map<string, Classification>()
   const prevRaw = new Map<string, Result>()
-  if (existsSync(prevPath)) for (const r of JSON.parse(readFileSync(prevPath, 'utf8')) as Result[]) { if (r.classification && !reclassify) prev.set(r.entry.sha256, r.classification); prevRaw.set(r.entry.sha256, r) }
+  if (existsSync(prevPath)) for (const r of JSON.parse(readFileSync(prevPath, 'utf8')) as Result[]) { if (r.duplicateOf) continue; if (r.classification && !reclassify) prev.set(r.entry.sha256, r.classification); prevRaw.set(r.entry.sha256, r) }
   const seen = new Map<string, string>()
   const results: Result[] = []
   const queue = [...entries]
