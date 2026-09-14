@@ -2,7 +2,6 @@ import { after } from 'next/server'
 import { countCompletedSieImports, countInboxItems, countTransactions, readActiveBankConnections } from './hem-reads'
 import NewUserChecklist from '@/components/onboarding/NewUserChecklist'
 import AttGoraSection from '@/components/dashboard/AttGoraSection'
-import { KopplingarStrip } from '@/components/dashboard/KopplingarStrip'
 import type { AiClient } from '@/lib/onboarding/ai-clients'
 import ResumePane from '@/components/dashboard/ResumePane'
 import { HemNotices } from '@/components/dashboard/HemNotices'
@@ -272,16 +271,15 @@ export async function HemPanesSection({
           expiringBankConnections={expiringBankConnections}
           emptyLedger={emptyLedger}
           hasActiveBankConnection={hasActiveBankConnection}
+          hasSkatteverketConnection={hasSkatteverketConnected}
           aiClients={aiClients}
+          // While the getting-started checklist is open it carries the bank
+          // and Skatteverket steps itself; afterwards the kopplingar row keeps
+          // the connections visible for whoever declined them in the books act.
+          showKopplingar={!setupOpen}
         />
         <ResumePane items={resumeItems} />
       </div>
-      {/* While the getting-started checklist is open it carries the bank and
-          Skatteverket steps itself; afterwards the strip keeps the two
-          connections visible for whoever declined them in the books act. */}
-      {!setupOpen && (
-        <KopplingarStrip hasBank={hasActiveBankConnection} hasSkatteverket={hasSkatteverketConnected} />
-      )}
     </>
   )
 }

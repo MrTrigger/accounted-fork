@@ -2,41 +2,53 @@
 
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { ChevronDown } from 'lucide-react'
 import { useCapability, useCompany } from '@/contexts/CompanyContext'
 import { useBranding } from '@/lib/branding/brand-context'
 import { CAPABILITY } from '@/lib/entitlements/keys'
 import { useFetch } from '@/lib/hooks/use-fetch'
 import { useFormat } from '@/lib/hooks/use-format'
 import type { AiClient } from '@/lib/onboarding/ai-clients'
-import { pickFirstAiTask } from '@/lib/worklist/ai-task'
+import { AI_TASK_HREF, AI_TASK_LABEL_KEY, listAiTasks } from '@/lib/worklist/ai-task'
 import type { WorklistCounts } from '@/lib/worklist/types'
-import { AttGoraAiCta } from '@/components/dashboard/AttGoraAiCta'
+import { AiTaskAction } from '@/components/dashboard/AiTaskAction'
 import { Button } from '@/components/ui/button'
 import { InkText } from '@/components/onboarding/journey/ink'
 import { Confetti } from '../ui/Confetti'
-import { AiCard } from '../ui/AiCard'
+import { AgentChips } from '../ui/AgentChips'
 import type { BooksCtx } from '../context'
 
 /** How often the Done step asks whether an AI client has signed in, while it is showing. */
 export const AI_POLL_MS = 4000
 
-/** Klart: a few flecks let go, the card of what got connected, then the door to Hem. */
-export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (outcome: 'done') => void; leaving: boolean }) {
+/**
+ * Klart: a few flecks let go, the card of what got connected, the three
+ * agent chips, then what the app already found to do (folded until asked;
+ * each row opens the page in the app or hands the row to a connected
+ * agent), and the door to Hem.
+ */
+export function DoneStep({ ctx, onLeave, leaving }: {
+  ctx: BooksCtx
+  /** Leaves the act; `href` is where to land (Hem by default). */
+  onLeave: (outcome: 'done', href?: string) => void
+  leaving: boolean
+}) {
   const t = useTranslations('books')
+  const d = useTranslations('dashboard')
   const { company } = useCompany()
   const { appName } = useBranding()
   const { formatDateLong } = useFormat()
   const { findings, state, loadFindings } = ctx
   const hasAi = useCapability(CAPABILITY.ai)
   const [preferredClient, setPreferredClient] = useState<AiClient>()
+  const [open, setOpen] = useState(false)
   const { data: worklist, loading, error, refetch } = useFetch<{ data: WorklistCounts }, WorklistCounts>(
     '/api/worklist/counts',
     { select: (body) => body.data },
   )
   const connected = findings?.ai.connected ?? []
   const connectionKey = connected.join(',')
-  const task = worklist && !error ? pickFirstAiTask(worklist.counts, { hasAi }) : null
-  const hasHandoff = connected.length > 0 && task !== null
+  const tasks = worklist && !error ? listAiTasks(worklist.counts, { hasAi }) : []
 
   // Refresh the same queue Hem uses when OAuth finishes or the user returns
   // from their agent. Do not keep offering work they have already completed.
@@ -49,7 +61,7 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
   }, [refetch])
 
   // The OAuth sign-in happens in another tab. Poll the findings while this
-  // step is on screen so the client's row turns green the moment the token
+  // step is on screen so the client's chip turns green the moment the token
   // route has minted its key; stop once all three are connected.
   const allConnected = (findings?.ai.connected.length ?? 0) >= 3
   useEffect(() => {
@@ -87,7 +99,6 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
       </h1>
       <p className="done-sub">{t('done_sub')}</p>
       <div className="jny-card">
-        <div className="jny-card-eyebrow">{t('card_eyebrow')}</div>
         <div className="jny-card-name">{company?.name}</div>
         <dl>
           {rows.map(([k, v], i) => (
@@ -95,34 +106,53 @@ export function DoneStep({ ctx, onLeave, leaving }: { ctx: BooksCtx; onLeave: (o
           ))}
         </dl>
       </div>
-      <AiCard findings={findings} onConnect={setPreferredClient} showPrompts={!hasHandoff} />
-      {connected.length > 0 && (
-        <div aria-live="polite" aria-busy={loading}>
-          {error ? (
-            <div className="aihandoff">
-              <p className="aihandoff-note">{t('ai_handoff_failed')}</p>
-              <Button type="button" variant="ghost" size="sm" onClick={refetch} disabled={loading}>
-                {t('ai_handoff_retry')}
-              </Button>
-            </div>
-          ) : loading && !worklist ? (
-            <p className="aihandoff aihandoff-note" role="status">{t('ai_handoff_loading')}</p>
-          ) : task ? (
-            <AttGoraAiCta
-              clients={connected}
-              task={task}
-              onboarding
-              preferredClient={preferredClient}
-              onOpen={() => onLeave('done')}
-              disabled={leaving}
-            />
-          ) : (
-            <p className="aihandoff aihandoff-note">{t('ai_handoff_empty')}</p>
+
+      <h2 className="agent-title">{t('ai_title')}</h2>
+      <p className="agent-lead">{t('ai_lead')}</p>
+      <AgentChips connected={connected} onConnect={setPreferredClient} />
+
+      {error ? (
+        <p className="found-note" role="alert">
+          {t('ai_handoff_failed')}{' '}
+          <button type="button" className="jny-btn-quiet" onClick={refetch} disabled={loading}>
+            {t('ai_handoff_retry')}
+          </button>
+        </p>
+      ) : tasks.length > 0 && (
+        <div className="found">
+          <button type="button" className="found-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            {t('tasks_found', { count: tasks.length })}
+            <ChevronDown size={14} aria-hidden="true" className="chev" />
+          </button>
+          {open && (
+            <ul className="found-list">
+              {tasks.map((task) => (
+                <li key={task.category} className="found-row">
+                  <span className="l">
+                    {d(AI_TASK_LABEL_KEY[task.category])}
+                    <span className="n">{task.count}</span>
+                  </span>
+                  <span className="a">
+                    <button type="button" className="open" disabled={leaving} onClick={() => onLeave('done', AI_TASK_HREF[task.category])}>
+                      {t('task_open')}
+                    </button>
+                    <AiTaskAction
+                      clients={connected}
+                      task={task}
+                      preferredClient={preferredClient}
+                      onOpen={() => onLeave('done')}
+                      disabled={leaving}
+                    />
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}
+
       <div className="jny-qactions">
-        <Button type="button" variant={hasHandoff ? 'ghost' : 'default'} disabled={leaving} onClick={() => onLeave('done')}>
+        <Button type="button" disabled={leaving} onClick={() => onLeave('done')}>
           {t('open_app', { appName })}
         </Button>
       </div>

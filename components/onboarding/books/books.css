@@ -302,67 +302,37 @@ body.bks-theater [data-onboarding-backdrop] { opacity: 0.3; }
 .skv-line.is-attn { color: hsl(var(--attn)); text-decoration: underline dotted; text-underline-offset: 3px; }
 .skv-next { margin: 16px 0 0; font-size: 13px; color: hsl(var(--muted-foreground)); }
 
-/* ── the AI card: a header, bubbles out of the card (top, left, right), then one click per client ── */
+/* ── the agent: a serif header, one chip per client, then what the app already found ── */
 .bks .jny-card { max-width: 440px; }
-.aiwrap { max-width: 440px; margin: 30px auto 0; }
-.aihead { font-family: var(--font-display); font-size: 21px; line-height: 1.25; margin: 0 0 16px; text-align: center; opacity: 0; animation: bks-fade-in 500ms var(--ease-out) 800ms forwards; }
-.aistage { position: relative; }
-.aicard { text-align: left; border: 1px solid hsl(var(--border)); border-radius: 14px; padding: 16px 20px; background: hsl(var(--card)); box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 16px 40px -24px hsl(0 0% 0% / 0.25); opacity: 0; animation: card-in 500ms var(--ease-out) 900ms forwards; }
-@keyframes card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.aicard-title { font-family: var(--font-display); font-size: 17px; margin: 0 0 10px; }
-/* the slots hold the bubbles in place around the card; the bubble inside animates on its own */
-.aislot { display: block; }
-.aislot.is-top { max-width: 380px; margin: 0 auto 16px; }
-.aislot.is-left, .aislot.is-right { position: absolute; top: 50%; transform: translateY(-50%); width: 200px; }
-.aislot.is-left { right: 100%; margin-right: 20px; }
-.aislot.is-right { left: 100%; margin-left: 20px; }
-/* the bubble: the work the connected client can do first, in quotes, built from the company's own numbers; a click copies one */
-.aiprompt {
-  position: relative; display: block; width: 100%; text-align: left; cursor: pointer; font: inherit; font-size: 12.5px; line-height: 1.45;
-  padding: 9px 13px; border: 1px solid hsl(var(--border)); border-radius: 14px; color: hsl(var(--foreground)); background: hsl(var(--card));
-  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05), 0 10px 24px -18px hsl(0 0% 0% / 0.3);
-  transition: background-color 150ms var(--ease-out); opacity: 0; animation: bubble-in 560ms var(--ease-spring) forwards;
-}
-/* each bubble opens out of the card's edge, one after the other: it starts small against the card and springs outward */
-.aislot.is-top .aiprompt { text-align: center; transform-origin: 50% 100%; animation-name: bubble-up; }
-.aislot.is-left .aiprompt { transform-origin: 100% 50%; animation-name: bubble-left; }
-.aislot.is-right .aiprompt { transform-origin: 0 50%; animation-name: bubble-right; }
-@keyframes bubble-up { 0% { opacity: 0; transform: translateY(28px) scale(0.35); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
-@keyframes bubble-left { 0% { opacity: 0; transform: translateX(36px) scale(0.35); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
-@keyframes bubble-right { 0% { opacity: 0; transform: translateX(-36px) scale(0.35); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
-/* the tail: a rotated square on the edge that faces the card */
-.aiprompt::after { content: ''; position: absolute; width: 11px; height: 11px; background: inherit; transform: rotate(45deg); }
-.aislot.is-top .aiprompt::after { left: 50%; margin-left: -6px; bottom: -6.5px; border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
-.aislot.is-left .aiprompt::after { top: 50%; margin-top: -6px; right: -6.5px; border-top: 1px solid hsl(var(--border)); border-right: 1px solid hsl(var(--border)); }
-.aislot.is-right .aiprompt::after { top: 50%; margin-top: -6px; left: -6.5px; border-bottom: 1px solid hsl(var(--border)); border-left: 1px solid hsl(var(--border)); }
-@keyframes bubble-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
-/* no room beside the card: every bubble stacks above it */
-@media (max-width: 900px) {
-  .aislot.is-left, .aislot.is-right { position: static; transform: none; width: auto; max-width: 380px; margin: 0 auto 16px; }
-  .aislot.is-left .aiprompt, .aislot.is-right .aiprompt { transform-origin: 50% 100%; animation-name: bubble-up; }
-  .aislot.is-left .aiprompt::after, .aislot.is-right .aiprompt::after { top: auto; margin-top: 0; right: auto; left: 50%; margin-left: -6px; bottom: -6.5px; border: 0; border-right: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
-}
-.aiprompt:hover { background: hsl(var(--secondary) / 0.5); }
-.aiprompt:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
-.aiprompt.is-copied { background: hsl(var(--success) / 0.12); }
-.aiprompt small { display: block; margin-top: 3px; font-size: 11px; color: hsl(var(--success)); }
-.airow { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px dashed hsl(var(--border) / 0.8); font-size: 13px; }
-.airow .pmark { width: 30px; height: 30px; }
-.airow .pmark img { width: 20px; height: 20px; }
-.airow .n { flex: 1; }
-.airow .jny-btn { padding: 6px 16px; font-size: 12.5px; }
-.aidone { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 500; color: hsl(var(--success)); background: hsl(var(--success) / 0.1); animation: bks-fade-in 300ms var(--ease-out) forwards; }
+.agent-title { font-family: var(--font-display); font-size: 21px; line-height: 1.25; margin: 34px 0 6px; opacity: 0; animation: bks-fade-in 500ms var(--ease-out) 800ms forwards; }
+.agent-lead { margin: 0 0 14px; font-size: 13px; color: hsl(var(--muted-foreground)); opacity: 0; animation: bks-fade-in 500ms var(--ease-out) 800ms forwards; }
+.agent-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; opacity: 0; animation: bks-fade-in 500ms var(--ease-out) 900ms forwards; }
+.agent-chip { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 5px 0 12px; border: 1px solid hsl(var(--border)); border-radius: 99px; font-size: 12.5px; }
+.agent-chip img { width: 14px; height: 14px; border-radius: 50%; }
+.agent-chip .go { font: inherit; font-size: 11.5px; min-height: 24px; padding: 0 11px; border: 0; border-radius: 99px; background: hsl(var(--secondary)); color: hsl(var(--foreground)); cursor: pointer; transition: background-color 150ms var(--ease-out); }
+.agent-chip .go:hover { background: hsl(var(--secondary) / 0.6); }
+.agent-chip .go:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.agent-chip.is-on { padding-right: 12px; border-color: hsl(var(--success) / 0.45); background: hsl(var(--success) / 0.08); }
+.agent-chip .st { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: hsl(var(--success)); animation: bks-fade-in 300ms var(--ease-out) forwards; }
 
-/* A verified connection pays off with the first live task from Att gora. */
-.aihandoff { max-width: 440px; margin: 24px auto 0; text-align: center; animation: bks-fade-in 300ms var(--ease-out) both; }
-.aihandoff-lead { margin: 0 0 12px; font-family: var(--font-display); font-size: 21px; line-height: 1.3; }
-.aihandoff-task { margin: 0 0 12px; font-size: 14px; line-height: 1.5; }
-.aihandoff-note { font-size: 13px; line-height: 1.6; color: hsl(var(--muted-foreground)); }
-.aihandoff .aihandoff-note { margin: 12px 0 0; }
-.aihandoff a, .aihandoff button, .bks-done .jny-qactions button, .bks-done .airow .jny-btn { min-height: 44px; }
-.aihandoff a, .aihandoff button { font-size: 13px; }
-.aihandoff a { white-space: normal; height: auto; text-align: center; }
-.aihandoff a[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+/* what the app already found: one quiet line, the rows behind it; no icons, no hairlines */
+.found { max-width: 480px; margin: 22px auto 0; }
+.found-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 99px; background: none; font: inherit; font-size: 13px; color: hsl(var(--muted-foreground)); cursor: pointer; transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out); }
+.found-toggle:hover { background: hsl(var(--secondary) / 0.5); color: hsl(var(--foreground)); }
+.found-toggle:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.found-toggle .chev { transition: transform 150ms var(--ease-out); }
+.found-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.found-list { list-style: none; margin: 4px 0 0; padding: 0; text-align: left; }
+.found-row { display: flex; align-items: center; gap: 16px; padding: 8px 4px; font-size: 13.5px; }
+.found-row .l { flex: 1; min-width: 0; }
+.found-row .n { margin-left: 6px; padding: 2px 9px; border-radius: 99px; background: hsl(var(--secondary)); font-size: 12px; font-variant-numeric: tabular-nums; }
+.found-row .a { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.found-row .open { font: inherit; font-size: 11.5px; height: 24px; padding: 0 11px; border: 1px solid hsl(var(--border)); border-radius: 99px; background: hsl(var(--card)); color: hsl(var(--foreground)); cursor: pointer; transition: background-color 150ms var(--ease-out); }
+.found-row .open:hover { background: hsl(var(--secondary) / 0.5); }
+.found-row .open:disabled { opacity: 0.5; cursor: default; }
+.found-note { margin: 22px auto 0; font-size: 13px; color: hsl(var(--muted-foreground)); }
+@media (max-width: 640px) { .found-row { flex-wrap: wrap; } .found-row .a { width: 100%; } }
+.bks-done .jny-qactions button { min-height: 44px; }
 .bks-done .jny-qactions { margin-top: 16px; }
 .bks .jny-pt { width: min(150px, 18vw); }
 .bks .jny-journey, .bks .jny-canvas { max-width: 100%; }

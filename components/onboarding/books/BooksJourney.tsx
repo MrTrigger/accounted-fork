@@ -107,7 +107,7 @@ export default function BooksJourney(props: BooksJourneyProps) {
 
   /* ── leaving the act ─────────────────────────────────────────────── */
   const leave = useCallback(
-    async (outcome: 'done' | 'skipped') => {
+    async (outcome: 'done' | 'skipped', href = '/') => {
       if (leaving) return
       setLeaving(true)
       setLeaveError(false)
@@ -124,7 +124,7 @@ export default function BooksJourney(props: BooksJourneyProps) {
         return
       }
       clearDraft()
-      router.push('/')
+      router.push(href)
       router.refresh()
     },
     [leaving, router, state.path, clearDraft],
@@ -188,7 +188,7 @@ export default function BooksJourney(props: BooksJourneyProps) {
       case 'skv':
         return <SkvStep ctx={ctx} />
       case 'done':
-        return <DoneStep ctx={ctx} onLeave={(o) => void leave(o)} leaving={leaving} />
+        return <DoneStep ctx={ctx} onLeave={(o, href) => void leave(o, href)} leaving={leaving} />
     }
   }
 
