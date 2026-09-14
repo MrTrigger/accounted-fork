@@ -113,6 +113,19 @@ export interface SuggestedVatTreatment {
 }
 
 /**
+ * The momssats an account label spells out ("Inköp varor EU 12%", "Försäljning
+ * 6 % moms"), or null when it names none. Shared by the label suggestion and
+ * the provider-code prefill: a source system's reverse-charge code says
+ * which ruta the basis feeds but not the acquisition rate, and Fortnox ships
+ * 4516/4517-style 12% and 6% accounts under the same IVEU code as 4515.
+ */
+export function vatRateFromLabel(label: string): 0.25 | 0.12 | 0.06 | null {
+  const percent = /\b(25|12|6)\s*%/.exec(label)
+  if (!percent) return null
+  return percent[1] === '25' ? 0.25 : percent[1] === '12' ? 0.12 : 0.06
+}
+
+/**
  * Suggest a VAT treatment from a SIE account label. SIE #SRU and #KTYP are
  * deliberately excluded: neither record carries a momsdeklaration treatment.
  * Suggestions are persisted only after the user reviews the import mapping.
@@ -124,8 +137,8 @@ export function suggestVatTreatment(
   const accountClass = Number(accountNumber.charAt(0))
   if (accountClass < 3 || accountClass > 6) return null
   const name = accountName.toLocaleLowerCase('sv-SE')
-  const percent = /\b(25|12|6)\s*%/.exec(name)
-  const rate = percent ? Number(percent[1]) / 100 : 0.25
+  const percent = vatRateFromLabel(name)
+  const rate = percent ?? 0.25
 
   if (accountClass === 3) {
     if (/\boss\b|one stop shop|unionsordning/.test(name)) return { treatment: 'oss', rate: null }

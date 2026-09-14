@@ -5861,6 +5861,7 @@
     "vat_treatment_column": "Momskod",
     "vat_treatment_confirm": "Bekräfta",
     "vat_treatment_confirm_help": "Godkänn momskoden för raden så räknas den som granskad. Ändra momskod eller momssats först om förslaget inte stämmer.",
+    "vat_treatment_source_code": "Momskod i källsystemet: {code}",
     "new_account_filter": "{count} nya konton skapas",
     "new_account_option": "skapas vid importen",
     "source_name_missing": "namn saknas i filen",

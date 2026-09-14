@@ -18,6 +18,7 @@ import {
   deleteConsent,
   resolveConsent,
   fetchCompanyInfoDirect,
+  fetchAccountingAccountsDirect,
   ProviderTokenInvalidError,
   ProviderCompanyMismatchError,
   ConsentNotFoundError,
@@ -46,6 +47,8 @@ import { parseSIEFile, validateSIEFile } from '@/lib/import/sie-parser'
 import { mergeParsedSIEFiles } from '@/lib/import/sie-merge'
 import { scanSieForCp1252Artifacts, formatSieArtifactWarning } from '@/lib/import/sie-artifact-scan'
 import { suggestMappings, getMappingStats, isSystemAccount } from '@/lib/import/account-mapper'
+import { applySourceVatCodes } from '@/lib/import/account-vat-treatment'
+import { fortnoxVatCodeToTreatment } from '@/lib/providers/fortnox/vat-codes'
 import { loadMappings, generateImportPreview, findOverlappingPeriodImports } from '@/lib/import/sie-import'
 import { buildMappingTargets } from './lib/mapping-targets'
 import type { ProviderName } from '@/lib/providers/types'
@@ -1249,7 +1252,30 @@ export const arcimMigrationExtension: Extension = {
           // such an account was impossible to map onto. See
           // ./lib/mapping-targets.
           const mappingTargets = await buildMappingTargets(supabase, companyId)
-          const mappings = suggestMappings(allAccounts, mappingTargets, existingRecords)
+          let mappings = suggestMappings(allAccounts, mappingTargets, existingRecords)
+
+          // The momskod each account has in the source system. SIE4 #KONTO
+          // carries none, so without this the mapping step can only guess
+          // from the label, and a Fortnox user saw it propose codes that
+          // differed from their own kontoplan (#2585). Optional enrichment:
+          // a failed chart fetch is logged and the step falls back to the
+          // label suggestion rather than failing an import that does not
+          // need it.
+          try {
+            const sourceAccounts = await fetchAccountingAccountsDirect(provider, resolved.accessToken)
+            const codesByAccount = new Map<string, string>()
+            for (const account of sourceAccounts) {
+              if (account.vatCode) codesByAccount.set(account.accountNumber, account.vatCode)
+            }
+            if (codesByAccount.size > 0) {
+              mappings = applySourceVatCodes(mappings, codesByAccount, fortnoxVatCodeToTreatment)
+              const translated = mappings.filter((m) => m.providerVatTreatment).length
+              log.info(`Account mapping: ${codesByAccount.size} ${provider} VAT codes fetched, ${translated} translated to a treatment`)
+            }
+          } catch (err) {
+            log.warn(`Account mapping: ${provider} chart fetch failed, VAT codes fall back to label suggestions`, err as Error)
+          }
+
           const mappingStats = getMappingStats(mappings)
 
           log.info(`Account mapping: ${allAccounts.length} unique accounts across ${sieFiles.length} files, ${mappingStats.unmapped} unmapped`)
