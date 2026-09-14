@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import type { AccountMapping } from '@/lib/import/types'
 import { isValidBASRange } from '@/lib/import/account-mapper'
+import { isAccountNumber } from '@/lib/invariants/account-number'
 import type { BASAccount } from '@/types'
 import { getAccountClassName } from '@/lib/bookkeeping/account-descriptions'
 import {
@@ -178,6 +179,7 @@ export default function AccountMappingStep({
   const accountsByClass = useMemo(() => {
     const groups: { [key: string]: BASAccount[] } = {}
     for (const account of basAccounts) {
+      if (!isAccountNumber(account.account_number)) continue
       const className = getAccountClassName(account.account_class)
       if (!groups[className]) {
         groups[className] = []
