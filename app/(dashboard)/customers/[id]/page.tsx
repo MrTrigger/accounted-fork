@@ -268,6 +268,9 @@ export default function CustomerDetailPage({
       <div className="grid gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start lg:gap-x-12">
       <div className="space-y-8">
       <DetailSection kicker={t('section_contact')}>
+        <DefRow label={t('def_contact_person')}>
+          {customer.contact_person || <DefEmpty />}
+        </DefRow>
         <DefRow label={t('def_email')}>
           {customer.email ? (
             <a href={`mailto:${customer.email}`} className="hover:underline">
@@ -453,6 +456,14 @@ export default function CustomerDetailPage({
               name: customer.name,
               customer_type: customer.customer_type,
               customer_number: customer.customer_number || undefined,
+              // Every field the form submits must round-trip here: the form
+              // sends '' / [] for an omitted value on edit as an explicit
+              // clear, so leaving one out wiped it on the next save
+              // (contact_person and the per-customer copy lists did exactly
+              // that, and the contact person also never showed on the page).
+              contact_person: customer.contact_person || undefined,
+              invoice_email_cc_addresses: customer.invoice_email_cc_addresses ?? undefined,
+              invoice_email_bcc_addresses: customer.invoice_email_bcc_addresses ?? undefined,
               email: customer.email || undefined,
               phone: customer.phone || undefined,
               address_line1: customer.address_line1 || undefined,
