@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { cookies, headers } from 'next/headers'
 import DashboardNav from '@/components/dashboard/DashboardNav'
@@ -8,6 +9,7 @@ import { computeIdentityHash } from '@/lib/analytics/identity-hash'
 import { AgentSheetProvider } from '@/components/agent/AgentSheetProvider'
 import AgentTrigger from '@/components/agent/AgentTrigger'
 import LazyCommandPalette from '@/components/common/LazyCommandPalette'
+import { SupportDialogHost } from '@/components/support/SupportDialogHost'
 import { SettingsHotkey } from '@/components/settings/SettingsHotkey'
 import { SessionTimeoutController } from '@/components/auth/SessionTimeoutController'
 import { SandboxBanner } from '@/components/dashboard/SandboxBanner'
@@ -239,6 +241,9 @@ export default async function DashboardLayout({
             </main>
             {settingsModal}
             <SettingsHotkey />
+          <Suspense fallback={null}>
+            <SupportDialogHost />
+          </Suspense>
           </div>
         </AgentSheetProvider>
       </CompanyProvider>
