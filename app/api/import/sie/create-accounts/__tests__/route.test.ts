@@ -80,7 +80,29 @@ describe('POST /api/import/sie/create-accounts', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Inga konton att skapa.')
+    expect(body.error).toMatchObject({ code: 'VALIDATION_ERROR' })
+  })
+
+  it.each(['999', '193000', '19A0', 1930])('rejects invalid account %j before creating any accounts', async number => {
+    const response = await POST(createMockRequest('/api/import/sie/create-accounts', {
+      method: 'POST', body: { accounts: [{ number: '1930', name: 'Bank' }, { number, name: 'Invalid' }] },
+    }), emptyParams)
+    expect(response.status).toBe(400)
+    expect((await response.json()).error.details.issues[0].field).toBe('accounts.1.number')
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  it.each([null, {}, { accounts: [null] }, { accounts: [{ number: '1930' }] }])('returns 400 for malformed account input: %j', body => {
+    return POST(createMockRequest('/api/import/sie/create-accounts', { method: 'POST', body }), emptyParams)
+      .then(response => expect(response.status).toBe(400))
+  })
+
+  it('returns 400 for malformed JSON before chart writes', async () => {
+    const response = await POST(new Request('https://example.test/api/import/sie/create-accounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken',
+    }), emptyParams)
+    expect(response.status).toBe(400)
+    expect(supabase.from).not.toHaveBeenCalled()
   })
 
   it('upserts the accounts and reports how many were created', async () => {

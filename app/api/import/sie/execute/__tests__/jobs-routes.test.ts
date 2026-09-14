@@ -130,6 +130,26 @@ describe('durable SIE HTTP boundaries',()=>{
     expect(supabase.storage.from).not.toHaveBeenCalled()
     expect(supabase.rpc).not.toHaveBeenCalled()
   })
+
+  it('names both invalid source mappings in the API response instead of a generic 400', async () => {
+    const form = new FormData()
+    form.set('file', new File(['#SIETYP 4\n#RAR 0 20260101 20261231'], 'invalid-mappings.se'))
+    form.set('mappings', JSON.stringify(['999', '193000'].map(number => ({
+      sourceAccount: number, targetAccount: number, sourceName: 'Source', targetName: 'Target',
+      confidence: 1, matchType: 'manual', isOverride: true,
+    }))))
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+    const { error } = await response.json()
+    expect(response.status).toBe(400)
+    expect(error.code).toBe('VALIDATION_ERROR')
+    expect(error.message).toContain('Källkonto 999')
+    expect(error.message).toContain('Källkonto 193000')
+    expect(error.message).toContain('måste ha exakt fyra siffror')
+    expect(error.message_en).toContain('Source account 193000')
+    expect(error.message_en).toContain('four digits')
+    expect(submit).not.toHaveBeenCalled()
+    expect(supabase.rpc).not.toHaveBeenCalled()
+  })
   it('refuses malformed action input before ownership RPCs',async()=>{
     expect((await act(request({action:'delete'}),params)).status).toBe(400)
     expect(action).not.toHaveBeenCalled()

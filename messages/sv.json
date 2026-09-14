@@ -8175,6 +8175,8 @@
     "theater_accounts_sub": "{mapped} av {total} konton",
     "theater_counterparties": "Motparter känns igen",
     "theater_counterparties_sub": "{count, plural, one {# motpart} other {# motparter}}",
+    "archived_only_accounts": "Konton {accounts} används inte av saldona eller verifikationerna som importeras. De sparas i SIE-originalet och skapas inte i kontoplanen.",
+    "accounts_mapped_ready": "Alla konton som ska importeras är kopplade. Nya konton skapas när importen startar.",
     "theater_balance": "Kontrollerar balansen",
     "theater_balance_ok": "Varje år balanserar",
     "theater_balance_warn": "Obalans hittad, se varningarna efteråt",
