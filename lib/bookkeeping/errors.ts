@@ -370,6 +370,7 @@ export type BookkeepingOperation =
   | 'resolve_account_ids'
   | 'create_draft_entry'
   | 'create_entry_lines'
+  | 'cancel_draft_entry'
   | 'commit_entry'
   | 'commit_asset_disposal'
   | 'fetch_asset_disposal_entry'
