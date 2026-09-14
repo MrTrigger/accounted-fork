@@ -1,4 +1,4 @@
-import { beforeEach,describe,expect,it,vi } from 'vitest'
+import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { NextResponse } from 'next/server'
 import { createQueuedMockSupabase } from '@/tests/helpers'
 
@@ -14,6 +14,7 @@ vi.mock('@/lib/import/sie-job-worker',()=>({runSIEWorker:vi.fn()}))
 vi.mock('next/server',async load=>({...await load<typeof import('next/server')>(),after:vi.fn()}))
 
 import {POST as execute} from '../route'
+import {POST as createAccounts} from '../../create-accounts/route'
 import {POST as upload} from '../../upload/route'
 import {POST as act} from '../../[id]/action/route'
 import {GET as holds} from '../../holds/route'
@@ -34,6 +35,7 @@ beforeEach(()=>{
   sign.mockResolvedValue({data:{token:'upload-token'},error:null})
   submit.mockResolvedValue(job);action.mockResolvedValue(job)
 })
+afterEach(() => vi.unstubAllEnvs())
 
 describe('durable SIE HTTP boundaries',()=>{
   for(const [name,route] of Object.entries(routes)) it(`${name} requires authentication`,async()=>{
@@ -65,6 +67,68 @@ describe('durable SIE HTTP boundaries',()=>{
     expect(submit).toHaveBeenCalledWith(supabase,'company-1','actor-1',expect.any(String),[],expect.objectContaining({filename:'small.se'}),expect.any(File))
     const {runSIEWorker}=await import('@/lib/import/sie-job-worker')
     expect(runSIEWorker).not.toHaveBeenCalled()
+  })
+  it('accepts a custom account created during preview without requiring it to be remapped', async () => {
+    queued.enqueue({ data: [{ account_number: '9999' }] })
+    const created = await createAccounts(request({ accounts: [{ number: '9999', name: 'Custom account' }] }), staticParams)
+    expect(created.status).toBe(200)
+    expect((await created.json()).created).toBe(1)
+
+    // A chart-only custom account must not block otherwise ordinary vouchers.
+    const mappings = ['9999', '1930', '3001'].map(number => ({
+      sourceAccount: number, targetAccount: number, sourceName: 'Account', targetName: 'Account',
+      confidence: 1, matchType: 'manual', isOverride: false,
+    }))
+    const form = new FormData()
+    form.set('file', new File([
+      '#SIETYP 4\n#RAR 0 20260101 20261231\n#KONTO 9999 "Custom account"\n' +
+      '#KONTO 1930 "Bank"\n#KONTO 3001 "Sales"\n' +
+      '#VER A 1 20260201 "Sale"\n{\n#TRANS 1930 {} 100\n#TRANS 3001 {} -100\n}',
+    ], 'custom-account.se'))
+    form.set('mappings', JSON.stringify(mappings))
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+
+    expect(response.status).toBe(202)
+    expect((await response.json()).data.importId).toBe(job.id)
+    expect(submit).toHaveBeenCalledWith(supabase, 'company-1', 'actor-1', expect.any(String), mappings,
+      expect.objectContaining({ filename: 'custom-account.se' }), expect.any(File))
+  })
+
+  it.each(['999', '99999', '99A9', 9999])('rejects malformed target account %j before submitting a job', async targetAccount => {
+    const form = new FormData()
+    form.set('file', new File(['#SIETYP 4\n#RAR 0 20260101 20261231'], 'invalid-account.se'))
+    form.set('mappings', JSON.stringify([{
+      sourceAccount: '9999', targetAccount, sourceName: 'Account', targetName: 'Account',
+      confidence: 1, matchType: 'manual', isOverride: false,
+    }]))
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toMatchObject({
+      code: 'VALIDATION_ERROR', details: { issues: [expect.objectContaining({ field: '0.targetAccount' })] },
+    })
+    expect(submit).not.toHaveBeenCalled()
+  })
+  it('returns actionable bilingual 400 for financial use of class 9 through the real submission validator', async () => {
+    vi.stubEnv('SIE_IMPORT_JOBS', 'true')
+    const actual = await vi.importActual<typeof import('@/lib/import/sie-jobs')>('@/lib/import/sie-jobs')
+    submit.mockImplementationOnce(actual.submitSIEJob)
+    const form = new FormData()
+    form.set('file', new File(['#SIETYP 4\n#RAR 0 20260101 20261231\n' +
+      '#VER A 1 20260201 "Sale"\n{\n#TRANS 1930 {} 100\n#TRANS 9999 {} -100\n}'], 'custom.se'))
+    form.set('mappings', JSON.stringify(['1930', '9999'].map(number => ({
+      sourceAccount: number, targetAccount: number, sourceName: 'Account', targetName: 'Account',
+      confidence: 1, matchType: 'manual', isOverride: true,
+    }))))
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+    expect(response.status).toBe(400)
+    expect((await response.json()).error).toMatchObject({
+      code: 'SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS',
+      message: expect.stringContaining('1000-8999'), message_en: expect.stringContaining('1000-8999'),
+    })
+    expect(supabase.from).not.toHaveBeenCalled()
+    expect(supabase.storage.from).not.toHaveBeenCalled()
+    expect(supabase.rpc).not.toHaveBeenCalled()
   })
   it('refuses malformed action input before ownership RPCs',async()=>{
     expect((await act(request({action:'delete'}),params)).status).toBe(400)
