@@ -20,6 +20,7 @@ export interface StoredPickerAccount {
   iban?: string
   bban?: string
   currency: string
+  enabled?: boolean
   ledger_account?: string
   balance?: number
   claimed_by_company_id?: string
@@ -65,7 +66,12 @@ export function toPickerAccounts(
     currency: (a.currency || 'SEK').toUpperCase(),
     ledger: a.ledger_account ?? null,
     balance: typeof a.balance === 'number' ? a.balance : null,
-    claimedBy: a.claimed_by_company_id
+    // Flagged AND disabled here, the same conjunction partitionByClaim
+    // requires (extensions/general/enable-banking/lib/claimed-accounts.ts;
+    // core cannot import from extensions, so the rule is restated, not
+    // shared). An account that syncs in THIS company must never be labelled
+    // as belonging to another one, whatever a stale flag says.
+    claimedBy: a.claimed_by_company_id && a.enabled === false
       ? a.claimed_by_company_name || labels.otherCompany
       : null,
   }))

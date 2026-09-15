@@ -12,6 +12,7 @@ describe('toPickerAccounts', () => {
         iban: 'SE6380000832798443379915',
         bban: '832798443379915',
         currency: 'SEK',
+        enabled: false,
         claimed_by_company_id: 'ed461bc1-dbb5-4568-ae20-9337515878e2',
         claimed_by_company_name: 'Arcim Technology AB',
       },
@@ -31,8 +32,8 @@ describe('toPickerAccounts', () => {
 
   it('a consent where every account is claimed still yields every account (issue #2647)', () => {
     const stored: StoredPickerAccount[] = [
-      { uid: 'a', currency: 'SEK', claimed_by_company_id: 'c1', claimed_by_company_name: 'Bolag Ett' },
-      { uid: 'b', currency: 'SEK', claimed_by_company_id: 'c2' },
+      { uid: 'a', currency: 'SEK', enabled: false, claimed_by_company_id: 'c1', claimed_by_company_name: 'Bolag Ett' },
+      { uid: 'b', currency: 'SEK', enabled: false, claimed_by_company_id: 'c2' },
     ]
     const out = toPickerAccounts(stored, labels)
     expect(out).toHaveLength(2)
@@ -41,11 +42,21 @@ describe('toPickerAccounts', () => {
     expect(out.map((a) => a.name)).toEqual(['Bankkonto', 'Bankkonto'])
   })
 
+  it('a flagged account that is enabled here is not labelled as another company\'s', () => {
+    // partitionByClaim keeps the same conjunction load-bearing: an account
+    // syncing in THIS company must never read as belonging elsewhere, however
+    // the flag survived (support SQL, a future writer).
+    const stored: StoredPickerAccount[] = [
+      { uid: 'a', currency: 'SEK', enabled: true, claimed_by_company_id: 'c1', claimed_by_company_name: 'Bolag Ett' },
+    ]
+    expect(toPickerAccounts(stored, labels)[0].claimedBy).toBeNull()
+  })
+
   it('free accounts come first, and the bank order holds inside each group', () => {
     const stored: StoredPickerAccount[] = [
-      { uid: 'claimed-1', currency: 'SEK', claimed_by_company_id: 'c1' },
+      { uid: 'claimed-1', currency: 'SEK', enabled: false, claimed_by_company_id: 'c1' },
       { uid: 'free-1', currency: 'SEK' },
-      { uid: 'claimed-2', currency: 'SEK', claimed_by_company_id: 'c2' },
+      { uid: 'claimed-2', currency: 'SEK', enabled: false, claimed_by_company_id: 'c2' },
       { uid: 'free-2', currency: 'EUR' },
     ]
     expect(toPickerAccounts(stored, labels).map((a) => a.uid)).toEqual([
