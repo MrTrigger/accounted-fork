@@ -2,39 +2,55 @@ import { readFileSync } from 'fs'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 
-// The journey is a fixed, non-scrolling scene: a step that outgrows its box has
-// to give up space somewhere, and the one thing it must never give up is its
-// own primary action (#2642). The three invariants below are what keep the
-// button reachable; they live in CSS, so a unit test can only guard the shape.
+// The first act of onboarding is a fixed, non-scrolling scene: a step that
+// outgrows its box has to give up space somewhere, and the one thing it must
+// never give up is its own primary action (#2642). Those invariants live in a
+// stylesheet, so this guards their shape, not their pixels: the geometry itself
+// was verified by rendering journey.css at 900, 768, 620 and 500 px tall.
 const dir = path.resolve(__dirname, '..')
-const css = readFileSync(path.join(dir, 'journey.css'), 'utf8')
+const raw = readFileSync(path.join(dir, 'journey.css'), 'utf8')
+const css = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ')
 const journey = readFileSync(path.join(dir, 'OnboardingJourney.tsx'), 'utf8')
+const address = readFileSync(path.join(dir, 'AddressFields.tsx'), 'utf8')
 
-/** The declarations of the rule that starts with this selector, comments out. */
+/** The declarations of the first rule whose selector list contains this text. */
 function ruleFor(selector: string): string {
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
-  const at = stripped.indexOf(selector)
+  const at = css.indexOf(selector)
   expect(at, `no rule for ${selector}`).toBeGreaterThan(-1)
-  const open = stripped.indexOf('{', at)
-  return stripped.slice(open + 1, stripped.indexOf('}', open))
+  const open = css.indexOf('{', at)
+  return css.slice(open + 1, css.indexOf('}', open))
 }
 
 describe('journey step layout', () => {
   it('sizes the question area from its content so the balance spacer yields first', () => {
-    // With flex-basis 0 the line never overflows, so .jny-balance keeps its
-    // 180px while the step is clipped: the button ends up below the clip edge
-    // with free space still on screen underneath it.
-    expect(ruleFor('.jny-qarea')).toMatch(/flex:\s*1\s+1\s+auto/)
+    // With flex-basis 0 the line inside .jny-center never overflows, so
+    // .jny-balance keeps its 180px while the question area gets only the
+    // leftover height: the step is then clipped with free space still on
+    // screen below it, which is the reported bug.
+    expect(ruleFor('.jny-qarea {')).not.toMatch(/flex:\s*1\s*;/)
+    expect(ruleFor('.jny-qarea {')).toMatch(/flex:\s*(1 1 auto|auto)\s*;/)
   })
 
-  it('seats the action row at the bottom of the step it belongs to', () => {
-    // Sticky only travels inside its own containing block, so the sticky child
-    // has to be the row itself or the wrapper around it. Nested deeper it has
-    // nowhere to travel and the row is clipped again.
-    const rule = ruleFor('.jny-qstep > .jny-qactions')
+  it('seats the action row at the bottom of the step, in the first act only', () => {
+    // Two things the selector has to keep. Direct child: sticky travels only
+    // inside its own containing block, so a row one div deeper has nowhere to
+    // go. Scoped to .jny-qarea: the books act reuses .jny-qstep with
+    // `overflow: visible`, where the scrollport is the document and sticky
+    // would pin the row to the browser window over the wizard it belongs to.
+    const rule = ruleFor('.jny-qarea > .jny-qstep > .jny-qactions')
     expect(rule).toMatch(/position:\s*sticky/)
     expect(rule).toMatch(/bottom:\s*0/)
-    expect(css).toMatch(/\.jny-qstep > \.jny-reveal/)
+    expect(css).not.toMatch(/(^|[,{}]) ?\.jny-qstep > \.jny-qactions/)
+    expect(ruleFor('.bks-qarea .jny-qstep')).toMatch(/overflow:\s*visible/)
+  })
+
+  it('keeps every action row of the first act a direct child of its step', () => {
+    // The address step used to wrap its skip row in a bare div, which put it
+    // out of the selector's reach and left that one step clipping itself.
+    expect(address).toContain('<div className="jny-qactions">')
+    expect(address.slice(address.indexOf('return ('), address.indexOf('jny-qactions'))).not.toMatch(
+      /<div>\s*$/m,
+    )
   })
 
   it('does not nest a second scroll box around the delayed action row', () => {

@@ -94,20 +94,38 @@
 /* Last line of defence when even the reclaimed space is not enough: the step is
    a scroll box inside a page that never scrolls, so its action row stays seated
    at the bottom of the step and the answer surface scrolls under it, instead of
-   the button hanging below the clip edge (#2642). Sticky only travels inside its
-   own containing block, so the sticky child must be the row itself or the
-   wrapper around it, never something nested deeper. */
-.jny-qstep > .jny-qactions,
-.jny-qstep > .jny-reveal {
+   the button hanging below the clip edge (#2642). Two things this selector has
+   to keep: the row must be a DIRECT child (sticky only travels inside its own
+   containing block, so a row nested one div deeper has nowhere to go), and the
+   step must be the journey's own scrolling one. The books act reuses .jny-qstep
+   with `max-height: none; overflow: visible` further down this file, where the
+   scrollport is the document: sticky there would pin the row to the browser
+   window over the wizard it belongs to. */
+.jny-qarea > .jny-qstep > .jny-qactions,
+.jny-qarea > .jny-qstep > .jny-reveal,
+.jny-qarea > .jny-qstep > .jny-reveal-wait {
   position: sticky;
   bottom: 0;
   z-index: 1;
-  padding-bottom: 4px;
+}
+/* Below this height a step can still outrun the box after the spacer has
+   given up everything, so the row above is pinned over the answer surface and
+   each action carries the page colour out to its own edge to stay legible: a
+   halo around the control, not a band across the step, which would paint over
+   the skyline behind the column. Taller windows never pin, so they keep the
+   approved composition untouched. */
+@media (max-height: 640px) {
+  .jny-qarea > .jny-qstep > .jny-qactions > *,
+  .jny-qarea > .jny-qstep > .jny-reveal > .jny-qactions > * {
+    box-shadow: 0 0 0 9px hsl(var(--background));
+    border-radius: 99px;
+  }
 }
 /* A delayed action row inside a step: it rises like a step, but is not a second
    scroll box, which would clip the row it wraps. */
 .jny-reveal { animation: jnyQIn 380ms var(--ease-out); }
-/* A step slot that is laid out before it shows: same box, invisible, so its arrival shifts nothing. */
+/* A step slot that is laid out before it shows: same box, same seat at the
+   bottom of the step, invisible, so its arrival shifts nothing. */
 .jny-reveal-wait { visibility: hidden; }
 @keyframes jnyQIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .jny-qtitle {
