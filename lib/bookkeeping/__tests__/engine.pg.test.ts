@@ -185,7 +185,39 @@ describe('engine.pg: triggers & RPCs that mocks cannot catch', () => {
         `UPDATE public.journal_entries SET status = 'cancelled', description = 'tampered' WHERE id = $1`,
         [entryId],
       ),
-    ).rejects.toThrow(/Cannot modify fields of a posted entry during cancelled/i)
+    ).rejects.toThrow(/Cannot modify fields of a posted entry during cancellation/i)
+  })
+
+  it('still allows the storno path to set reversed_by_id while reversing', async () => {
+    const { userId, companyId, fiscalPeriodId } = await seedCompany()
+
+    const originalId = await insertDraftJournalEntry({
+      userId,
+      companyId,
+      fiscalPeriodId,
+      status: 'posted',
+      voucherNumber: 1,
+    })
+    const stornoId = await insertDraftJournalEntry({
+      userId,
+      companyId,
+      fiscalPeriodId,
+      status: 'posted',
+      voucherNumber: 2,
+    })
+
+    // The cancelled branch is field-locked with a full-row comparison; the
+    // reversed branch must NOT be, because this is the real storno shape.
+    await getPool().query(
+      `UPDATE public.journal_entries SET status = 'reversed', reversed_by_id = $1 WHERE id = $2`,
+      [stornoId, originalId],
+    )
+    const persisted = await getPool().query<{ status: string; reversed_by_id: string }>(
+      `SELECT status, reversed_by_id FROM public.journal_entries WHERE id = $1`,
+      [originalId],
+    )
+    expect(persisted.rows[0]!.status).toBe('reversed')
+    expect(persisted.rows[0]!.reversed_by_id).toBe(stornoId)
   })
 
   it('next_voucher_number falls back to the company owner when auth.uid() is NULL', async () => {

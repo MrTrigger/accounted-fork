@@ -3,9 +3,15 @@
 -- etc.) in the same statement that cancels a posted entry, with no trace,
 -- and the trial balance excludes cancelled entries so it just disappears.
 --
--- Fix: give 'reversed' and 'cancelled' the same field-lock, expressed as a
--- full-row comparison (excluding status/updated_at) instead of an enumerated
--- field list, so future columns are covered automatically.
+-- Fix: lock the cancelled branch with a full-row comparison (excluding
+-- status/updated_at), so future columns are covered without a hand-maintained
+-- list. Every legitimate posted -> cancelled call site writes status alone
+-- (reverseEntry's orphan cleanup, cancelOrphanedPaymentEntry), so nothing
+-- legitimate needs the looser rule.
+--
+-- The reversed branch keeps its enumerated list unchanged: the storno path
+-- legitimately writes reversed_by_id in the same statement as the status, so
+-- a full-row comparison there would break real reversals.
 CREATE OR REPLACE FUNCTION public.enforce_journal_entry_immutability()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -39,8 +45,23 @@ BEGIN
   END IF;
 
   IF OLD.status = 'posted' AND NEW.status IN ('reversed', 'cancelled') THEN
-    IF (to_jsonb(NEW) - 'status' - 'updated_at') != (to_jsonb(OLD) - 'status' - 'updated_at') THEN
-      RAISE EXCEPTION 'Cannot modify fields of a posted entry during % (id: %)', NEW.status, OLD.id;
+    IF NEW.status = 'reversed' THEN
+      -- Unchanged from the live definition: the storno path sets
+      -- reversed_by_id alongside the status, so this stays an enumerated list.
+      IF NEW.description != OLD.description OR NEW.entry_date != OLD.entry_date
+         OR NEW.fiscal_period_id != OLD.fiscal_period_id
+         OR NEW.voucher_number != OLD.voucher_number
+         OR NEW.commit_method IS DISTINCT FROM OLD.commit_method
+         OR NEW.rubric_version IS DISTINCT FROM OLD.rubric_version
+         OR NEW.source_voucher_series IS DISTINCT FROM OLD.source_voucher_series
+         OR NEW.source_voucher_number IS DISTINCT FROM OLD.source_voucher_number THEN
+        RAISE EXCEPTION 'Cannot modify fields of a posted entry during reversal (id: %)', OLD.id;
+      END IF;
+    ELSE
+      -- cancelled: nothing but the status may move.
+      IF (to_jsonb(NEW) - 'status' - 'updated_at') != (to_jsonb(OLD) - 'status' - 'updated_at') THEN
+        RAISE EXCEPTION 'Cannot modify fields of a posted entry during cancellation (id: %)', OLD.id;
+      END IF;
     END IF;
     RETURN NEW;
   END IF;
