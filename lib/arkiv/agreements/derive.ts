@@ -401,6 +401,7 @@ const DERIVERS: Record<AgreementKind, Deriver> = {
     const noticeMonths = record.number('notice_months')
     const autoRenewal = record.text('auto_renewal') === 'yes'
     const title = `Försäkring ${record.text('policy_number') ?? counterparty.name ?? ''}`.trim()
+    record.text('cover_description')
 
     const obligations: ObligationDraft[] = []
     if (amount != null && startsOn) {
@@ -487,6 +488,8 @@ const DERIVERS: Record<AgreementKind, Deriver> = {
     const startsOn = record.date('effective_on') ?? record.date('signed_on')
     const endsOn = record.date('ends_on')
     const title = `Aktieägaravtal ${record.text('company_name') ?? ''}`.trim()
+    // Read for its source: the parties are what the page shows as the excerpt.
+    record.text('parties_summary')
     const deadlines: DeadlineDraft[] = endsOn ? [{ key: 'end', title: `${title} löper ut`, dueOn: endsOn, priority: 'normal', fields: ['ends_on'] }] : []
     return {
       agreement: {
@@ -602,6 +605,7 @@ const DERIVERS: Record<AgreementKind, Deriver> = {
     const endsOn = record.date('ends_on')
     const noticeMonths = record.number('notice_months')
     const title = `Avtal ${counterparty.name ?? ''}`.trim()
+    record.text('subject')
     const deadlines: DeadlineDraft[] = []
     if (endsOn && noticeMonths != null) {
       deadlines.push({
