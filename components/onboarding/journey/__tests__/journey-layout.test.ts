@@ -21,6 +21,25 @@ function ruleFor(selector: string): string {
   return css.slice(open + 1, css.indexOf('}', open))
 }
 
+/**
+ * How many JSX elements enclose the `.jny-qactions` row inside what a
+ * component returns, counting the returned fragment as level zero. Anything
+ * above zero is a wrapper, and a wrapper is exactly what the sticky rule's
+ * direct-child combinator cannot see through.
+ */
+function depthOfActionRow(source: string): number {
+  const jsx = source
+    .slice(source.indexOf('return ('), source.indexOf('jny-qactions'))
+    // arrow functions in props carry a `>` that would end a tag early
+    .replaceAll('=>', '==')
+  let depth = -1 // the returned root itself is level zero
+  for (const [tag] of jsx.matchAll(/<\/?[A-Za-z][^>]*?\/?>|<>|<\/>/g)) {
+    if (tag.startsWith('</')) depth -= 1
+    else if (!tag.endsWith('/>')) depth += 1
+  }
+  return depth
+}
+
 describe('journey step layout', () => {
   it('sizes the question area from its content so the balance spacer yields first', () => {
     // With flex-basis 0 the line inside .jny-center never overflows, so
@@ -45,12 +64,13 @@ describe('journey step layout', () => {
   })
 
   it('keeps every action row of the first act a direct child of its step', () => {
-    // The address step used to wrap its skip row in a bare div, which put it
-    // out of the selector's reach and left that one step clipping itself.
+    // The address step used to wrap its skip row in a div, which put it out of
+    // the selector's reach and left that one step clipping itself. Any wrapper
+    // does it, attributes or not, so count the depth rather than the markup:
+    // the row has to sit at the top level of what the component returns, which
+    // the step renders directly.
     expect(address).toContain('<div className="jny-qactions">')
-    expect(address.slice(address.indexOf('return ('), address.indexOf('jny-qactions'))).not.toMatch(
-      /<div>\s*$/m,
-    )
+    expect(depthOfActionRow(address)).toBe(0)
   })
 
   it('does not nest a second scroll box around the delayed action row', () => {
