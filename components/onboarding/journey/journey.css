@@ -77,8 +77,12 @@
 }
 
 /* ── question area ───────────────────────────────────────────────── */
+/* Sized from its content (flex-basis auto), not from the leftover space: a step
+   taller than the window then makes the line overflow, which is what lets
+   .jny-balance shrink out of the way before the step has to clip itself. With
+   flex-basis 0 the spacer kept its 180px while the step was cut off (#2642). */
 .jny-qarea {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   width: 100%;
   display: flex;
@@ -87,6 +91,22 @@
   padding: 10px 0;
 }
 .jny-qstep { max-height: 100%; overflow-y: auto; overscroll-behavior: contain; animation: jnyQIn 380ms var(--ease-out); }
+/* Last line of defence when even the reclaimed space is not enough: the step is
+   a scroll box inside a page that never scrolls, so its action row stays seated
+   at the bottom of the step and the answer surface scrolls under it, instead of
+   the button hanging below the clip edge (#2642). Sticky only travels inside its
+   own containing block, so the sticky child must be the row itself or the
+   wrapper around it, never something nested deeper. */
+.jny-qstep > .jny-qactions,
+.jny-qstep > .jny-reveal {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-bottom: 4px;
+}
+/* A delayed action row inside a step: it rises like a step, but is not a second
+   scroll box, which would clip the row it wraps. */
+.jny-reveal { animation: jnyQIn 380ms var(--ease-out); }
 /* A step slot that is laid out before it shows: same box, invisible, so its arrival shifts nothing. */
 .jny-reveal-wait { visibility: hidden; }
 @keyframes jnyQIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
