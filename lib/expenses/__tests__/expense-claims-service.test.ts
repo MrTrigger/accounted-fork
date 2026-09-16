@@ -647,11 +647,30 @@ describe('discardExpenseClaimForDeletedVoucher', () => {
 
   it('removes the register row left behind by the voucher delete', async () => {
     enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
-    enqueue({ data: null }) // delete
+    enqueue({ data: [{ id: 'c1' }] }) // conditional delete
 
     const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
     expect(result).toEqual({ ok: true, deleted: true })
     expect(findCall('expense_claims', 'delete')).toBeTruthy()
+  })
+
+  // The guards are a read; payout state can appear before the write lands.
+  it('keeps a claim that gained payout state after the guards ran', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
+    enqueue({ data: [] }) // predicate no longer matches
+    enqueue({ data: { id: 'c1' } }) // row is still there
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toMatchObject({ ok: false, code: 'ALREADY_PAID' })
+  })
+
+  it('treats a row someone else already removed as done, not a refusal', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
+    enqueue({ data: [] })
+    enqueue({ data: null }) // gone
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toEqual({ ok: true, deleted: false })
   })
 
   it('keeps a paid claim: deleting the voucher is not consent to discard a payout', async () => {

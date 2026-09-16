@@ -523,12 +523,38 @@ export async function discardExpenseClaimForDeletedVoucher(
     }
   }
 
-  const { error: deleteError } = await supabase
+  // The guards above are a read, so payout state can still appear between them
+  // and this write. Carry them into the delete's predicate and let the database
+  // decide: a claim that acquired a batch or was paid in the meantime no longer
+  // matches and survives. A salary line appearing in the same window needs no
+  // predicate, the FK is ON DELETE RESTRICT and the database refuses outright.
+  const { data: deleted, error: deleteError } = await supabase
     .from('expense_claims')
     .delete()
     .eq('id', claimId)
     .eq('company_id', companyId)
+    .eq('status', 'registered')
+    .is('payout_batch_id', null)
+    .select('id')
   if (deleteError) return { ok: false, code: 'DELETE_FAILED', detail: deleteError.message }
+
+  if (!deleted || deleted.length === 0) {
+    // Either someone else removed the row or it stopped being eligible. Only
+    // the second is a refusal; a claim that is simply gone is the outcome we
+    // wanted. Re-read rather than guess, so the caller's log says which.
+    const { data: still } = await supabase
+      .from('expense_claims')
+      .select('id')
+      .eq('id', claimId)
+      .eq('company_id', companyId)
+      .maybeSingle()
+    if (!still) return { ok: true, deleted: false }
+    return {
+      ok: false,
+      code: 'ALREADY_PAID',
+      detail: `claim ${claimId} gained payout state while its voucher was being deleted`,
+    }
+  }
   return { ok: true, deleted: true }
 }
 
