@@ -664,6 +664,16 @@ describe('discardExpenseClaimForDeletedVoucher', () => {
     expect(result).toMatchObject({ ok: false, code: 'ALREADY_PAID' })
   })
 
+  // Same condition as the guard above, reached from the other side of the
+  // race; it must not read as a different failure.
+  it('reports a payslip line that appeared mid-delete as ON_PAYSLIP, not a raw FK error', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
+    enqueue({ data: null, error: { code: '23503', message: 'violates foreign key constraint' } })
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toMatchObject({ ok: false, code: 'ON_PAYSLIP' })
+  })
+
   it('treats a row someone else already removed as done, not a refusal', async () => {
     enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
     enqueue({ data: [] })

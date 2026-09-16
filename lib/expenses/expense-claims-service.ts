@@ -536,7 +536,20 @@ export async function discardExpenseClaimForDeletedVoucher(
     .eq('status', 'registered')
     .is('payout_batch_id', null)
     .select('id')
-  if (deleteError) return { ok: false, code: 'DELETE_FAILED', detail: deleteError.message }
+  if (deleteError) {
+    // A salary line attached in the window the guards left open. The FK is
+    // ON DELETE RESTRICT, so the database has already refused; report the same
+    // code the guard above would have, or the condition reads as two different
+    // failures depending on which side of the race it lands on.
+    if ((deleteError as { code?: string }).code === '23503') {
+      return {
+        ok: false,
+        code: 'ON_PAYSLIP',
+        detail: `claim ${claimId} gained a payslip line while its voucher was being deleted`,
+      }
+    }
+    return { ok: false, code: 'DELETE_FAILED', detail: deleteError.message }
+  }
 
   if (!deleted || deleted.length === 0) {
     // Either someone else removed the row or it stopped being eligible. Only
