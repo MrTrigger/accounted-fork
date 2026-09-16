@@ -441,9 +441,93 @@ export type DeleteExpenseClaimResult =
   | { ok: true; reversal_entry_id: string | null }
   | {
       ok: false
-      code: 'NOT_FOUND' | 'ALREADY_PAID' | 'ON_PAYSLIP' | 'UNLINKED' | 'DELETE_FAILED'
+      code: 'NOT_FOUND' | 'ALREADY_PAID' | 'ON_PAYSLIP' | 'DELETE_FAILED'
       detail?: string
     }
+
+type ClaimRemovalRefusal = Extract<DeleteExpenseClaimResult, { ok: false }>
+
+/**
+ * The payslip guard both delete paths share (#2331). The FK is ON DELETE
+ * RESTRICT, so the database refuses while a salary line references the claim.
+ * A run that has left draft has the line in its stored totals: refuse. On a
+ * draft run the line goes first, before anything irreversible happens, so a
+ * failure here leaves nothing half-done and the claim returns to Att göra.
+ *
+ * One copy on purpose: the register's own delete and the voucher-delete
+ * cleanup must not drift into disagreeing about when a claim may be removed.
+ */
+async function clearPayslipLineForRemoval(
+  supabase: SupabaseClient,
+  companyId: string,
+  claimId: string,
+): Promise<{ ok: true } | ClaimRemovalRefusal> {
+  const payslip = await findPayslipLineForClaim(supabase, companyId, claimId)
+  if (payslip && payslip.run_status !== 'draft') {
+    return {
+      ok: false,
+      code: 'ON_PAYSLIP',
+      detail: `claim ${claimId} is on salary run ${payslip.salary_run_id} (${payslip.run_status})`,
+    }
+  }
+  if (payslip) {
+    const { error: lineError } = await supabase
+      .from('salary_line_items')
+      .delete()
+      .eq('id', payslip.line_id)
+      .eq('company_id', companyId)
+    if (lineError) return { ok: false, code: 'DELETE_FAILED', detail: lineError.message }
+  }
+  return { ok: true }
+}
+
+/**
+ * Drop the register row whose verifikat has just been deleted.
+ *
+ * An utlägg's verifikat is the row's only anchor, and the FK is ON DELETE SET
+ * NULL: deleting the voucher leaves a claim with a null journal_entry_id that
+ * still counts toward "att betala" and cannot be removed from the register,
+ * because the register's own delete works by reversing the entry that is now
+ * gone. Callers pass the claim id read off journal_entries.source_id BEFORE
+ * the delete, since the FK has cleared the forward link by the time this runs.
+ *
+ * Refuses rather than destroys when the claim carries payout state: a paid
+ * claim or one already scheduled on a batch or a committed payslip is money
+ * that has moved, and deleting the voucher is not consent to discard it.
+ */
+export async function discardExpenseClaimForDeletedVoucher(
+  supabase: SupabaseClient,
+  companyId: string,
+  claimId: string,
+): Promise<{ ok: true; deleted: boolean } | ClaimRemovalRefusal> {
+  const { data: claim, error } = await supabase
+    .from('expense_claims')
+    .select('id, status, payout_batch_id')
+    .eq('id', claimId)
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) return { ok: false, code: 'DELETE_FAILED', detail: error.message }
+  if (!claim) return { ok: true, deleted: false }
+  if (claim.status === 'paid') return { ok: false, code: 'ALREADY_PAID' }
+  if (claim.payout_batch_id) {
+    return {
+      ok: false,
+      code: 'ALREADY_PAID',
+      detail: `claim ${claimId} is on payout batch ${claim.payout_batch_id}`,
+    }
+  }
+
+  const cleared = await clearPayslipLineForRemoval(supabase, companyId, claimId)
+  if (!cleared.ok) return cleared
+
+  const { error: deleteError } = await supabase
+    .from('expense_claims')
+    .delete()
+    .eq('id', claimId)
+    .eq('company_id', companyId)
+  if (deleteError) return { ok: false, code: 'DELETE_FAILED', detail: deleteError.message }
+  return { ok: true, deleted: true }
+}
 
 /**
  * Remove a registered claim. The booked verifikat is never deleted: it is
@@ -467,33 +551,36 @@ export async function deleteExpenseClaim(
   if (!claim) return { ok: false, code: 'NOT_FOUND' }
   if (claim.status === 'paid') return { ok: false, code: 'ALREADY_PAID' }
 
-  // Scheduled on a payslip (#2331). The FK is ON DELETE RESTRICT, so the
-  // database refuses the delete while a line references the claim. Once the
-  // run has left draft its stored totals include the line: refuse. On a draft
-  // run the line is removed first (before the storno, so a failure here
-  // leaves nothing half-done); the claim goes back to Att göra and can be
-  // re-added.
-  const payslip = await findPayslipLineForClaim(supabase, companyId, claimId)
-  if (payslip && payslip.run_status !== 'draft') {
-    return {
-      ok: false,
-      code: 'ON_PAYSLIP',
-      detail: `claim ${claimId} is on salary run ${payslip.salary_run_id} (${payslip.run_status})`,
-    }
-  }
-  if (payslip) {
-    const { error: lineError } = await supabase
-      .from('salary_line_items')
-      .delete()
-      .eq('id', payslip.line_id)
-      .eq('company_id', companyId)
-    if (lineError) return { ok: false, code: 'DELETE_FAILED', detail: lineError.message }
-  }
+  const cleared = await clearPayslipLineForRemoval(supabase, companyId, claimId)
+  if (!cleared.ok) return cleared
 
-  if (!claim.journal_entry_id) {
-    // Registered claims always book a verifikat; a missing link means the
-    // back-link write failed. Hard-deleting would orphan the posted entry.
-    return { ok: false, code: 'UNLINKED', detail: `claim ${claimId} has no journal_entry_id` }
+  let entryId = claim.journal_entry_id as string | null
+  if (!entryId) {
+    // journal_entry_id is NULL for two unrelated reasons and refusing both
+    // left the second one unreachable. Either the back-link write failed and
+    // the verifikat is still posted, or the verifikat was deleted and the FK
+    // (ON DELETE SET NULL) cleared the column. journal_entries keeps the
+    // reverse link, so let it decide: storno the entry that is still there,
+    // hard-delete the row whose entry is gone. Nothing is orphaned either way.
+    const { data: sourced, error: sourcedError } = await supabase
+      .from('journal_entries')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('source_type', 'expense_claim')
+      .eq('source_id', claimId)
+      .maybeSingle()
+    if (sourcedError) return { ok: false, code: 'DELETE_FAILED', detail: sourcedError.message }
+
+    if (!sourced?.id) {
+      const { error: orphanError } = await supabase
+        .from('expense_claims')
+        .delete()
+        .eq('id', claimId)
+        .eq('company_id', companyId)
+      if (orphanError) return { ok: false, code: 'DELETE_FAILED', detail: orphanError.message }
+      return { ok: true, reversal_entry_id: null }
+    }
+    entryId = sourced.id
   }
   // Retry safety: if a previous attempt posted the storno but failed to
   // delete the register row, the entry is already 'reversed' and
@@ -502,7 +589,7 @@ export async function deleteExpenseClaim(
   const { data: entry } = await supabase
     .from('journal_entries')
     .select('status, reversed_by_id')
-    .eq('id', claim.journal_entry_id)
+    .eq('id', entryId)
     .eq('company_id', companyId)
     .maybeSingle()
 
@@ -510,7 +597,7 @@ export async function deleteExpenseClaim(
   if (entry?.status === 'reversed') {
     reversalEntryId = entry.reversed_by_id ?? null
   } else {
-    const reversal = await reverseEntry(supabase, companyId, userId, claim.journal_entry_id)
+    const reversal = await reverseEntry(supabase, companyId, userId, entryId)
     reversalEntryId = reversal.id
   }
 

@@ -27,7 +27,7 @@ vi.mock('@/lib/salary/expense-claim-lines', () => ({
   findPayslipLineForClaim: (...args: unknown[]) => findPayslipLineForClaimMock(...args),
 }))
 
-import { registerExpenseClaim, createPayoutBatch, deleteExpenseClaim } from '../expense-claims-service'
+import { registerExpenseClaim, createPayoutBatch, deleteExpenseClaim, discardExpenseClaimForDeletedVoucher } from '../expense-claims-service'
 
 const { supabase, enqueue, reset, findCall } = createQueuedMockSupabase()
 // The queued mock is structurally sufficient for the service; the cast keeps
@@ -601,6 +601,86 @@ describe('deleteExpenseClaim', () => {
     enqueue({ data: null })
     const result = await deleteExpenseClaim(sb, COMPANY, USER, 'c-x')
     expect(result).toEqual({ ok: false, code: 'NOT_FOUND' })
+  })
+
+  // journal_entry_id is NULL for two unrelated reasons; the recoverable one
+  // must not dead-end the row.
+  it('stornos the entry that journal_entries still points at when the back-link is missing', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', journal_entry_id: null } })
+    enqueue({ data: { id: 'je-1' } }) // journal_entries by source_id
+    enqueue({ data: { status: 'posted', reversed_by_id: null } })
+    enqueue({ data: null }) // expense_claims delete
+
+    const result = await deleteExpenseClaim(sb, COMPANY, USER, 'c1')
+    expect(result).toEqual({ ok: true, reversal_entry_id: 'je-storno' })
+    expect(reverseEntryMock).toHaveBeenCalledWith(sb, COMPANY, USER, 'je-1')
+    expect(findCall('expense_claims', 'delete')).toBeTruthy()
+  })
+
+  it('hard-deletes the row when the verifikat is gone, with nothing left to storno', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', journal_entry_id: null } })
+    enqueue({ data: null }) // no journal_entries row for source_id
+    enqueue({ data: null }) // expense_claims delete
+
+    const result = await deleteExpenseClaim(sb, COMPANY, USER, 'c1')
+    expect(result).toEqual({ ok: true, reversal_entry_id: null })
+    expect(reverseEntryMock).not.toHaveBeenCalled()
+    expect(findCall('expense_claims', 'delete')).toBeTruthy()
+  })
+})
+
+describe('discardExpenseClaimForDeletedVoucher', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    reset()
+    findPayslipLineForClaimMock.mockResolvedValue(null)
+  })
+
+  it('removes the register row left behind by the voucher delete', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
+    enqueue({ data: null }) // delete
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toEqual({ ok: true, deleted: true })
+    expect(findCall('expense_claims', 'delete')).toBeTruthy()
+  })
+
+  it('keeps a paid claim: deleting the voucher is not consent to discard a payout', async () => {
+    enqueue({ data: { id: 'c1', status: 'paid', payout_batch_id: null } })
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toMatchObject({ ok: false, code: 'ALREADY_PAID' })
+    expect(findCall('expense_claims', 'delete')).toBeUndefined()
+  })
+
+  it('keeps a claim already scheduled on a payout batch', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: 'batch-1' } })
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toMatchObject({ ok: false, code: 'ALREADY_PAID' })
+    expect(findCall('expense_claims', 'delete')).toBeUndefined()
+  })
+
+  it('keeps a claim on a salary run that has left draft', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
+    findPayslipLineForClaimMock.mockResolvedValue({
+      line_id: 'li-1',
+      salary_run_id: 'run-1',
+      run_status: 'review',
+      period_year: 2026,
+      period_month: 6,
+    })
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toMatchObject({ ok: false, code: 'ON_PAYSLIP' })
+    expect(findCall('expense_claims', 'delete')).toBeUndefined()
+  })
+
+  it('is a no-op when the claim is already gone', async () => {
+    enqueue({ data: null })
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c-x')
+    expect(result).toEqual({ ok: true, deleted: false })
   })
 })
 
