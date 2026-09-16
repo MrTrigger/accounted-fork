@@ -26,6 +26,7 @@ import { createJournalEntry, findFiscalPeriod, reverseEntry } from '@/lib/bookke
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { fetchExchangeRate } from '@/lib/currency/riksbanken'
 import { findPayslipLineForClaim } from '@/lib/salary/expense-claim-lines'
+import type { PayslipLineForClaim } from '@/lib/salary/expense-claim-lines'
 import { roundOre, sumOre } from '@/lib/money'
 import { ownerSettlementAccount, parseEntityType } from '@/lib/company/entity-type'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants'
@@ -448,37 +449,26 @@ export type DeleteExpenseClaimResult =
 type ClaimRemovalRefusal = Extract<DeleteExpenseClaimResult, { ok: false }>
 
 /**
- * The payslip guard both delete paths share (#2331). The FK is ON DELETE
- * RESTRICT, so the database refuses while a salary line references the claim.
- * A run that has left draft has the line in its stored totals: refuse. On a
- * draft run the line goes first, before anything irreversible happens, so a
- * failure here leaves nothing half-done and the claim returns to Att göra.
- *
- * One copy on purpose: the register's own delete and the voucher-delete
- * cleanup must not drift into disagreeing about when a claim may be removed.
+ * findPayslipLineForClaim throws on a failed query. Both delete paths declare
+ * a result contract, and the voucher-delete caller only logs what it catches,
+ * so an escaped exception there would silently leave the claim orphaned: the
+ * exact state this guard exists to prevent. Fold the throw into the contract
+ * once, here, instead of at each call site.
  */
-async function clearPayslipLineForRemoval(
+async function lookupPayslipLine(
   supabase: SupabaseClient,
   companyId: string,
   claimId: string,
-): Promise<{ ok: true } | ClaimRemovalRefusal> {
-  const payslip = await findPayslipLineForClaim(supabase, companyId, claimId)
-  if (payslip && payslip.run_status !== 'draft') {
+): Promise<{ ok: true; payslip: PayslipLineForClaim | null } | ClaimRemovalRefusal> {
+  try {
+    return { ok: true, payslip: await findPayslipLineForClaim(supabase, companyId, claimId) }
+  } catch (error) {
     return {
       ok: false,
-      code: 'ON_PAYSLIP',
-      detail: `claim ${claimId} is on salary run ${payslip.salary_run_id} (${payslip.run_status})`,
+      code: 'DELETE_FAILED',
+      detail: error instanceof Error ? error.message : String(error),
     }
   }
-  if (payslip) {
-    const { error: lineError } = await supabase
-      .from('salary_line_items')
-      .delete()
-      .eq('id', payslip.line_id)
-      .eq('company_id', companyId)
-    if (lineError) return { ok: false, code: 'DELETE_FAILED', detail: lineError.message }
-  }
-  return { ok: true }
 }
 
 /**
@@ -517,8 +507,21 @@ export async function discardExpenseClaimForDeletedVoucher(
     }
   }
 
-  const cleared = await clearPayslipLineForRemoval(supabase, companyId, claimId)
-  if (!cleared.ok) return cleared
+  // Any payslip line at all is a refusal here, draft included. The register's
+  // own delete may remove a draft line because the user asked for the claim to
+  // go; deleting a verifikat is not that request, and the two writes cannot be
+  // made atomic through the client. Removing the line and then failing the
+  // claim delete would mutate a salary run while the caller reports the
+  // voucher deleted, so this path never starts that sequence.
+  const lookup = await lookupPayslipLine(supabase, companyId, claimId)
+  if (!lookup.ok) return lookup
+  if (lookup.payslip) {
+    return {
+      ok: false,
+      code: 'ON_PAYSLIP',
+      detail: `claim ${claimId} is on salary run ${lookup.payslip.salary_run_id} (${lookup.payslip.run_status})`,
+    }
+  }
 
   const { error: deleteError } = await supabase
     .from('expense_claims')
@@ -551,8 +554,28 @@ export async function deleteExpenseClaim(
   if (!claim) return { ok: false, code: 'NOT_FOUND' }
   if (claim.status === 'paid') return { ok: false, code: 'ALREADY_PAID' }
 
-  const cleared = await clearPayslipLineForRemoval(supabase, companyId, claimId)
-  if (!cleared.ok) return cleared
+  // Scheduled on a payslip (#2331). The FK is ON DELETE RESTRICT, so the
+  // database refuses while a line references the claim. A run that has left
+  // draft has the line in its stored totals: refuse. On a draft run the line
+  // goes first, before the storno, so a failure here leaves nothing half-done.
+  const lookup = await lookupPayslipLine(supabase, companyId, claimId)
+  if (!lookup.ok) return lookup
+  const payslip = lookup.payslip
+  if (payslip && payslip.run_status !== 'draft') {
+    return {
+      ok: false,
+      code: 'ON_PAYSLIP',
+      detail: `claim ${claimId} is on salary run ${payslip.salary_run_id} (${payslip.run_status})`,
+    }
+  }
+  if (payslip) {
+    const { error: lineError } = await supabase
+      .from('salary_line_items')
+      .delete()
+      .eq('id', payslip.line_id)
+      .eq('company_id', companyId)
+    if (lineError) return { ok: false, code: 'DELETE_FAILED', detail: lineError.message }
+  }
 
   let entryId = claim.journal_entry_id as string | null
   if (!entryId) {

@@ -603,6 +603,15 @@ describe('deleteExpenseClaim', () => {
     expect(result).toEqual({ ok: false, code: 'NOT_FOUND' })
   })
 
+  it('reports a failed payslip lookup instead of throwing', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', journal_entry_id: 'je-1' } })
+    findPayslipLineForClaimMock.mockRejectedValue(new Error('db down'))
+
+    const result = await deleteExpenseClaim(sb, COMPANY, USER, 'c1')
+    expect(result).toEqual({ ok: false, code: 'DELETE_FAILED', detail: 'db down' })
+    expect(reverseEntryMock).not.toHaveBeenCalled()
+  })
+
   // journal_entry_id is NULL for two unrelated reasons; the recoverable one
   // must not dead-end the row.
   it('stornos the entry that journal_entries still points at when the back-link is missing', async () => {
@@ -661,18 +670,33 @@ describe('discardExpenseClaimForDeletedVoucher', () => {
     expect(findCall('expense_claims', 'delete')).toBeUndefined()
   })
 
-  it('keeps a claim on a salary run that has left draft', async () => {
+  // Draft included: the register's delete may remove a draft line because the
+  // user asked for the claim to go. Deleting a verifikat is not that request,
+  // and the two writes cannot be made atomic through the client.
+  it.each(['draft', 'review'])('keeps a claim on a %s salary run, line untouched', async (run_status) => {
     enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
     findPayslipLineForClaimMock.mockResolvedValue({
       line_id: 'li-1',
       salary_run_id: 'run-1',
-      run_status: 'review',
+      run_status,
       period_year: 2026,
       period_month: 6,
     })
 
     const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
     expect(result).toMatchObject({ ok: false, code: 'ON_PAYSLIP' })
+    expect(findCall('salary_line_items', 'delete')).toBeUndefined()
+    expect(findCall('expense_claims', 'delete')).toBeUndefined()
+  })
+
+  // findPayslipLineForClaim throws on a failed query; the caller only logs
+  // what it catches, so an escaped exception would orphan the claim silently.
+  it('reports a failed payslip lookup instead of throwing', async () => {
+    enqueue({ data: { id: 'c1', status: 'registered', payout_batch_id: null } })
+    findPayslipLineForClaimMock.mockRejectedValue(new Error('db down'))
+
+    const result = await discardExpenseClaimForDeletedVoucher(sb, COMPANY, 'c1')
+    expect(result).toEqual({ ok: false, code: 'DELETE_FAILED', detail: 'db down' })
     expect(findCall('expense_claims', 'delete')).toBeUndefined()
   })
 
