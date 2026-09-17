@@ -9438,7 +9438,7 @@ export const tools: McpTool[] = [
         },
         description: { type: 'string' },
         default_vat_code: { type: 'string' },
-        default_vat_rate: { type: 'number', enum: [0, 0.06, 0.12, 0.25], description: 'Fraction (0.25 = 25%). Livsmedel: 0.06 from 2026-04-01 (temporary cut from 0.12, reverts 2027-12-31).' },
+        default_vat_rate: { type: 'number', enum: [0, 0.06, 0.12, 0.25], description: 'Fraction (0.25 = 25%). Livsmedel 0.06 from 2026-04-01 through 2027-12-31, then 0.12.' },
         default_vat_treatment: {
           type: 'string',
           enum: [...ACCOUNT_VAT_TREATMENTS],
@@ -9546,17 +9546,17 @@ export const tools: McpTool[] = [
     name: 'gnubok_update_account',
     keywords: ['kontoplan', 'ändra konto', 'baskonto'],
     title: 'Update Account (Kontoplan)',
-    description: 'Stage an edit to a kontoplan account: rename, description, default VAT, SRU code, or activate/deactivate via is_active. Stages for approval. Find accounts with gnubok_list_accounts.',
+    description: 'Stage an edit to a kontoplan account: rename, description, default VAT, SRU code, or activate/deactivate via is_active. Find accounts with gnubok_list_accounts.',
     outputSchema: STAGED_OPERATION_SCHEMA,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        account_number: { type: 'string', description: '4-digit number of the account to update.' },
+        account_number: { type: 'string', description: '4-digit number.' },
         account_name: { type: 'string' },
         description: { type: 'string' },
         default_vat_code: { type: 'string' },
-        default_vat_rate: { type: 'number', enum: [0, 0.06, 0.12, 0.25], description: 'Default VAT rate as a fraction (0.25 = 25%). Livsmedel: 0.06 from 2026-04-01 (temporary cut from 0.12, reverts 2027-12-31).' },
+        default_vat_rate: { type: 'number', enum: [0, 0.06, 0.12, 0.25], description: 'Fraction (0.25 = 25%). Livsmedel 0.06 from 2026-04-01 through 2027-12-31, then 0.12.' },
         default_vat_treatment: {
           type: ['string', 'null'],
           enum: [...ACCOUNT_VAT_TREATMENTS, null],
