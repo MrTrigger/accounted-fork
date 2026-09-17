@@ -39,6 +39,8 @@ export interface PaymentEntryLinks {
  * The DELETE voucher route calls this BEFORE delete_last_voucher and passes the
  * result to syncInvoiceStatusFromPaymentEntry afterwards; storno calls the sync
  * without it, which loads the links itself (the reversed entry still exists).
+ * Throws on a read error, so the route refuses the delete instead of deleting
+ * with links it could not see.
  */
 export async function loadPaymentEntryLinks(
   supabase: SupabaseClient,
@@ -51,18 +53,22 @@ export async function loadPaymentEntryLinks(
   // Scoped to THIS invoice: a batch voucher (match_batch_allocate) carries one
   // payment row per invoice under the same journal_entry_id, and this call only
   // restores the source invoice's status (PR #666 review, SOC 2 CC6.3).
-  const { data: paymentRows } = await supabase
+  const { data: paymentRows, error: paymentRowsError } = await supabase
     .from(isSupplier ? 'supplier_invoice_payments' : 'invoice_payments')
     .select('id, amount, transaction_id')
     .eq('journal_entry_id', entry.id)
     .eq(isSupplier ? 'supplier_invoice_id' : 'invoice_id', entry.source_id)
     .eq('company_id', companyId)
+  // An unread link is not an absent one: treated as empty, the sync would
+  // revert the whole paid_amount and strand the row once the entry is gone.
+  if (paymentRowsError) throw paymentRowsError
 
-  const { data: transactions } = await supabase
+  const { data: transactions, error: transactionsError } = await supabase
     .from('transactions')
     .select('id')
     .eq('company_id', companyId)
     .eq('journal_entry_id', entry.id)
+  if (transactionsError) throw transactionsError
 
   return {
     paymentRows: (paymentRows ?? []) as PaymentEntryLinks['paymentRows'],
@@ -92,7 +98,20 @@ export async function syncInvoiceStatusFromPaymentEntry(
   if (!isPaymentSourceType(entry.source_type) || !entry.source_id) return
 
   const entryId = entry.id
-  const resolved = links ?? (await loadPaymentEntryLinks(supabase, companyId, entry))
+  let resolved = links ?? null
+  if (!resolved) {
+    try {
+      resolved = await loadPaymentEntryLinks(supabase, companyId, entry)
+    } catch (loadError) {
+      // Same contract as an unreadable invoice below: change nothing, so the
+      // invoice, payment row and bank line stay mutually consistent.
+      log.error('Failed to read payment links for payment reversal: aborting status sync', loadError, {
+        companyId,
+        journalEntryId: entryId,
+      })
+      return
+    }
+  }
   if (!resolved) return
   const paymentRowIds = resolved.paymentRows.map((r) => r.id)
   // null when the entry has no payment row: cash entries book none.
@@ -156,7 +175,7 @@ export async function syncInvoiceStatusFromPaymentEntry(
         newStatus = 'approved'
       }
 
-      await supabase
+      const { error: supplierUpdateError } = await supabase
         .from('supplier_invoices')
         .update({
           status: newStatus,
@@ -167,6 +186,16 @@ export async function syncInvoiceStatusFromPaymentEntry(
         })
         .eq('id', entry.source_id)
         .eq('company_id', companyId)
+      // The row delete and bank release below are the rest of this restore:
+      // without the restore they leave the invoice paid with nothing behind it.
+      if (supplierUpdateError) {
+        log.error('Failed to restore supplier invoice for payment reversal: aborting status sync', supplierUpdateError, {
+          companyId,
+          journalEntryId: entryId,
+          supplierInvoiceId: entry.source_id,
+        })
+        return
+      }
     }
 
     // Remove THIS invoice's payment row tied to the reversed voucher so a
@@ -178,12 +207,23 @@ export async function syncInvoiceStatusFromPaymentEntry(
 
     await releaseLinkedTransactions(supabase, companyId, entryId, releaseTransactionIds, 'supplier_invoice_id')
   } else {
-    const { data: customerInvoice } = await supabase
+    const { data: customerInvoice, error: customerInvoiceError } = await supabase
       .from('invoices')
       .select('paid_amount, total, due_date, deduction_total, deduction_reclaimed_total')
       .eq('id', entry.source_id)
       .eq('company_id', companyId)
       .single()
+
+    // Same contract as the supplier branch: PGRST116 (invoice gone) still
+    // cleans up; any other read error changes nothing.
+    if (customerInvoiceError && customerInvoiceError.code !== 'PGRST116') {
+      log.error('Failed to read invoice for payment reversal: aborting status sync', customerInvoiceError, {
+        companyId,
+        journalEntryId: entryId,
+        invoiceId: entry.source_id,
+      })
+      return
+    }
 
     if (customerInvoice) {
       // For a partial reversal we take the exact amount from the payment row.
@@ -235,7 +275,7 @@ export async function syncInvoiceStatusFromPaymentEntry(
           ? 'overdue'
           : 'sent'
 
-      await supabase
+      const { error: customerUpdateError } = await supabase
         .from('invoices')
         .update({
           status: revertStatus,
@@ -246,6 +286,14 @@ export async function syncInvoiceStatusFromPaymentEntry(
         .eq('id', entry.source_id)
         .eq('company_id', companyId)
         .in('status', ['paid', 'partially_paid'])
+      if (customerUpdateError) {
+        log.error('Failed to restore invoice for payment reversal: aborting status sync', customerUpdateError, {
+          companyId,
+          journalEntryId: entryId,
+          invoiceId: entry.source_id,
+        })
+        return
+      }
     }
 
     // Remove THIS invoice's payment row tied to the reversed voucher so a

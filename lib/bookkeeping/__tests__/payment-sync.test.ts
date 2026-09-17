@@ -599,3 +599,94 @@ describe('syncInvoiceStatusFromPaymentEntry: reclaimed ROT/RUT share (rot_rut_re
     })
   })
 })
+
+// Review follow-ups on #2688: an unreadable link, an unreadable customer
+// invoice or a failed restore must change nothing, so the invoice, payment row
+// and bank line stay mutually consistent.
+describe('syncInvoiceStatusFromPaymentEntry: failures leave everything untouched', () => {
+  const supplierEntry = { id: 'entry-1', source_type: 'supplier_invoice_paid', source_id: 'supplier-invoice-1' } as Pick<
+    JournalEntry,
+    'id' | 'source_type' | 'source_id'
+  >
+  const customerEntry = { id: 'entry-1', source_type: 'invoice_paid', source_id: 'invoice-1' } as Pick<
+    JournalEntry,
+    'id' | 'source_type' | 'source_id'
+  >
+
+  it('loadPaymentEntryLinks throws when the payment rows cannot be read', async () => {
+    const { supabase } = createRecordingSupabase([{ data: null, error: { code: '57014', message: 'timeout' } }])
+    await expect(loadPaymentEntryLinks(supabase, 'co-1', supplierEntry)).rejects.toMatchObject({ code: '57014' })
+  })
+
+  it('loadPaymentEntryLinks throws when the bank rows cannot be read', async () => {
+    const { supabase } = createRecordingSupabase([
+      { data: [] },
+      { data: null, error: { code: '57014', message: 'timeout' } },
+    ])
+    await expect(loadPaymentEntryLinks(supabase, 'co-1', supplierEntry)).rejects.toMatchObject({ code: '57014' })
+  })
+
+  it('aborts the sync when its own link load fails', async () => {
+    const { supabase, calls, tablesUpdated, wasDeleted } = createRecordingSupabase([
+      { data: null, error: { code: '57014', message: 'timeout' } },
+    ])
+    await expect(syncInvoiceStatusFromPaymentEntry(supabase, 'co-1', supplierEntry)).resolves.toBeUndefined()
+    expect(calls.map((c) => c.table)).toEqual(['supplier_invoice_payments'])
+    expect(tablesUpdated('supplier_invoices').length).toBe(0)
+    expect(wasDeleted('supplier_invoice_payments')).toBe(false)
+  })
+
+  it('does not delete or release when the supplier invoice update fails', async () => {
+    const { supabase, wasDeleted, tablesUpdated } = createRecordingSupabase([
+      { data: { paid_amount: 1000, total: 1000, due_date: '2099-12-31' } }, // supplier_invoices select
+      { data: null, error: { code: '42501', message: 'permission denied' } }, // supplier_invoices update
+    ])
+    await syncInvoiceStatusFromPaymentEntry(supabase, 'co-1', supplierEntry, {
+      paymentRows: [{ id: 'sip-1', amount: 1000, transaction_id: 'tx-1' }],
+      transactionIds: [],
+    })
+    expect(wasDeleted('supplier_invoice_payments')).toBe(false)
+    expect(tablesUpdated('transactions').length).toBe(0)
+  })
+
+  it('does not delete or release when the customer invoice read errors', async () => {
+    const { supabase, calls, wasDeleted, tablesUpdated } = createRecordingSupabase([
+      { data: null, error: { code: '42703', message: 'column does not exist' } }, // invoices select
+    ])
+    await syncInvoiceStatusFromPaymentEntry(supabase, 'co-1', customerEntry, {
+      paymentRows: [{ id: 'ip-1', amount: 500, transaction_id: 'tx-1' }],
+      transactionIds: [],
+    })
+    expect(calls.map((c) => c.table)).toEqual(['invoices'])
+    expect(wasDeleted('invoice_payments')).toBe(false)
+    expect(tablesUpdated('transactions').length).toBe(0)
+  })
+
+  it('does not delete or release when the customer invoice update fails', async () => {
+    const { supabase, wasDeleted, tablesUpdated } = createRecordingSupabase([
+      { data: { paid_amount: 500, total: 500, due_date: '2099-12-31' } }, // invoices select
+      { data: null, error: { code: '42501', message: 'permission denied' } }, // invoices update
+    ])
+    await syncInvoiceStatusFromPaymentEntry(supabase, 'co-1', customerEntry, {
+      paymentRows: [{ id: 'ip-1', amount: 500, transaction_id: 'tx-1' }],
+      transactionIds: [],
+    })
+    expect(wasDeleted('invoice_payments')).toBe(false)
+    expect(tablesUpdated('transactions').length).toBe(0)
+  })
+
+  it('still cleans up when the customer invoice no longer exists (PGRST116)', async () => {
+    const { supabase, wasDeleted, tablesUpdated } = createRecordingSupabase([
+      { data: null, error: { code: 'PGRST116', message: 'no rows returned' } }, // invoices select
+      { data: null }, // invoice_payments delete
+      { data: null }, // transactions update by id
+    ])
+    await syncInvoiceStatusFromPaymentEntry(supabase, 'co-1', customerEntry, {
+      paymentRows: [{ id: 'ip-1', amount: 500, transaction_id: 'tx-1' }],
+      transactionIds: [],
+    })
+    expect(tablesUpdated('invoices').length).toBe(0)
+    expect(wasDeleted('invoice_payments')).toBe(true)
+    expect(tablesUpdated('transactions').length).toBe(1)
+  })
+})

@@ -144,4 +144,17 @@ describe('DELETE /api/bookkeeping/journal-entries/[id]', () => {
       links,
     )
   })
+
+  it('refuses the delete when the payment links cannot be read', async () => {
+    vi.mocked(loadPaymentEntryLinks).mockRejectedValueOnce(
+      Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    )
+    enqueue({ data: { id: 'je-1', source_type: 'supplier_invoice_paid', source_id: 'si-1' } })
+
+    const { status } = await parseJsonResponse(await run())
+
+    expect(status).toBeGreaterThanOrEqual(500)
+    expect(mockSupabase.rpc).not.toHaveBeenCalled()
+    expect(syncInvoiceStatusFromPaymentEntry).not.toHaveBeenCalled()
+  })
 })
